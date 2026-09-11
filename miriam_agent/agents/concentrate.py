@@ -355,7 +355,11 @@ class ConcentrateProvider(LLMProvider):
                 await asyncio.sleep(self._backoff(attempt, retry_after))
                 continue
 
-            raise self._map_error(resp)
+            err = self._map_error(resp)
+            if stream:
+                await resp.aread()
+                await resp.aclose()
+            raise err
         raise AgentError(  # pragma: no cover
             f"Concentrate request failed: {last_error}"
         )
