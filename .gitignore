@@ -29,6 +29,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+miriam_env/
 
 # IDE
 .vscode/

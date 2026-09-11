@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
 from miriam_agent.database.models import User, FinancialProfile
-from miriam_agent.memory import MemoryStore
+from miriam_agent.database.memory import MemoryStore
 
 logger = logging.getLogger(__name__)
 

@@ -79,8 +79,10 @@ class BaseAgent(ABC):
 
             # Store user message in memory
             await self.memory_store.store_interaction(
+                user_id=self.state.user_id,
                 role="user",
                 content=message,
+                conversation_id=self.state.conversation_id,
                 metadata={"topic": "general"},
             )
 
@@ -97,8 +99,10 @@ class BaseAgent(ABC):
 
             # Store assistant response in memory
             await self.memory_store.store_interaction(
+                user_id=self.state.user_id,
                 role="assistant",
                 content=final_response,
+                conversation_id=self.state.conversation_id,
                 metadata={
                     "topic": "general",
                     "tool_calls": response_plan.get("tool_calls", []),
@@ -182,8 +186,10 @@ class BaseAgent(ABC):
         """Store interaction in memory."""
         try:
             await self.memory_store.store_interaction(
+                user_id=self.state.user_id,
                 role=role,
                 content=content,
+                conversation_id=self.state.conversation_id,
                 metadata=metadata or {},
             )
         except Exception as e:

@@ -4,8 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean, ForeignKey, Float, JSON as SQLAlchemyJSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -59,7 +58,7 @@ class Transaction(Base):
     type = Column(String, nullable=False)  # income, expense, transfer
     transaction_date = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(SQLAlchemyJSON, default=dict)
+    extra_data = Column("metadata", SQLAlchemyJSON, default=dict)
 
     # Relationships
     financial_profile = relationship("FinancialProfile", back_populates="transactions")
@@ -118,7 +117,7 @@ class Message(Base):
     conversation_id = Column(String, ForeignKey("conversations.id"), nullable=False)
     role = Column(String, nullable=False)  # user, assistant
     content = Column(Text, nullable=False)
-    metadata = Column(SQLAlchemyJSON, default=dict)
+    extra_data = Column("metadata", SQLAlchemyJSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -132,7 +131,7 @@ class MemoryEntry(Base):
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     type = Column(String, nullable=False)  # conversation, financial, preference
     content = Column(Text, nullable=False)
-    metadata = Column(SQLAlchemyJSON, default=dict)
+    extra_data = Column("metadata", SQLAlchemyJSON, default=dict)
     embedding = Column(SQLAlchemyJSON, nullable=True)  # For vector search
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -166,6 +165,3 @@ class ToolUsage(Base):
     result = Column(SQLAlchemyJSON, default=dict)
     execution_time = Column(Float, nullable=False)  # in seconds
     created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Relationships
-    user = relationship("User", back_populates="tool_usage")

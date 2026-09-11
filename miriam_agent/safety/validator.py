@@ -125,7 +125,7 @@ class InputValidator:
             "<style>",
             "<form>",
             "<input>",
-            "<button>
+            "<button>",
             "<select>",
             "<textarea>",
             "<label>",
@@ -199,7 +199,7 @@ class InputValidator:
 
     def _load_allowed_characters(self) -> str:
         """Load allowed characters for input validation."""
-        return r"^[a-zA-Z0-9\s\-.,!?@#$%&*():;\\'"]+$"
+        return "^[a-zA-Z0-9\\s\\-.,!?@#$%&*():;\\\\'\"]+$"
 
     async def validate_user_input(
         self, input_data: Dict[str, Any], context: str = "general"

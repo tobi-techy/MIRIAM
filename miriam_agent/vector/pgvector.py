@@ -1,434 +1,86 @@
-import asyncio
-import json
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+"""pgvector implementation for Miriam Financial Agent.
 
-from sqlalchemy import select, and_, or_
+Stores vector embeddings in PostgreSQL with the pgvector extension and
+performs cosine-similarity search. Uses SQLAlchemy ``text()`` with named
+bound parameters (asyncpg-compatible) rather than positional ``$N`` marks
+splatted into ``execute()``.
+
+Embeddings are serialized to pgvector's bracket form ``[0.1,0.2,...]``.
+"""
+
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from miriam_agent.database.models import Base, MemoryEntry
-from miriam_agent.vector import VectorStore
+from miriam_agent.vector.base import VectorStore
 
 logger = logging.getLogger(__name__)
 
+TABLE = "memory_entries_vector"
+
+
+def _vec(embedding: List[float]) -> str:
+    """Serialize a float list to pgvector's text form."""
+    return "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+
+
 class PgVectorStore(VectorStore):
-    """pgVector implementation for storing and searching vector embeddings."""
+    """PostgreSQL + pgvector store for embeddings and similarity search."""
 
     def __init__(self, database_url: str):
         self.database_url = database_url
         self.engine = None
         self.async_session = None
-        self.table_name = "memory_entries_vector"
 
-    async def initialize(self):
-        """Initialize the vector database connection."""
-        # Create async engine
+    async def initialize(self) -> None:
+        """Create engine, ensure the pgvector extension and table exist."""
         self.engine = create_async_engine(self.database_url)
-
-        # Create tables
         async with self.engine.begin() as conn:
-            await conn.run_sync(self._create_tables)
-
-        # Create async session factory
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {TABLE} (
+                        id UUID PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        content TEXT NOT NULL,
+                        metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                        embedding VECTOR(1536),
+                        content_type VARCHAR(50) NOT NULL DEFAULT 'text',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_user ON {TABLE} (user_id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_type ON {TABLE} (content_type)"
+                )
+            )
+            await conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_embedding "
+                    f"ON {TABLE} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+                )
+            )
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
 
-    def _create_tables(self, conn):
-        """Create vector store tables."""
-        # Create main table for vector data
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_entries_vector (
-                id UUID PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL,
-                content TEXT NOT NULL,
-                metadata JSONB,
-                embedding VECTOR(1536),  -- OpenAI embedding dimension
-                content_type VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_memory_entries_vector_user_id (user_id),
-                INDEX idx_memory_entries_vector_content_type (content_type),
-                INDEX idx_memory_entries_vector_user_content_type (user_id, content_type)
-            )
-            """
-        )
-
-        # Create vector index for cosine similarity
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_memory_entries_vector_embedding 
-            ON memory_entries_vector 
-            USING ivfflat (embedding vector_cosine_ops) 
-            WITH (lists = 100)
-            """
-        )
-
-    async def close(self):
-        """Close vector database connections."""
+    async def close(self) -> None:
         if self.engine:
             await self.engine.dispose()
-
-    async def store_embedding(
-        self,
-        user_id: str,
-        content: str,
-        metadata: Dict[str, Any],
-        embedding: List[float],
-        content_type: str = "text",
-        memory_id: Optional[str] = None,
-    ) -> str:
-        """Store an embedding in the vector database."""
-        try:
-            async with self.async_session() as session:
-                # Generate ID if not provided
-                from uuid import uuid4
-                embedding_id = memory_id or str(uuid4())
-
-                # Store embedding
-                query = f"""
-                INSERT INTO {self.table_name} 
-                (id, user_id, content, metadata, embedding, content_type, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (id) DO UPDATE SET
-                content = EXCLUDED.content,
-                metadata = EXCLUDED.metadata,
-                embedding = EXCLUDED.embedding,
-                content_type = EXCLUDED.content_type,
-                updated_at = CURRENT_TIMESTAMP
-                """
-
-                await session.execute(
-                    query,
-                    (
-                        embedding_id,
-                        user_id,
-                        content,
-                        json.dumps(metadata),
-                        embedding,
-                        content_type,
-                        datetime.utcnow(),
-                    ),
-                )
-
-                await session.commit()
-
-                logger.info(
-                    "Embedding stored",
-                    embedding_id=embedding_id,
-                    user_id=user_id,
-                    content_type=content_type,
-                )
-
-                return embedding_id
-
-        except Exception as e:
-            logger.error(
-                "Error storing embedding",
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def search_similar(
-        self,
-        user_id: str,
-        query_embedding: List[float],
-        content_type: Optional[str] = None,
-        limit: int = 10,
-        similarity_threshold: float = 0.7,
-    ) -> List[Dict[str, Any]]:
-        """Search for similar embeddings."""
-        try:
-            async with self.async_session() as session:
-                # Build query
-                query = f"""
-                SELECT id, content, metadata, embedding,
-                       1 - (embedding <=> $1::vector) as similarity
-                FROM {self.table_name}
-                WHERE user_id = $2
-                """
-
-                params = [query_embedding, user_id]
-
-                # Add content type filter if specified
-                if content_type:
-                    query += " AND content_type = $3"
-                    params.append(content_type)
-
-                # Add similarity threshold
-                query += " AND (1 - (embedding <=> $1::vector)) >= $3"
-
-                # Adjust parameters for threshold
-                query = query.replace(
-                    "(1 - (embedding <=> $1::vector)) >= $3",
-                    f"(1 - (embedding <=> $1::vector)) >= {similarity_threshold}",
-                )
-
-                query += " ORDER BY similarity DESC LIMIT $4"
-                params.append(limit)
-
-                # Execute query
-                result = await session.execute(query, *params)
-
-                # Format results
-                results = []
-                for row in result:
-                    results.append(
-                        {
-                            "id": row.id,
-                            "content": row.content,
-                            "metadata": json.loads(row.metadata) if row.metadata else {},
-                            "similarity": float(row.similarity),
-                            "content_type": row.content_type,
-                        }
-                    )
-
-                return results
-
-        except Exception as e:
-            logger.error(
-                "Error searching for similar embeddings",
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def delete_embedding(self, embedding_id: str, user_id: str) -> bool:
-        """Delete an embedding."""
-        try:
-            async with self.async_session() as session:
-                query = f"""
-                DELETE FROM {self.table_name}
-                WHERE id = $1 AND user_id = $2
-                """
-
-                result = await session.execute(query, (embedding_id, user_id))
-                await session.commit()
-
-                if result.rowcount > 0:
-                    logger.info(
-                        "Embedding deleted",
-                        embedding_id=embedding_id,
-                        user_id=user_id,
-                    )
-                    return True
-
-                return False
-
-        except Exception as e:
-            logger.error(
-                "Error deleting embedding",
-                embedding_id=embedding_id,
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def get_user_embeddings(
-        self, user_id: str, content_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """Get all embeddings for a user."""
-        try:
-            async with self.async_session() as session:
-                # Build query
-                query = f"""
-                SELECT id, content, metadata, embedding, content_type, created_at
-                FROM {self.table_name}
-                WHERE user_id = $1
-                """
-
-                params = [user_id]
-
-                if content_type:
-                    query += " AND content_type = $2"
-                    params.append(content_type)
-
-                query += " ORDER BY created_at DESC"
-
-                # Execute query
-                result = await session.execute(query, *params)
-
-                # Format results
-                results = []
-                for row in result:
-                    results.append(
-                        {
-                            "id": row.id,
-                            "content": row.content,
-                            "metadata": json.loads(row.metadata) if row.metadata else {},
-                            "embedding": row.embedding,
-                            "content_type": row.content_type,
-                            "created_at": row.created_at.isoformat(),
-                        }
-                    )
-
-                return results
-
-        except Exception as e:
-            logger.error(
-                "Error getting user embeddings",
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def update_embedding(
-        self,
-        embedding_id: str,
-        user_id: str,
-        content: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        embedding: Optional[List[float]] = None,
-    ) -> bool:
-        """Update an embedding."""
-        try:
-            async with self.async_session() as session:
-                # Build query
-                set_clauses = []
-                params = [embedding_id, user_id]
-
-                if content is not None:
-                    set_clauses.append("content = $3")
-                    params.append(content)
-
-                if metadata is not None:
-                    set_clauses.append("metadata = $4")
-                    params.append(json.dumps(metadata))
-
-                if embedding is not None:
-                    set_clauses.append("embedding = $5")
-                    params.append(embedding)
-
-                if not set_clauses:
-                    return False
-
-                query = f"""
-                UPDATE {self.table_name}
-                SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1 AND user_id = $2
-                """
-
-                result = await session.execute(query, *params)
-                await session.commit()
-
-                if result.rowcount > 0:
-                    logger.info(
-                        "Embedding updated",
-                        embedding_id=embedding_id,
-                        user_id=user_id,
-                    )
-                    return True
-
-                return False
-
-        except Exception as e:
-            logger.error(
-                "Error updating embedding",
-                embedding_id=embedding_id,
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def search_by_content(
-        self,
-        user_id: str,
-        query_text: str,
-        content_type: Optional[str] = None,
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """Search embeddings by content text."""
-        try:
-            # For text-based search, we'll use full-text search
-            # or simple text matching since we don't have embeddings for the query
-            async with self.async_session() as session:
-                # Build query using ILIKE for text search
-                query = f"""
-                SELECT id, content, metadata, embedding, content_type,
-                       1 - (content ILIKE $1) as similarity
-                FROM {self.table_name}
-                WHERE user_id = $2
-                """
-
-                # Convert query text to ILIKE pattern
-                ilike_pattern = f"%{query_text}%"
-
-                params = [ilike_pattern, user_id]
-
-                if content_type:
-                    query += " AND content_type = $3"
-                    params.append(content_type)
-
-                query += " ORDER BY similarity DESC LIMIT $4"
-                params.append(limit)
-
-                # Execute query
-                result = await session.execute(query, *params)
-
-                # Format results
-                results = []
-                for row in result:
-                    # Calculate actual similarity based on content match
-                    content_match = 1.0 if query_text.lower() in row.content.lower() else 0.5
-
-                    results.append(
-                        {
-                            "id": row.id,
-                            "content": row.content,
-                            "metadata": json.loads(row.metadata) if row.metadata else {},
-                            "similarity": content_match,
-                            "content_type": row.content_type,
-                        }
-                    )
-
-                return results
-
-        except Exception as e:
-            logger.error(
-                "Error searching by content",
-                user_id=user_id,
-                error=str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def batch_store_embeddings(
-        self, embeddings: List[Dict[str, Any]]
-    ) -> List[str]:
-        """Store multiple embeddings efficiently."""
-        try:
-            async with self.async_session() as session:
-                stored_ids = []
-
-                for embedding_data in embeddings:
-                    embedding_id = await self.store_embedding(
-                        embedding_data["user_id"],
-                        embedding_data["content"],
-                        embedding_data["metadata"],
-                        embedding_data["embedding"],
-                        embedding_data.get("content_type", "text"),
-                        embedding_data.get("memory_id"),
-                    )
-
-                    stored_ids.append(embedding_id)
-
-                return stored_ids
-
-        except Exception as e:
-            logger.error(
-                "Error batch storing embeddings",
-                error=str(e),
-                exc_info=True,
-            )
-            raise
 
     async def __aenter__(self):
         await self.initialize()
@@ -437,7 +89,198 @@ class PgVectorStore(VectorStore):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    def __del__(self):
-        """Destructor to clean up resources."""
-        if hasattr(self, "engine") and self.engine:
-            self.engine.dispose()
+    # ------------------------------------------------------------------
+    # VectorStore interface (+ user_id scoping)
+    # ------------------------------------------------------------------
+
+    async def store_embedding(
+        self,
+        id: str,
+        content: str,
+        embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        content_type: str = "text",
+    ) -> bool:
+        """Store (or upsert) a vector embedding."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        async with self.async_session() as session:
+            values = {
+                "id": id,
+                "user_id": user_id or "unknown",
+                "content": content,
+                "metadata": json_dumps(metadata or {}),
+                "embedding": _vec(embedding),
+                "content_type": content_type,
+            }
+            try:
+                # Build upsert manually with text() since pgvector type is custom.
+                existing = await session.execute(
+                    text(
+                        f"SELECT 1 FROM {TABLE} WHERE id = :id"
+                    ),
+                    {"id": id},
+                )
+                if existing.first():
+                    await session.execute(
+                        text(
+                            f"""
+                            UPDATE {TABLE} SET
+                                content = :content,
+                                metadata = :metadata::jsonb,
+                                embedding = :embedding::vector,
+                                content_type = :content_type,
+                                user_id = :user_id,
+                                updated_at = NOW()
+                            WHERE id = :id
+                            """
+                        ),
+                        values,
+                    )
+                else:
+                    await session.execute(
+                        text(
+                            f"""
+                            INSERT INTO {TABLE}
+                                (id, user_id, content, metadata, embedding, content_type)
+                            VALUES
+                                (:id, :user_id, :content, :metadata::jsonb, :embedding::vector, :content_type)
+                            """
+                        ),
+                        values,
+                    )
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error("store_embedding failed: %s", e)
+                return False
+
+    async def search_similar(
+        self,
+        query_embedding: List[float],
+        limit: int = 10,
+        threshold: float = 0.3,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Cosine-similarity search. Returns rows with a ``similarity`` field."""
+        filters = filters or {}
+        where = []
+        params: Dict[str, Any] = {"emb": _vec(query_embedding), "lim": limit}
+
+        if user_id:
+            where.append("user_id = :user_id")
+            params["user_id"] = user_id
+        if content_type:
+            where.append("content_type = :content_type")
+            params["content_type"] = content_type
+        for i, (key, value) in enumerate(filters.items()):
+            where.append(f"metadata->>:fkey{i} = :fval{i}")
+            params[f"fkey{i}"] = key
+            params[f"fval{i}"] = str(value)
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = text(
+            f"""
+            SELECT id, user_id, content, metadata, content_type,
+                   1 - (embedding <=> :emb::vector) AS similarity
+            FROM {TABLE}
+            {where_sql}
+            AND 1 - (embedding <=> :emb::vector) >= :thresh
+            ORDER BY similarity DESC
+            LIMIT :lim
+            """
+        )
+        # sqlalchemy text() bound params can't be re-used twice; inline threshold.
+        rendered = str(sql)
+        rendered = rendered.replace(":thresh", str(threshold))
+        async with self.async_session() as session:
+            try:
+                result = await session.execute(text(rendered), params)
+                rows = []
+                for row in result.mappings():
+                    rows.append(
+                        {
+                            "id": str(row["id"]),
+                            "user_id": row["user_id"],
+                            "content": row["content"],
+                            "metadata": json_loads(row["metadata"]),
+                            "content_type": row["content_type"],
+                            "similarity": float(row["similarity"] or 0.0),
+                        }
+                    )
+                return rows
+            except Exception as e:
+                logger.error("search_similar failed: %s", e)
+                return []
+
+    async def delete_embedding(self, id: str, user_id: Optional[str] = None) -> bool:
+        params = {"id": id}
+        where = "id = :id"
+        if user_id:
+            where += " AND user_id = :user_id"
+            params["user_id"] = user_id
+        async with self.async_session() as session:
+            try:
+                await session.execute(
+                    text(f"DELETE FROM {TABLE} WHERE {where}"), params
+                )
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error("delete_embedding failed: %s", e)
+                return False
+
+    async def update_embedding(
+        self,
+        id: str,
+        embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        async with self.async_session() as session:
+            try:
+                await session.execute(
+                    text(
+                        f"""
+                        UPDATE {TABLE} SET
+                            embedding = :embedding::vector,
+                            metadata = :metadata::jsonb,
+                            updated_at = NOW()
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": id,
+                        "embedding": _vec(embedding),
+                        "metadata": json_dumps(metadata or {}),
+                    },
+                )
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error("update_embedding failed: %s", e)
+                return False
+
+
+def json_dumps(obj: Any) -> str:
+    import json
+
+    return json.dumps(obj, default=str)
+
+
+def json_loads(raw: Any) -> Dict[str, Any]:
+    import json
+
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": str(raw)}

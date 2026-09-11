@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 class FinancialIntelligence:
     """Financial intelligence and analysis module for Miriam Financial Agent."""
 
-    def __init__(self, memory_store: Any):
+    def __init__(self, memory_store: Any, go_client: Any = None):
         self.memory_store = memory_store
+        self.go_client = go_client
         self.llm_cache = {}
         self.risk_cache = {}
         self.pattern_cache = {}
@@ -2067,3 +2068,16 @@ class FinancialIntelligence:
         self.llm_cache.clear()
         self.risk_cache.clear()
         self.pattern_cache.clear()
+
+_fi_singleton: Any = None
+
+
+def get_financial_intelligence_singleton(go_client: Any = None) -> FinancialIntelligence:
+    """Get the process-wide FinancialIntelligence singleton."""
+    global _fi_singleton
+    if _fi_singleton is None:
+        from miriam_agent.database.memory import get_memory_singleton
+        _fi_singleton = FinancialIntelligence(get_memory_singleton(), go_client)
+    elif go_client is not None and _fi_singleton.go_client is None:
+        _fi_singleton.go_client = go_client
+    return _fi_singleton

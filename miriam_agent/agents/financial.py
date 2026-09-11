@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Optional
 
 from miriam_agent.agents.base import BaseAgent, AgentConfig
 from miriam_agent.core.exceptions import AgentError, FinancialError
-from miriam_agent.core.models import FinancialGoal, Transaction
 from miriam_agent.database.models import FinancialProfile
 from miriam_agent.financial.intelligence import FinancialIntelligence
 from miriam_agent.integrations.grpc_client import GrpcPaymentClient

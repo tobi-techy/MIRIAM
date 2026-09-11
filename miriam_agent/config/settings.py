@@ -1,1 +1,87 @@
-# Settings configuration for Miriam Financial Agent
+"""Configuration settings for Miriam Financial Agent."""
+
+import os
+from functools import lru_cache
+from typing import List, Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    # Application
+    APP_NAME: str = "miriam-agent"
+    ENVIRONMENT: str = Field(default="development")
+    DEBUG: bool = Field(default=False)
+    SECRET_KEY: str = Field(default="change-me-in-production")
+
+    # Database
+    DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://miriam:miriam_password@localhost:5432/miriam"
+    )
+    DATABASE_ECHO: bool = False
+
+    # Redis
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
+
+    # LLM
+    OPENAI_API_KEY: str = Field(default="")
+    OPENAI_MODEL: str = Field(default="gpt-4")
+    OPENAI_TEMPERATURE: float = Field(default=0.7)
+    OPENAI_MAX_TOKENS: int = Field(default=4096)
+    ANTHROPIC_API_KEY: str = Field(default="")
+
+    # Security
+    ENCRYPTION_KEY: str = Field(default="")
+    JWT_SECRET: str = Field(default="change-me-in-production")
+    JWT_ALGORITHM: str = Field(default="HS256")
+    JWT_EXPIRATION_MINUTES: int = Field(default=60)
+
+    # CORS
+    ALLOWED_ORIGINS: str = Field(default="*")
+
+    # Go Backend
+    GRPC_ENDPOINT: str = Field(default="localhost:50051")
+    GO_BACKEND_URL: str = Field(default="http://localhost:8080")
+
+    # Supermemory (long-term memory of the agent)
+    # Leave empty to disable semantic memory (the agent degrades gracefully).
+    SUPERMEMORY_API_KEY: str = Field(default="")
+    SUPERMEMORY_BASE_URL: str = Field(default="https://api.supermemory.ai")
+    SUPERMEMORY_TIMEOUT: float = Field(default=20.0)
+    SUPERMEMORY_MAX_RETRIES: int = Field(default=2)
+
+    # Vector Search
+    EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
+    EMBEDDING_DIMENSIONS: int = Field(default=1536)
+
+    # Rate Limiting
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60)
+    RATE_LIMIT_PER_HOUR: int = Field(default=1000)
+
+    # Safety
+    MAX_DAILY_TRANSFER: float = Field(default=10000.0)
+    MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
+    AUTO_APPROVE_THRESHOLD: float = Field(default=100.0)
+
+    # Observability
+    LOG_LEVEL: str = Field(default="INFO")
+    OTEL_ENDPOINT: Optional[str] = Field(default=None)
+    SENTRY_DSN: Optional[str] = Field(default=None)
+
+    # Voice
+    ELEVENLABS_API_KEY: str = Field(default="")
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": True,
+    }
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Cached singleton for application settings."""
+    return Settings()

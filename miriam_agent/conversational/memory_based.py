@@ -6,8 +6,8 @@ from datetime import datetime
 from collections import deque
 
 from miriam_agent.database.models import User, FinancialProfile
-from miriam_agent.memory import MemoryStore
-from miriam_agent.vector import VectorStore
+from miriam_agent.database.memory import MemoryStore
+from miriam_agent.vector.base import VectorStore
 
 logger = logging.getLogger(__name__)
 

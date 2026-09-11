@@ -7,7 +7,7 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from miriam_agent.database.models import Base, MemoryEntry, Conversation, Message
+from miriam_agent.database.models import Base, MemoryEntry, Conversation, Message, FinancialProfile
 
 class MemoryStore:
     """Memory store for handling conversations, memories, and user interactions."""
@@ -57,6 +57,15 @@ class MemoryStore:
                 # Create or get conversation
                 if conversation_id:
                     conversation = await session.get(Conversation, conversation_id)
+                    if conversation is None:
+                        # conversation_id provided but doesn't exist - create it
+                        conversation = Conversation(
+                            user_id=user_id,
+                            title=f"Conversation {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                            id=conversation_id,
+                        )
+                        session.add(conversation)
+                        await session.flush()
                 else:
                     # Create new conversation
                     conversation = Conversation(
@@ -71,7 +80,7 @@ class MemoryStore:
                     conversation_id=conversation.id,
                     role=role,
                     content=content,
-                    metadata=metadata or {},
+                    extra_data=metadata or {},
                 )
                 session.add(message)
 
@@ -80,7 +89,7 @@ class MemoryStore:
                     user_id=user_id,
                     type="conversation",
                     content=content,
-                    metadata={
+                    extra_data={
                         "role": role,
                         "conversation_id": conversation.id,
                         "timestamp": datetime.utcnow().isoformat(),
@@ -120,7 +129,7 @@ class MemoryStore:
                         "id": msg.id,
                         "role": msg.role,
                         "content": msg.content,
-                        "metadata": msg.metadata,
+                        "metadata": msg.extra_data,
                         "created_at": msg.created_at.isoformat(),
                     }
                     for msg in messages.scalars()
@@ -163,7 +172,7 @@ class MemoryStore:
                     user_id=user_id,
                     type=memory_type,
                     content=content,
-                    metadata=metadata or {},
+                    extra_data=metadata or {},
                 )
                 session.add(memory_entry)
                 await session.commit()
@@ -193,7 +202,7 @@ class MemoryStore:
                 if filter_metadata:
                     for key, value in filter_metadata.items():
                         query = query.where(
-                            MemoryEntry.metadata[key].astext == str(value)
+                            MemoryEntry.extra_data[key].astext == str(value)
                         )
 
                 # Execute query
@@ -218,7 +227,7 @@ class MemoryStore:
 
                 memory_entry.content = content
                 if metadata:
-                    memory_entry.metadata.update(metadata)
+                    memory_entry.extra_data.update(metadata)
 
                 await session.commit()
                 return True
@@ -259,7 +268,7 @@ class MemoryStore:
                     .where(
                         or_(
                             MemoryEntry.content.ilike(search_term),
-                            MemoryEntry.metadata["content"].astext.ilike(search_term),
+                            MemoryEntry.extra_data["content"].astext.ilike(search_term),
                         )
                     )
                     .order_by(MemoryEntry.created_at.desc())
@@ -390,3 +399,68 @@ class MemoryStore:
             except Exception as e:
                 await session.rollback()
                 raise e
+
+    async def get_financial_profile(self, user_id: str) -> Optional[FinancialProfile]:
+        """Get user's financial profile."""
+        async with self.async_session() as session:
+            try:
+                result = await session.execute(
+                    select(FinancialProfile).where(FinancialProfile.user_id == user_id)
+                )
+                return result.scalars().first()
+            except Exception as e:
+                raise e
+
+    async def get_config(self) -> Dict[str, Any]:
+        """Get agent configuration."""
+        from miriam_agent.config.settings import get_settings
+        settings = get_settings()
+        return {
+            "grpc_endpoint": settings.GRPC_ENDPOINT,
+            "go_backend_url": settings.GO_BACKEND_URL,
+            "openai_model": settings.OPENAI_MODEL,
+            "max_daily_transfer": settings.MAX_DAILY_TRANSFER,
+            "max_transaction_amount": settings.MAX_TRANSACTION_AMOUNT,
+        }
+
+    async def get_portfolio_data(self, user_id: str) -> Dict[str, Any]:
+        """Get user's portfolio data (stocks, investments)."""
+        return {
+            "investments": [],
+            "total_value": 0.0,
+            "daily_returns": [],
+            "allocations": {},
+        }
+
+    async def get_income_data(self, user_id: str) -> Dict[str, Any]:
+        """Get user's income data."""
+        profile = await self.get_financial_profile(user_id)
+        return {
+            "monthly_income": profile.monthly_income if profile else 0.0,
+            "income_streams": [],
+            "frequency": "monthly",
+        }
+
+    async def get_expense_data(self, user_id: str) -> Dict[str, Any]:
+        """Get user's expense data."""
+        return {
+            "monthly_expenses": 0.0,
+            "categories": {},
+            "transactions": [],
+        }
+
+_memory_singleton: Any = None
+
+
+def get_memory_singleton(database_url: Optional[str] = None) -> "MemoryStore":
+    """Get the process-wide MemoryStore singleton.
+
+    Must be initialized (``await initialize()``) once at application
+    startup before use.
+    """
+    global _memory_singleton
+    if _memory_singleton is None:
+        from miriam_agent.config.settings import get_settings
+        url = database_url or get_settings().DATABASE_URL
+        _memory_singleton = MemoryStore(url)
+    return _memory_singleton
