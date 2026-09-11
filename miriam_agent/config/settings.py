@@ -31,6 +31,29 @@ class Settings(BaseSettings):
     OPENAI_MAX_TOKENS: int = Field(default=4096)
     ANTHROPIC_API_KEY: str = Field(default="")
 
+    # Concentrate AI (primary LLM gateway). When CONCENTRATE_API_KEY is set,
+    # get_llm_provider() returns the Concentrate provider and OpenAI is used
+    # only as a fallback. Model routing (provider sort + model fallbacks) and
+    # prompt caching are handled natively by the Concentrate Responses API.
+    CONCENTRATE_API_KEY: str = Field(default="")
+    CONCENTRATE_BASE_URL: str = Field(default="https://api.concentrate.ai/v1")
+    CONCENTRATE_MODEL: str = Field(default="gpt-5.6-terra")
+    CONCENTRATE_TEMPERATURE: float = Field(default=0.7)
+    CONCENTRATE_MAX_TOKENS: int = Field(default=4096)
+    CONCENTRATE_TIMEOUT: float = Field(default=60.0)
+    CONCENTRATE_MAX_RETRIES: int = Field(default=3)
+    # How Concentrate sorts the provider pool: "performance" (default),
+    # "cost", "latency", or a live metric (e.g. "p50_latency").
+    CONCENTRATE_ROUTING_SORT: str = Field(default="performance")
+    # Comma-separated fallback model slugs tried after the primary model's
+    # providers are exhausted (routing.model.fallbacks). "auto" is allowed.
+    CONCENTRATE_FALLBACK_MODELS: str = Field(
+        default="claude-sonnet-5,gemini-3.6-flash,auto"
+    )
+    # Prompt caching: writes an explicit cache breakpoint after the system
+    # message so stable conversational prefixes are reused across turns.
+    CONCENTRATE_ENABLE_CACHING: bool = Field(default=True)
+
     # Security
     ENCRYPTION_KEY: str = Field(default="")
     JWT_SECRET: str = Field(default="change-me-in-production")

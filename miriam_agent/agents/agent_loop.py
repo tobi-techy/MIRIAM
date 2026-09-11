@@ -99,10 +99,14 @@ class Agent:
             financial_plan=financial_plan,
         )
 
-        tool_results: list[dict[str, Any]] = []
         tool_calls_made: list[dict[str, Any]] = []
         proposed: list[ProposedAction] = []
         confirmed_executions: list[dict[str, Any]] = []
+        # Accumulated assistant-tool_calls + tool-result messages sent to the
+        # provider so multi-round tool use is a clean call/result pairing
+        # (OpenAI and Concentrate both reject tool results without the
+        # preceding assistant tool_calls message).
+        llm_extra: list[ChatMessage] = []
         self._approved_actions = list(approved_actions or [])
         approved_lookup = {
             self._signature(a.get("tool"), a.get("arguments", {})): True
@@ -132,16 +136,7 @@ class Agent:
                 )
 
         for _round in range(MAX_TOOL_ROUNDS):
-            llm_messages = list(messages)
-            for tr in tool_results:
-                llm_messages.append(
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=tr.get("id") or tr.get("tool_name", "tool"),
-                        name=tr.get("tool_name", "tool"),
-                        content=json.dumps(tr.get("result", {}), default=str)[:2000],
-                    )
-                )
+            llm_messages = list(messages) + llm_extra
 
             schemas = self.registry.llm_schemas()
             response = await self.provider.complete(
@@ -161,6 +156,17 @@ class Agent:
                     requires_confirmation=bool(proposed),
                 )
 
+            # Record the assistant's tool_calls message so the next round is a
+            # clean call -> result pairing (OpenAI and Concentrate both reject
+            # tool results without the preceding assistant tool_calls message).
+            llm_extra.append(
+                ChatMessage(
+                    role="assistant",
+                    content=response.content or "",
+                    tool_calls=response.tool_calls,
+                )
+            )
+
             # Split tool calls into auto vs. staged.
             stage_next = False
             for call in response.tool_calls:
@@ -176,8 +182,10 @@ class Agent:
 
                 tool = self.registry.get(name)
                 if tool is None:
-                    tool_results.append(
-                        {"tool_name": name, "result": {"error": f"unknown tool {name}"}}
+                    llm_extra.append(
+                        self._tool_message(
+                            call.get("id"), name, {"error": f"unknown tool {name}"}
+                        )
                     )
                     tool_calls_made.append({"name": name, "arguments": args})
                     continue
@@ -190,8 +198,8 @@ class Agent:
                         # result so the LLM can narrate it without running the
                         # money action a second time.
                         result = executed_results[signature]
-                        tool_results.append(
-                            {"id": call.get("id"), "tool_name": name, "result": result}
+                        llm_extra.append(
+                            self._tool_message(call.get("id"), name, result)
                         )
                     elif signature in approved_lookup or self._matches_pending(
                         name, args
@@ -200,8 +208,8 @@ class Agent:
                             name, args, ctx, user_id, user_context
                         )
                         executed_results[signature] = result
-                        tool_results.append(
-                            {"id": call.get("id"), "tool_name": name, "result": result}
+                        llm_extra.append(
+                            self._tool_message(call.get("id"), name, result)
                         )
                         tool_calls_made.append({"name": name, "arguments": args})
                     else:
@@ -221,16 +229,12 @@ class Agent:
                     result = await self._safe_execute(
                         name, args, ctx, user_id, user_context
                     )
-                    tool_results.append(
-                        {"id": call.get("id"), "tool_name": name, "result": result}
+                    llm_extra.append(
+                        self._tool_message(call.get("id"), name, result)
                     )
                 except Exception as e:
-                    tool_results.append(
-                        {
-                            "id": call.get("id"),
-                            "tool_name": name,
-                            "result": {"error": str(e)},
-                        }
+                    llm_extra.append(
+                        self._tool_message(call.get("id"), name, {"error": str(e)})
                     )
 
             # If a money action is staged, stop the loop and ask user to confirm.
@@ -280,19 +284,10 @@ class Agent:
         )
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
-        tool_results: list[dict[str, Any]] = []
+        llm_extra: list[ChatMessage] = []
 
         for _round in range(MAX_TOOL_ROUNDS):
-            llm_messages = list(messages)
-            for tr in tool_results:
-                llm_messages.append(
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=tr.get("id") or tr.get("tool_name", "tool"),
-                        name=tr.get("tool_name", "tool"),
-                        content=json.dumps(tr.get("result", {}), default=str)[:2000],
-                    )
-                )
+            llm_messages = list(messages) + llm_extra
 
             collected: list[str] = []
             stream_tool_calls: list[dict[str, Any]] = []
@@ -314,6 +309,16 @@ class Agent:
                 yield {"type": "done", "content": "".join(collected)}
                 return
 
+            # Record the assistant's tool_calls so the next round is a clean
+            # call -> result pairing (required by OpenAI and Concentrate).
+            llm_extra.append(
+                ChatMessage(
+                    role="assistant",
+                    content="".join(collected),
+                    tool_calls=stream_tool_calls,
+                )
+            )
+
             stage_next = False
             for call in stream_tool_calls:
                 fn = call.get("function", {})
@@ -328,6 +333,11 @@ class Agent:
                 tool = self.registry.get(name)
                 if tool is None:
                     # pass through raw text so model isn't stuck
+                    llm_extra.append(
+                        self._tool_message(
+                            call.get("id"), name, {"error": f"unknown tool {name}"}
+                        )
+                    )
                     yield {
                         "type": "tool_result",
                         "tool": name,
@@ -347,8 +357,8 @@ class Agent:
                     continue
                 try:
                     result = await self._safe_execute(name, args, ctx, user_id, None)
-                    tool_results.append(
-                        {"id": call.get("id"), "tool_name": name, "result": result}
+                    llm_extra.append(
+                        self._tool_message(call.get("id"), name, result)
                     )
                     yield {
                         "type": "tool_result",
@@ -357,6 +367,9 @@ class Agent:
                         "result": result,
                     }
                 except Exception as e:
+                    llm_extra.append(
+                        self._tool_message(call.get("id"), name, {"error": str(e)})
+                    )
                     yield {
                         "type": "tool_result",
                         "tool": name,
@@ -472,6 +485,18 @@ class Agent:
             self._signature(a.get("tool"), a.get("arguments", {}))
             for a in (self._approved_actions or [])
         }
+
+    @staticmethod
+    def _tool_message(
+        call_id: str | None, tool_name: str, result: dict[str, Any]
+    ) -> ChatMessage:
+        """Build a tool-result ChatMessage (content truncated for context budget)."""
+        return ChatMessage(
+            role="tool",
+            tool_call_id=call_id or tool_name or "tool",
+            name=tool_name or "tool",
+            content=json.dumps(result, default=str)[:2000],
+        )
 
     def _summarize_action(self, tool: Tool, args: dict[str, Any]) -> str:
         """Human-readable summary of a proposed money action."""

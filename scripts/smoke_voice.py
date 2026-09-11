@@ -5,7 +5,11 @@ registry + real LLM provider) so the personality can be judged against
 the new prompt without standing up the full chat API.
 
 Usage:
-    OPENAI_API_KEY=... python scripts/smoke_voice.py
+    CONCENTRATE_API_KEY=... python scripts/smoke_voice.py   # preferred
+    OPENAI_API_KEY=... python scripts/smoke_voice.py        # fallback
+
+The provider gateway is picked the same way as production: Concentrate
+when CONCENTRATE_API_KEY is set, otherwise OpenAI.
 
 Scenarios intentionally cover the personality beats distilled from the
 Ramit Sethi study: connection before numbers, confidence through
@@ -75,8 +79,8 @@ async def main() -> int:
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.tools.definitions import registry  # ensures tools registered
 
-    provider_class = _load_provider()
-    agent = Agent(registry=registry, provider=provider_class())
+    provider = _load_smoke_provider()
+    agent = Agent(registry=registry, provider=provider)
 
     history: list[dict[str, str]] = []
     print("\n" + "=" * 72)
@@ -102,15 +106,29 @@ async def main() -> int:
     return 0
 
 
-def _load_provider():
-    """Return a real provider class only if a key is available."""
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        print("OPENAI_API_KEY is not set. Configure it in .env first.")
-        sys.exit(1)
-    from miriam_agent.agents.llm import OpenAIProvider
+def _load_smoke_provider():
+    """Return a concrete provider instance for the smoke harness.
 
-    return OpenAIProvider
+    The harness needs a fresh provider instance (the process-wide
+    singleton is not resettable), so read the same config directly:
+    Concentrate when CONCENTRATE_API_KEY is set, otherwise OpenAI.
+    """
+    from miriam_agent.config.settings import get_settings
+
+    settings = get_settings()
+    if settings.CONCENTRATE_API_KEY:
+        from miriam_agent.agents.concentrate import ConcentrateProvider
+
+        return ConcentrateProvider()
+    if settings.OPENAI_API_KEY:
+        from miriam_agent.agents.llm import OpenAIProvider
+
+        return OpenAIProvider()
+    print(
+        "No LLM key configured. Set CONCENTRATE_API_KEY or OPENAI_API_KEY in .env"
+        " first."
+    )
+    sys.exit(1)
 
 
 if __name__ == "__main__":

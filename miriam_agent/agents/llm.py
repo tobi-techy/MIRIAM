@@ -333,8 +333,19 @@ _provider: LLMProvider | None = None
 
 
 def get_llm_provider() -> LLMProvider:
-    """Get the process-wide LLM provider singleton."""
+    """Get the process-wide LLM provider singleton.
+
+    Prefers the Concentrate gateway when CONCENTRATE_API_KEY is configured
+    (model routing, fallbacks, streaming, and prompt caching are handled by
+    Concentrate); falls back to OpenAI otherwise.
+    """
     global _provider
     if _provider is None:
-        _provider = OpenAIProvider()
+        settings = get_settings()
+        if settings.CONCENTRATE_API_KEY:
+            from miriam_agent.agents.concentrate import ConcentrateProvider
+
+            _provider = ConcentrateProvider()
+        else:
+            _provider = OpenAIProvider()
     return _provider

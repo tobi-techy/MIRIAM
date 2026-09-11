@@ -303,6 +303,273 @@ def test_security_encrypt_decrypt():
 
 
 # -----------------------------------------------------------------------
+# Concentrate provider tests
+# -----------------------------------------------------------------------
+
+
+def test_concentrate_input_serialization_with_tool_pairing():
+    from miriam_agent.agents.concentrate import to_input_items
+    from miriam_agent.agents.llm import ChatMessage
+
+    items = to_input_items(
+        [
+            ChatMessage(role="system", content="sys"),
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_balance", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role="tool",
+                tool_call_id="call_1",
+                name="get_balance",
+                content='{"total": 2500}',
+            ),
+        ]
+    )
+    assert items[0] == {"role": "system", "content": "sys"}
+    assert items[1] == {"role": "user", "content": "hello"}
+    assert items[2] == {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "get_balance",
+        "arguments": "{}",
+    }
+    assert items[3] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"total": 2500}',
+    }
+
+
+def test_concentrate_tool_flattening():
+    from miriam_agent.agents.concentrate import convert_tools
+
+    out = convert_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_balance",
+                    "description": "Check balance",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+    assert out == [
+        {
+            "type": "function",
+            "name": "get_balance",
+            "description": "Check balance",
+            "parameters": {"type": "object", "properties": {}},
+            "strict": False,
+        }
+    ]
+    assert convert_tools(None) == []
+
+
+def test_concentrate_parse_response_output():
+    from miriam_agent.agents.concentrate import parse_response_output
+
+    content, calls = parse_response_output(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Here it is: "}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_9",
+                    "name": "get_balance",
+                    "arguments": "{}",
+                },
+            ],
+        }
+    )
+    assert content == "Here it is: "
+    assert calls[0]["id"] == "call_9"
+    assert calls[0]["function"]["name"] == "get_balance"
+
+
+def test_concentrate_parse_usage_and_stream_event_shapes():
+    from miriam_agent.agents.concentrate import parse_stream_event, parse_usage
+
+    usage = parse_usage({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (
+        10,
+        5,
+        15,
+    )
+    # Doc shape 1: data.type + data.delta
+    ev = parse_stream_event({"type": "response.output_text.delta", "delta": "Hello"})
+    assert ev["type"] == "response.output_text.delta"
+    assert ev["delta"] == "Hello"
+    # Doc shape 2: data.event + data.data.arguments
+    ev = parse_stream_event(
+        {"event": "response.function_call_arguments.done", "data": {"arguments": "{}"}}
+    )
+    assert ev["type"] == "response.function_call_arguments.done"
+    assert ev["arguments"] == "{}"
+
+
+def test_concentrate_complete_roundtrip():
+    import httpx
+
+    from miriam_agent.agents.concentrate import ConcentrateProvider
+    from miriam_agent.agents.llm import ChatMessage
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-5.6-terra"
+        assert body["input"][0]["role"] == "user"
+        assert body["input"][0]["content"] == "hi"
+        assert "routing" in body
+        assert body["tools"][0]["strict"] is False
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_1",
+                "status": "completed",
+                "model": "openai/gpt-5.6-terra",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Hello!"}],
+                    }
+                ],
+                "usage": {"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = ConcentrateProvider(api_key="sk-cn-test", http_client=client)
+    result = asyncio.get_event_loop().run_until_complete(
+        provider.complete(
+            [ChatMessage(role="user", content="hi")],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_balance",
+                        "description": "balance",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+    )
+    assert result.content == "Hello!"
+    assert result.usage["prompt_tokens"] == 7
+    assert result.usage["cached_tokens"] == 0
+    asyncio.get_event_loop().run_until_complete(provider.aclose())
+
+
+def test_concentrate_stream_roundtrip():
+    import httpx
+
+    from miriam_agent.agents.concentrate import ConcentrateProvider
+    from miriam_agent.agents.llm import ChatMessage
+
+    sse = "\n".join(
+        [
+            'event: response.output_text.delta',
+            'data: {"type": "response.output_text.delta", "delta": "Sure:"}',
+            "",
+            'event: response.function_call_arguments.delta',
+            'data: {"type": "response.function_call_arguments.delta",'
+            ' "call_id": "call_1", "delta": "{}"}',
+            "",
+            'event: response.function_call_arguments.done',
+            'data: {"type": "response.function_call_arguments.done",'
+            ' "call_id": "call_1", "name": "get_balance", "arguments": "{}"}',
+            "",
+            'event: response.completed',
+            'data: {"type": "response.completed", "response": {"usage":'
+            ' {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}}}',
+            "",
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=sse.encode())
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = ConcentrateProvider(api_key="sk-cn-test", http_client=client)
+
+    async def _():
+        events = []
+        async for ev in provider.stream([ChatMessage(role="user", content="hi")]):
+            events.append(ev)
+        return events
+
+    events = asyncio.get_event_loop().run_until_complete(_())
+    assert events[0] == {"type": "token", "content": "Sure:"}
+    tc = [e for e in events if e["type"] == "tool_call"][0]
+    assert tc["tool_call"]["function"]["name"] == "get_balance"
+    assert events[-1]["type"] == "done"
+    asyncio.get_event_loop().run_until_complete(provider.aclose())
+
+
+def test_concentrate_agent_loop_multi_round_pairing():
+    """The agent loop must re-emit assistant tool_calls before the results."""
+    from miriam_agent.agents.agent_loop import Agent
+    from miriam_agent.agents.llm import ChatMessage, LLMResponse
+    from miriam_agent.tools import build_tool_registry
+
+    sent_message_lists: list[list[ChatMessage]] = []
+
+    class RecordingProvider(MockProvider):
+        async def complete(
+            self, messages, tools=None, temperature=None, max_tokens=None
+        ):
+            sent_message_lists.append(list(messages))
+            return self._next()
+
+    reg = build_tool_registry()
+    provider = RecordingProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {"name": "get_balance", "arguments": "{}"},
+                    }
+                ],
+            ),
+            LLMResponse(content="Your balance is $2,500.", model="mock"),
+        ]
+    )
+    agent = Agent(registry=reg, provider=provider)
+
+    asyncio.get_event_loop().run_until_complete(
+        agent.run(user_id="u1", token="fake", message="what's my balance?")
+    )
+    assert len(sent_message_lists) == 2
+    round2 = sent_message_lists[1]
+    # assistant tool_calls message must precede the tool result
+    assert round2[-2].role == "assistant"
+    assert round2[-2].tool_calls
+    assert round2[-1].role == "tool"
+    assert round2[-1].tool_call_id == "tc1"
+
+
+# -----------------------------------------------------------------------
 # FastAPI / API smoke tests
 # -----------------------------------------------------------------------
 
