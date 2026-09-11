@@ -1,8 +1,6 @@
 """Configuration settings for Miriam Financial Agent."""
 
-import os
 from functools import lru_cache
-from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -68,8 +66,8 @@ class Settings(BaseSettings):
 
     # Observability
     LOG_LEVEL: str = Field(default="INFO")
-    OTEL_ENDPOINT: Optional[str] = Field(default=None)
-    SENTRY_DSN: Optional[str] = Field(default=None)
+    OTEL_ENDPOINT: str | None = Field(default=None)
+    SENTRY_DSN: str | None = Field(default=None)
 
     # Voice
     ELEVENLABS_API_KEY: str = Field(default="")

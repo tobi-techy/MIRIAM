@@ -7,17 +7,14 @@ without network calls or an API key.
 
 import asyncio
 import json
-import time
 
 import httpx
-import pytest
 
+from miriam_agent.conversational.supermemory_memory import SupermemoryMemory
 from miriam_agent.integrations.supermemory_client import (
     SupermemoryClient,
     container_tag_for,
 )
-from miriam_agent.conversational.supermemory_memory import SupermemoryMemory
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -83,8 +80,12 @@ class TestContainerTagFor:
 
 class TestClientSearch:
     def _make_client(self, handler):
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         return client
 
     def test_search_returns_results(self):
@@ -99,8 +100,18 @@ class TestClientSearch:
                 200,
                 {
                     "results": [
-                        {"id": "mem_1", "memory": "User wants to retire by 50", "similarity": 0.9, "metadata": {}},
-                        {"id": "mem_2", "memory": "Maximizes Roth IRA annually", "similarity": 0.85, "metadata": {}},
+                        {
+                            "id": "mem_1",
+                            "memory": "User wants to retire by 50",
+                            "similarity": 0.9,
+                            "metadata": {},
+                        },
+                        {
+                            "id": "mem_2",
+                            "memory": "Maximizes Roth IRA annually",
+                            "similarity": 0.85,
+                            "metadata": {},
+                        },
                     ],
                     "total": 2,
                     "timing": 120,
@@ -152,8 +163,12 @@ class TestClientSearch:
 
 class TestClientProfile:
     def _make_client(self, handler):
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         return client
 
     def test_profile_returns_static_and_dynamic(self):
@@ -202,8 +217,12 @@ class TestClientProfile:
 
 class TestClientIngestConversation:
     def _make_client(self, handler):
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         return client
 
     def test_ingest_posts_correct_payload(self):
@@ -217,7 +236,9 @@ class TestClientIngestConversation:
             assert payload["messages"][0]["role"] == "user"
             assert payload["messages"][1]["role"] == "assistant"
             assert payload["dreaming"] == "dynamic"
-            return _json_response(200, {"id": "doc_1", "conversationId": "conv_abc", "status": "queued"})
+            return _json_response(
+                200, {"id": "doc_1", "conversationId": "conv_abc", "status": "queued"}
+            )
 
         client = self._make_client(handler)
 
@@ -280,8 +301,12 @@ class TestClientIngestConversation:
 
 class TestClientMemoryOps:
     def _make_client(self, handler):
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         return client
 
     def test_create_memories_posts_correctly(self):
@@ -312,7 +337,9 @@ class TestClientMemoryOps:
         client = self._make_client(handler)
 
         async def run():
-            return await client.forget_memory("user_1", memory_id="mem_x", reason="outdated")
+            return await client.forget_memory(
+                "user_1", memory_id="mem_x", reason="outdated"
+            )
 
         result = asyncio.get_event_loop().run_until_complete(run())
         assert result["forgotten"] is True
@@ -331,7 +358,9 @@ class TestClientFailOpen:
             results = await asyncio.gather(
                 client.search("u", "q"),
                 client.profile("u"),
-                client.ingest_conversation("u", "c", [{"role": "user", "content": "hi"}]),
+                client.ingest_conversation(
+                    "u", "c", [{"role": "user", "content": "hi"}]
+                ),
                 client.create_memories("u", [{"content": "x"}]),
                 client.update_memory("u", "new", memory_id="m"),
                 client.forget_memory("u", memory_id="m"),
@@ -344,7 +373,12 @@ class TestClientFailOpen:
         results = asyncio.get_event_loop().run_until_complete(run())
         # All calls return None or empty; no exceptions.
         for r in results:
-            assert r is None or r == {} or r.get("results", "MISSING") == [] or r.get("profile") is not None
+            assert (
+                r is None
+                or r == {}
+                or r.get("results", "MISSING") == []
+                or r.get("profile") is not None
+            )
 
     def test_disabled_client_enabled_flag_is_false(self):
         client = SupermemoryClient(api_key="")
@@ -366,10 +400,16 @@ class TestClientRetry:
             call_count += 1
             if call_count == 1:
                 return _json_response(500, {"error": "server overloaded"})
-            return _json_response(200, {"results": [{"id": "mem_1", "memory": "retried ok"}], "total": 1})
+            return _json_response(
+                200, {"results": [{"id": "mem_1", "memory": "retried ok"}], "total": 1}
+            )
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2)
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
 
         async def run():
             return await client.search("u", "q", limit=1)
@@ -388,8 +428,12 @@ class TestClientRetry:
                 return _json_response(429, {"error": "rate limited"})
             return _json_response(200, {"results": [], "total": 0})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2)
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
 
         async def run():
             return await client.search("u", "q")
@@ -406,8 +450,12 @@ class TestClientRetry:
             call_count += 1
             return _json_response(401, {"error": "unauthorized"})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2)
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", max_retries=2
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
 
         async def run():
             return await client.search("u", "q")
@@ -425,7 +473,6 @@ class TestClientRetry:
 class TestBuildMemoryFacts:
     def _make_service(self, profile_payload, search_payload):
         async def handler(request: httpx.Request) -> httpx.Response:
-            body = json.loads(request.content) if request.content else {}
             path = str(request.url)
             # profile endpoint
             if path.endswith("/v4/profile"):
@@ -435,8 +482,12 @@ class TestBuildMemoryFacts:
                 return _json_response(200, search_payload)
             return _json_response(404, {})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         return SupermemoryMemory(client)
 
     def test_build_facts_combines_profile_and_search(self):
@@ -452,8 +503,18 @@ class TestBuildMemoryFacts:
             },
             search_payload={
                 "results": [
-                    {"id": "m1", "memory": "Maximizes 401k every year", "similarity": 0.92, "metadata": {}},
-                    {"id": "m2", "memory": "Prefers US equities over international", "similarity": 0.88, "metadata": {"source": "preference"}},
+                    {
+                        "id": "m1",
+                        "memory": "Maximizes 401k every year",
+                        "similarity": 0.92,
+                        "metadata": {},
+                    },
+                    {
+                        "id": "m2",
+                        "memory": "Prefers US equities over international",
+                        "similarity": 0.88,
+                        "metadata": {"source": "preference"},
+                    },
                 ],
                 "total": 2,
                 "timing": 80,
@@ -461,7 +522,9 @@ class TestBuildMemoryFacts:
         )
 
         async def run():
-            return await sm.build_memory_facts("user_123", query="what does the user care about", limit=10)
+            return await sm.build_memory_facts(
+                "user_123", query="what does the user care about", limit=10
+            )
 
         facts = asyncio.get_event_loop().run_until_complete(run())
         # Check profile items are included
@@ -477,12 +540,21 @@ class TestBuildMemoryFacts:
         """Same content appearing in profile and search only shows once."""
         sm = self._make_service(
             profile_payload={
-                "profile": {"static": ["Prefers US equities"], "dynamic": [], "buckets": {}},
+                "profile": {
+                    "static": ["Prefers US equities"],
+                    "dynamic": [],
+                    "buckets": {},
+                },
                 "searchResults": None,
             },
             search_payload={
                 "results": [
-                    {"id": "m1", "memory": "Prefers US equities", "similarity": 0.95, "metadata": {}},
+                    {
+                        "id": "m1",
+                        "memory": "Prefers US equities",
+                        "similarity": 0.95,
+                        "metadata": {},
+                    },
                 ],
                 "total": 1,
             },
@@ -541,8 +613,12 @@ class TestIngestTurn:
             assert payload["containerTag"] == "user_abc"
             return _json_response(200, {"id": "d1", "status": "queued"})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         sm = SupermemoryMemory(client)
 
         async def run():
@@ -586,15 +662,29 @@ class TestMemorySearch:
                 200,
                 {
                     "results": [
-                        {"id": "m1", "memory": "Likes index funds", "similarity": 0.91, "metadata": {"source": "preference"}},
-                        {"id": "m2", "memory": "Risk tolerance: moderate", "similarity": 0.82, "metadata": {}},
+                        {
+                            "id": "m1",
+                            "memory": "Likes index funds",
+                            "similarity": 0.91,
+                            "metadata": {"source": "preference"},
+                        },
+                        {
+                            "id": "m2",
+                            "memory": "Risk tolerance: moderate",
+                            "similarity": 0.82,
+                            "metadata": {},
+                        },
                     ],
                     "total": 2,
                 },
             )
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         sm = SupermemoryMemory(client)
 
         async def run():
@@ -627,8 +717,12 @@ class TestMemoryForget:
             assert payload["dryRun"] is True
             return _json_response(200, {"dryRun": True, "count": 2, "candidates": []})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         sm = SupermemoryMemory(client)
 
         async def run():
@@ -645,8 +739,12 @@ class TestMemoryForget:
             assert request.method == "DELETE"
             return _json_response(200, {})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai")
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai"
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
         sm = SupermemoryMemory(client)
 
         async def run():
@@ -671,8 +769,12 @@ class TestWaitUntilDone:
                 return _json_response(200, {"id": "d1", "status": "processing"})
             return _json_response(200, {"id": "d1", "status": "done"})
 
-        client = SupermemoryClient(api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", timeout=1.0)
-        client._client = httpx.AsyncClient(transport=_mock_transport(handler), base_url="https://fake.supermemory.ai")
+        client = SupermemoryClient(
+            api_key=_FAKE_KEY, base_url="https://fake.supermemory.ai", timeout=1.0
+        )
+        client._client = httpx.AsyncClient(
+            transport=_mock_transport(handler), base_url="https://fake.supermemory.ai"
+        )
 
         async def run():
             return await client.wait_until_done("d1", timeout=5.0, interval=0.01)

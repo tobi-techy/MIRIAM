@@ -1,14 +1,14 @@
 """Database connection management for Miriam Financial Agent."""
 
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from miriam_agent.config.settings import get_settings
 
-_engine: Optional[AsyncEngine] = None
-_async_session_factory: Optional[sessionmaker] = None
+_engine: AsyncEngine | None = None
+_async_session_factory: sessionmaker | None = None
 
 
 def get_engine() -> AsyncEngine:

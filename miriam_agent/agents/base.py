@@ -1,8 +1,7 @@
 import asyncio
-import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,34 +11,53 @@ from miriam_agent.safety.policy import SafetyPolicy
 
 logger = logging.getLogger(__name__)
 
+
 class AgentConfig(BaseModel):
     """Configuration for an agent."""
+
     name: str = Field(..., description="Agent name")
     model: str = Field("gpt-4", description="Model to use")
     temperature: float = Field(0.7, description="Temperature for generation")
     max_tokens: int = Field(4096, description="Maximum tokens per response")
-    system_prompt: Optional[str] = Field(None, description="System prompt")
-    tools: List[str] = Field(default_factory=list, description="Available tools")
-    memory_types: List[str] = Field(default_factory=list, description="Memory types to use")
+    system_prompt: str | None = Field(None, description="System prompt")
+    tools: list[str] = Field(default_factory=list, description="Available tools")
+    memory_types: list[str] = Field(
+        default_factory=list, description="Memory types to use"
+    )
+
+
 class AgentState(BaseModel):
     """State of an agent."""
+
     conversation_id: str
     user_id: str
-    current_topic: Optional[str] = None
-    context: Dict[str, Any] = Field(default_factory=dict)
-    last_action: Optional[str] = None
-    session_start: float = Field(default_factory=lambda: asyncio.get_event_loop().time())
+    current_topic: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+    last_action: str | None = None
+    session_start: float = Field(
+        default_factory=lambda: asyncio.get_event_loop().time()
+    )
+
+
 class ToolCall(BaseModel):
     """Represents a tool call by the agent."""
+
     name: str = Field(..., description="Tool name")
-    arguments: Dict[str, Any] = Field(..., description="Tool arguments")
-    id: Optional[str] = Field(None, description="Tool call ID")
+    arguments: dict[str, Any] = Field(..., description="Tool arguments")
+    id: str | None = Field(None, description="Tool call ID")
     type: str = Field("function", description="Tool type")
+
+
 class ToolResult(BaseModel):
     """Represents a tool result."""
+
     content: str = Field(..., description="Result content")
     tool_name: str = Field(..., description="Tool name")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
+
+
 class BaseAgent(ABC):
     """Base class for all agents."""
 
@@ -63,8 +81,8 @@ class BaseAgent(ABC):
     async def process_message(
         self,
         message: str,
-        conversation_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Process a user message."""
         try:
             if conversation_id:
@@ -106,9 +124,7 @@ class BaseAgent(ABC):
                 metadata={
                     "topic": "general",
                     "tool_calls": response_plan.get("tool_calls", []),
-                    "tool_results": [
-                        result.dict() for result in tool_results
-                    ],
+                    "tool_results": [result.dict() for result in tool_results],
                 },
             )
 
@@ -131,14 +147,14 @@ class BaseAgent(ABC):
             raise AgentError(f"Failed to process message: {str(e)}")
 
     @abstractmethod
-    async def _plan_response(self, message: str) -> Dict[str, Any]:
+    async def _plan_response(self, message: str) -> dict[str, Any]:
         """Plan how to respond to a user message."""
         pass
 
     @abstractmethod
     async def _execute_action_plan(
-        self, action_plan: Dict[str, Any]
-    ) -> List[ToolResult]:
+        self, action_plan: dict[str, Any]
+    ) -> list[ToolResult]:
         """Execute the planned actions."""
         pass
 
@@ -146,15 +162,13 @@ class BaseAgent(ABC):
     async def _generate_response(
         self,
         message: str,
-        action_plan: Dict[str, Any],
-        tool_results: List[ToolResult],
+        action_plan: dict[str, Any],
+        tool_results: list[ToolResult],
     ) -> str:
         """Generate the final response."""
         pass
 
-    async def _validate_safety(
-        self, action: Dict[str, Any]
-    ) -> bool:
+    async def _validate_safety(self, action: dict[str, Any]) -> bool:
         """Validate if an action is safe to execute."""
         try:
             # Extract action details
@@ -181,7 +195,7 @@ class BaseAgent(ABC):
         self,
         role: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ):
         """Store interaction in memory."""
         try:
@@ -200,9 +214,7 @@ class BaseAgent(ABC):
                 exc_info=True,
             )
 
-    async def get_conversation_history(
-        self, limit: int = 10
-    ) -> List[MemoryEntry]:
+    async def get_conversation_history(self, limit: int = 10) -> list[MemoryEntry]:
         """Get conversation history."""
         return await self.memory_store.get_recent_interactions(
             user_id=self.state.user_id,

@@ -46,6 +46,7 @@ dependencies = [
     "grpcio>=1.60.0",
     "structlog>=23.2.0",
     "python-dotenv>=1.0.0",
+    "tiktoken>=0.6.0",
 ]
 
 [project.optional-dependencies]

@@ -16,14 +16,14 @@ that is attached to the exact proposed action.
 
 import json
 import logging
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
-from miriam_agent.agents.base import AgentConfig, AgentState, ToolResult
+from miriam_agent.agents.base import AgentConfig
 from miriam_agent.agents.llm import ChatMessage, LLMProvider, get_llm_provider
 from miriam_agent.agents.system_prompt import build_system_prompt
-from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry
-from miriam_agent.core.exceptions import AgentError, ValidationError
+from miriam_agent.agents.tools import Tool, ToolRegistry
 from miriam_agent.integrations.go_client import GoBackendClient
 from miriam_agent.safety.policy import SafetyPolicy
 
@@ -37,7 +37,7 @@ class ProposedAction:
     """A money movement the LLM wants to perform, awaiting confirmation."""
 
     tool_name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
     display_summary: str
 
 
@@ -45,10 +45,10 @@ class ProposedAction:
 class AgentRunResult:
     response: str
     conversation_id: str
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    proposed_actions: List[ProposedAction] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    proposed_actions: list[ProposedAction] = field(default_factory=list)
     requires_confirmation: bool = False
-    cards: List[Dict[str, Any]] = field(default_factory=list)
+    cards: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Agent:
@@ -57,10 +57,10 @@ class Agent:
     def __init__(
         self,
         registry: ToolRegistry,
-        provider: Optional[LLMProvider] = None,
-        safety_policy: Optional[SafetyPolicy] = None,
-        go_client: Optional[GoBackendClient] = None,
-        config: Optional[AgentConfig] = None,
+        provider: LLMProvider | None = None,
+        safety_policy: SafetyPolicy | None = None,
+        go_client: GoBackendClient | None = None,
+        config: AgentConfig | None = None,
     ):
         self.registry = registry
         self.provider = provider or get_llm_provider()
@@ -78,11 +78,12 @@ class Agent:
         user_id: str,
         token: str,
         message: str,
-        conversation_id: Optional[str] = None,
-        history: Optional[List[Dict[str, Any]]] = None,
-        user_context: Optional[Dict[str, Any]] = None,
-        memory_facts: Optional[List[Dict[str, Any]]] = None,
-        approved_actions: Optional[List[Dict[str, Any]]] = None,
+        conversation_id: str | None = None,
+        history: list[dict[str, Any]] | None = None,
+        user_context: dict[str, Any] | None = None,
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
+        approved_actions: list[dict[str, Any]] | None = None,
     ) -> AgentRunResult:
         """Run one user turn. Returns the response plus any proposed actions."""
         conv_id = conversation_id or f"conv_{user_id}"
@@ -95,25 +96,32 @@ class Agent:
             history=history,
             user_context=user_context,
             memory_facts=memory_facts,
+            financial_plan=financial_plan,
         )
 
-        tool_results: List[Dict[str, Any]] = []
-        tool_calls_made: List[Dict[str, Any]] = []
-        proposed: List[ProposedAction] = []
-        confirmed_executions: List[Dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        tool_calls_made: list[dict[str, Any]] = []
+        proposed: list[ProposedAction] = []
+        confirmed_executions: list[dict[str, Any]] = []
+        self._approved_actions = list(approved_actions or [])
         approved_lookup = {
-            f"{a.get('tool')}:{json.dumps(a.get('arguments', {}), sort_keys=True)}": True
-            for a in approved_actions or []
+            self._signature(a.get("tool"), a.get("arguments", {})): True
+            for a in self._approved_actions
         }
 
         # If the user previously approved actions in this request, execute them.
+        # Results are cached by signature so the tool loop never re-executes
+        # an already-run money action (idempotency guard within the turn).
+        executed_results: dict[str, dict[str, Any]] = {}
         for a in approved_actions or []:
             tool_name = a.get("tool")
             args = a.get("arguments", {})
+            sig = self._signature(tool_name, args)
             try:
                 result = await self._safe_execute(
                     tool_name, args, ctx, user_id, user_context
                 )
+                executed_results[sig] = result
                 confirmed_executions.append(
                     {"tool": tool_name, "arguments": args, "result": result}
                 )
@@ -160,7 +168,9 @@ class Agent:
                 name = fn.get("name", "")
                 raw_args = fn.get("arguments", "{}")
                 try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    args = (
+                        json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    )
                 except json.JSONDecodeError:
                     args = {}
 
@@ -174,13 +184,22 @@ class Agent:
 
                 # Money movement -> stage for confirmation, never auto-run.
                 if tool.is_mutation or tool.requires_approval:
-                    signature = (
-                        f"{name}:{json.dumps(args, sort_keys=True)}"
-                    )
-                    if signature in approved_lookup or self._matches_pending(args):
+                    signature = self._signature(name, args)
+                    if signature in approved_lookup and signature in executed_results:
+                        # Already executed for an explicit approval; reuse the
+                        # result so the LLM can narrate it without running the
+                        # money action a second time.
+                        result = executed_results[signature]
+                        tool_results.append(
+                            {"id": call.get("id"), "tool_name": name, "result": result}
+                        )
+                    elif signature in approved_lookup or self._matches_pending(
+                        name, args
+                    ):
                         result = await self._safe_execute(
                             name, args, ctx, user_id, user_context
                         )
+                        executed_results[signature] = result
                         tool_results.append(
                             {"id": call.get("id"), "tool_name": name, "result": result}
                         )
@@ -207,7 +226,11 @@ class Agent:
                     )
                 except Exception as e:
                     tool_results.append(
-                        {"id": call.get("id"), "tool_name": name, "result": {"error": str(e)}}
+                        {
+                            "id": call.get("id"),
+                            "tool_name": name,
+                            "result": {"error": str(e)},
+                        }
                     )
 
             # If a money action is staged, stop the loop and ask user to confirm.
@@ -241,21 +264,23 @@ class Agent:
         user_id: str,
         token: str,
         message: str,
-        conversation_id: Optional[str] = None,
-        history: Optional[List[Dict[str, Any]]] = None,
-        user_context: Optional[Dict[str, Any]] = None,
-        memory_facts: Optional[List[Dict[str, Any]]] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+        conversation_id: str | None = None,
+        history: list[dict[str, Any]] | None = None,
+        user_context: dict[str, Any] | None = None,
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Streaming variant. Yields events: token / tool_result / done / error."""
         messages = self._build_messages(
             message=message,
             history=history,
             user_context=user_context,
             memory_facts=memory_facts,
+            financial_plan=financial_plan,
         )
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
-        tool_results: List[Dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
 
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages)
@@ -269,8 +294,8 @@ class Agent:
                     )
                 )
 
-            collected: List[str] = []
-            stream_tool_calls: List[Dict[str, Any]] = []
+            collected: list[str] = []
+            stream_tool_calls: list[dict[str, Any]] = []
             async for event in self.provider.stream(
                 messages=llm_messages,
                 tools=schemas,
@@ -295,7 +320,9 @@ class Agent:
                 name = fn.get("name", "")
                 raw_args = fn.get("arguments", "{}")
                 try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    args = (
+                        json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    )
                 except json.JSONDecodeError:
                     args = {}
                 tool = self.registry.get(name)
@@ -354,16 +381,20 @@ class Agent:
     def _build_messages(
         self,
         message: str,
-        history: Optional[List[Dict[str, Any]]],
-        user_context: Optional[Dict[str, Any]],
-        memory_facts: Optional[List[Dict[str, Any]]],
-    ) -> List[ChatMessage]:
+        history: list[dict[str, Any]] | None,
+        user_context: dict[str, Any] | None,
+        memory_facts: list[dict[str, Any]] | None,
+        financial_plan: dict[str, Any] | None = None,
+    ) -> list[ChatMessage]:
         system_prompt = build_system_prompt(
             user_context=user_context,
             memory_facts=memory_facts,
+            financial_plan=financial_plan,
         )
-        messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]
-        for h in (history or []):
+        messages: list[ChatMessage] = [
+            ChatMessage(role="system", content=system_prompt)
+        ]
+        for h in history or []:
             role = h.get("role")
             content = h.get("content", "")
             if role in ("user", "assistant") and content:
@@ -374,33 +405,86 @@ class Agent:
     async def _safe_execute(
         self,
         name: str,
-        args: Dict[str, Any],
-        ctx: Dict[str, Any],
+        args: dict[str, Any],
+        ctx: dict[str, Any],
         user_id: str,
-        user_context: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Validate safety policy, then execute via the registry."""
+        user_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Enforce RBAC, validate safety policy, then execute via the registry."""
+        from miriam_agent.auth.rbac import require_tool_access
+
+        roles = set((user_context or {}).get("roles") or ["guest"])
+        require_tool_access(roles, name)
         await self.safety_policy.validate_action(
             tool_name=name,
             arguments=args,
             user_id=user_id,
         )
-        result = await self.registry.execute(name, args, context=ctx)
+        exec_ctx = dict(ctx)
+        # Deterministic per-(user, tool, args) idempotency key so a retried
+        # money action cannot double-execute on the Go side.
+        if self.registry.get(name) is not None and (
+            self.registry.get(name).is_mutation
+            or self.registry.get(name).requires_approval
+        ):
+            exec_ctx["idempotency_key"] = self._idempotency_key(
+                str(ctx.get("user_id", "")), name, args
+            )
+        result = await self.registry.execute(name, args, context=exec_ctx)
         return result
 
-    def _matches_pending(self, args: Dict[str, Any]) -> bool:
-        """Placeholder for sticky pending-action matching in future versions."""
-        return False
+    def _idempotency_key(
+        self, user_id: str, tool_name: str, args: dict[str, Any]
+    ) -> str:
+        """Deterministic idempotency key for a mutation (user-scoped)."""
+        import hashlib
 
-    def _summarize_action(self, tool: Tool, args: Dict[str, Any]) -> str:
+        digest = hashlib.sha256(
+            f"{user_id}:{tool_name}:{json.dumps(self._normalize(args), sort_keys=True)}".encode()
+        ).hexdigest()[:32]
+        return f"miriam:{tool_name}:{digest}"
+
+    @staticmethod
+    def _normalize(value: Any) -> Any:
+        """Recursively normalize a value so int and float representations of
+        the same number (100 vs 100.0) produce identical signatures."""
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, dict):
+            return {k: Agent._normalize(v) for k, v in sorted(value.items())}
+        if isinstance(value, (list, tuple)):
+            return [Agent._normalize(v) for v in value]
+        return value
+
+    def _signature(self, tool_name: str, args: dict[str, Any]) -> str:
+        """Stable, type-tolerant signature for an action proposal."""
+        return f"{tool_name}:{json.dumps(self._normalize(args), sort_keys=True)}"
+
+    def _matches_pending(self, tool_name: str, args: dict[str, Any]) -> bool:
+        """Whether the proposed action matches an already-approved action.
+
+        Uses type-tolerant signatures so the LLM re-emitting an approved
+        action with e.g. 100.0 instead of 100 does not require a second
+        confirmation.
+        """
+        sig = self._signature(tool_name, args)
+        return sig in {
+            self._signature(a.get("tool"), a.get("arguments", {}))
+            for a in (self._approved_actions or [])
+        }
+
+    def _summarize_action(self, tool: Tool, args: dict[str, Any]) -> str:
         """Human-readable summary of a proposed money action."""
         if tool.name == "send_money":
-            return (
-                f"Send {args.get('amount')} to {args.get('to')}"
-                + (f" ({args.get('message')})" if args.get("message") else "")
+            return f"Send {args.get('amount')} to {args.get('to')}" + (
+                f" ({args.get('message')})" if args.get("message") else ""
             )
         if tool.name in ("transfer_stash_to_spending", "transfer_spending_to_stash"):
-            direction = "stash → spending" if "stash_to_spending" in tool.name else "spending → stash"
+            direction = (
+                "stash → spending"
+                if "stash_to_spending" in tool.name
+                else "spending → stash"
+            )
             return f"Move {args.get('amount')} ({direction})"
         if tool.name == "execute_investment":
             return f"{args.get('side', 'buy').upper()} {args.get('amount')} of {args.get('symbol')}"
@@ -410,9 +494,9 @@ class Agent:
         self,
         response: str,
         conv_id: str,
-        proposed: List[ProposedAction],
-        tool_calls: List[Dict[str, Any]],
-        confirmed: List[Dict[str, Any]],
+        proposed: list[ProposedAction],
+        tool_calls: list[dict[str, Any]],
+        confirmed: list[dict[str, Any]],
     ) -> AgentRunResult:
         cards = [
             {

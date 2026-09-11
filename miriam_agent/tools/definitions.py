@@ -8,7 +8,7 @@ Handlers receive their declared args plus a ``_context`` dict injected by
 the ToolRegistry containing at minimum ``user_id`` and ``token``.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from miriam_agent.agents.tools import RiskLevel, get_registry
 from miriam_agent.integrations.go_client import get_go_client
@@ -27,7 +27,8 @@ registry = get_registry()
 # Overview tools
 # ---------------------------------------------------------------------------
 
-async def _get_balance(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+
+async def _get_balance(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     client = get_go_client()
     data = await client.get_balances(ctx["token"])
     wallets = data.get("wallets") or data.get("balances") or []
@@ -47,7 +48,9 @@ registry.register(
 )
 
 
-async def _get_transactions(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _get_transactions(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
     transactions = await client.get_transactions(
         ctx["token"],
@@ -64,7 +67,10 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "limit": {**_SCHEMA_INT, "description": "Max transactions to return (default 20)"},
+            "limit": {
+                **_SCHEMA_INT,
+                "description": "Max transactions to return (default 20)",
+            },
             "offset": {**_SCHEMA_INT, "description": "Pagination offset"},
             "category": {**_SCHEMA_STRING, "description": "Filter by category"},
         },
@@ -75,7 +81,9 @@ registry.register(
 )
 
 
-async def _get_spending_summary(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _get_spending_summary(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
     period = args.get("period", "month")
     data = await client.get_spending_summary(ctx["token"], period=period)
@@ -88,7 +96,11 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "period": {"type": "string", "enum": ["week", "month", "year"], "description": "Period to summarize"}
+            "period": {
+                "type": "string",
+                "enum": ["week", "month", "year"],
+                "description": "Period to summarize",
+            }
         },
     },
     category="spending",
@@ -97,7 +109,9 @@ registry.register(
 )
 
 
-async def _analyze_portfolio(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _analyze_portfolio(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     from miriam_agent.financial.intelligence import get_financial_intelligence_singleton
 
     fi = get_financial_intelligence_singleton(get_go_client())
@@ -114,7 +128,9 @@ registry.register(
 )
 
 
-async def _get_financial_plan(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _get_financial_plan(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
     return await client.get_financial_plan(ctx["token"])
 
@@ -133,13 +149,15 @@ registry.register(
 # Money movement (staged for confirmation)
 # ---------------------------------------------------------------------------
 
-async def _send_money(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+
+async def _send_money(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     client = get_go_client()
     return await client.send_money(
         token=ctx["token"],
         recipient=args["to"],
         amount=args["amount"],
         message=args.get("message"),
+        idempotency_key=ctx.get("idempotency_key"),
     )
 
 
@@ -149,7 +167,10 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "to": {**_SCHEMA_STRING, "description": "Recipient Rail tag, email, or phone"},
+            "to": {
+                **_SCHEMA_STRING,
+                "description": "Recipient Rail tag, email, or phone",
+            },
             "amount": {**_SCHEMA_NUMBER, "description": "Amount in user's currency"},
             "message": {**_SCHEMA_STRING, "description": "Optional note"},
         },
@@ -164,9 +185,13 @@ registry.register(
 )
 
 
-async def _transfer_stash_to_spending(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _transfer_stash_to_spending(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
-    return await client.transfer_to_spending(ctx["token"], args["amount"])
+    return await client.transfer_to_spending(
+        ctx["token"], args["amount"], idempotency_key=ctx.get("idempotency_key")
+    )
 
 
 registry.register(
@@ -174,9 +199,7 @@ registry.register(
     description="Move money from the yield stash to the spend wallet. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {
-            "amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}
-        },
+        "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
         "required": ["amount"],
     },
     category="action",
@@ -188,9 +211,13 @@ registry.register(
 )
 
 
-async def _transfer_spending_to_stash(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _transfer_spending_to_stash(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
-    return await client.transfer_to_stash(ctx["token"], args["amount"])
+    return await client.transfer_to_stash(
+        ctx["token"], args["amount"], idempotency_key=ctx.get("idempotency_key")
+    )
 
 
 registry.register(
@@ -198,9 +225,7 @@ registry.register(
     description="Move money from the spend wallet to the yield stash. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {
-            "amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}
-        },
+        "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
         "required": ["amount"],
     },
     category="action",
@@ -212,13 +237,16 @@ registry.register(
 )
 
 
-async def _execute_investment(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _execute_investment(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
     client = get_go_client()
     return await client.execute_investment(
         ctx["token"],
         symbol=args["symbol"],
         amount=args["amount"],
         side=args.get("side", "buy"),
+        idempotency_key=ctx.get("idempotency_key"),
     )
 
 
@@ -228,9 +256,16 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "symbol": {**_SCHEMA_STRING, "description": "Ticker symbol (e.g. AAPL, VOO)"},
+            "symbol": {
+                **_SCHEMA_STRING,
+                "description": "Ticker symbol (e.g. AAPL, VOO)",
+            },
             "amount": {**_SCHEMA_NUMBER, "description": "Dollar amount"},
-            "side": {"type": "string", "enum": ["buy", "sell"], "description": "Trade direction"},
+            "side": {
+                "type": "string",
+                "enum": ["buy", "sell"],
+                "description": "Trade direction",
+            },
         },
         "required": ["symbol", "amount"],
     },
@@ -247,11 +282,14 @@ registry.register(
 # Advice & planning
 # ---------------------------------------------------------------------------
 
-async def _budget_advice(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+
+async def _budget_advice(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     from miriam_agent.financial.intelligence import get_financial_intelligence_singleton
 
     fi = get_financial_intelligence_singleton(get_go_client())
-    return await fi.generate_budget_plan(ctx["user_id"], goal=args.get("goal", "balance"))
+    return await fi.generate_budget_plan(
+        ctx["user_id"], goal=args.get("goal", "balance")
+    )
 
 
 registry.register(
@@ -260,7 +298,10 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "goal": {**_SCHEMA_STRING, "description": "Budgeting goal: balance, emergency_fund, retirement, goal_based, debt_paydown, zero_based"}
+            "goal": {
+                **_SCHEMA_STRING,
+                "description": "Budgeting goal: balance, emergency_fund, retirement, goal_based, debt_paydown, zero_based",
+            }
         },
     },
     category="planning",
@@ -269,7 +310,7 @@ registry.register(
 )
 
 
-async def _search_memory(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+async def _search_memory(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     from miriam_agent.conversational.supermemory_memory import SupermemoryMemory
     from miriam_agent.integrations.supermemory_client import (
         container_tag_for,
@@ -281,7 +322,9 @@ async def _search_memory(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str,
         try:
             sm = SupermemoryMemory(client)
             container_tag = container_tag_for(ctx["user_id"])
-            results = await sm.search(container_tag, args["query"], limit=args.get("limit", 5))
+            results = await sm.search(
+                container_tag, args["query"], limit=args.get("limit", 5)
+            )
             return {"results": results}
         except Exception:
             pass  # fall through to local store
@@ -289,7 +332,9 @@ async def _search_memory(args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str,
     from miriam_agent.database.memory import get_memory_singleton
 
     store = get_memory_singleton()
-    results = await store.search_memories(ctx["user_id"], args["query"], limit=args.get("limit", 5))
+    results = await store.search_memories(
+        ctx["user_id"], args["query"], limit=args.get("limit", 5)
+    )
     return {
         "results": [
             {"type": m.type, "content": m.content, "extra_data": m.extra_data}

@@ -10,7 +10,7 @@ EXECUTION MODEL, TRUTH RULES, etc.) so the Python agent keeps the same
 conversational contract with the same users.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 BASE_PROMPT = """You are Miriam, a senior financial coach and the user's money partner.
 
@@ -67,9 +67,9 @@ OUTPUT
 
 
 def build_system_prompt(
-    user_context: Optional[Dict[str, Any]] = None,
-    memory_facts: Optional[List[Dict[str, Any]]] = None,
-    financial_plan: Optional[Dict[str, Any]] = None,
+    user_context: dict[str, Any] | None = None,
+    memory_facts: list[dict[str, Any]] | None = None,
+    financial_plan: dict[str, Any] | None = None,
 ) -> str:
     """Compose the full system prompt from the base prompt plus context.
 
@@ -117,8 +117,8 @@ def build_system_prompt(
     return "\n\n".join(sections)
 
 
-def _render_context(ctx: Dict[str, Any]) -> str:
-    lines: List[str] = []
+def _render_context(ctx: dict[str, Any]) -> str:
+    lines: list[str] = []
     if ctx.get("name"):
         lines.append(f"- Name: {ctx['name']}")
     if ctx.get("currency"):
@@ -137,7 +137,7 @@ def _render_context(ctx: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_plan(plan: Dict[str, Any]) -> str:
+def _render_plan(plan: dict[str, Any]) -> str:
     import json as _json
 
     try:

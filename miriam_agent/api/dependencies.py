@@ -1,13 +1,13 @@
 """FastAPI dependency injection for Miriam Financial Agent."""
 
-import os
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from miriam_agent.auth.jwt import decode_token
-from miriam_agent.config.settings import get_settings, Settings
+from miriam_agent.config.settings import Settings, get_settings
 from miriam_agent.core.exceptions import AuthenticationError
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
@@ -19,6 +19,7 @@ _settings = get_settings()
 # Module-level singletons (initialized on first request)
 _memory_store: MemoryStore | None = None
 _financial_intelligence: FinancialIntelligence | None = None
+_audit_system: Any | None = None
 
 
 async def get_settings_dep() -> Settings:
@@ -55,6 +56,13 @@ async def get_current_user(
     return user
 
 
+async def get_bearer_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> str:
+    """Return the raw bearer token for forward calls to the Go backend."""
+    return credentials.credentials
+
+
 async def get_memory_store() -> AsyncGenerator[MemoryStore, None]:
     """Get or create the memory store singleton."""
     global _memory_store
@@ -89,3 +97,18 @@ async def get_supermemory_memory_dep() -> AsyncGenerator[Any, None]:
 
     service = SupermemoryMemory(get_supermemory_client())
     yield service
+
+
+async def get_audit_system() -> AsyncGenerator[Any, None]:
+    """Get or create the audit system singleton (fail-open)."""
+    global _audit_system
+    if _audit_system is None:
+        try:
+            from miriam_agent.safety.audit import AuditSystem
+
+            _audit_system = AuditSystem(_settings.DATABASE_URL)
+            await _audit_system.initialize()
+        except Exception:
+            # Audit must never break the chat path; keep it available but inert.
+            _audit_system = None
+    yield _audit_system

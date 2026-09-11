@@ -1,12 +1,12 @@
-import asyncio
 import logging
-from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Any
 
-from miriam_agent.database.models import User, FinancialProfile
 from miriam_agent.database.memory import MemoryStore
+from miriam_agent.database.models import FinancialProfile
 
 logger = logging.getLogger(__name__)
+
 
 class ProactiveFeatures:
     """Proactive features for Miriam Financial Agent."""
@@ -26,7 +26,7 @@ class ProactiveFeatures:
         self.trigger_history = []
         self.last_check = datetime.utcnow()
 
-    def _load_triggers(self) -> List[Dict[str, Any]]:
+    def _load_triggers(self) -> list[dict[str, Any]]:
         """Load proactive triggers from configuration."""
         return [
             {
@@ -73,7 +73,7 @@ class ProactiveFeatures:
             },
         ]
 
-    async def check_proactive_triggers(self) -> List[Dict[str, Any]]:
+    async def check_proactive_triggers(self) -> list[dict[str, Any]]:
         """Check for proactive triggers to fire."""
         try:
             triggered_actions = []
@@ -103,7 +103,7 @@ class ProactiveFeatures:
             )
             return []
 
-    async def _should_trigger_fire(self, trigger: Dict[str, Any]) -> bool:
+    async def _should_trigger_fire(self, trigger: dict[str, Any]) -> bool:
         """Check if a trigger should fire based on current conditions."""
         try:
             condition = trigger["condition"]
@@ -290,7 +290,7 @@ class ProactiveFeatures:
             )
             return False
 
-    async def _fire_trigger(self, trigger: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _fire_trigger(self, trigger: dict[str, Any]) -> dict[str, Any] | None:
         """Fire a proactive trigger and generate action."""
         try:
             # Generate trigger-specific action
@@ -336,7 +336,7 @@ class ProactiveFeatures:
             )
             return None
 
-    async def _generate_trigger_message(self, trigger: Dict[str, Any]) -> str:
+    async def _generate_trigger_message(self, trigger: dict[str, Any]) -> str:
         """Generate a user-friendly message for a triggered action."""
         try:
             messages = {
@@ -383,7 +383,9 @@ class ProactiveFeatures:
 
             # Normalize to 0-1 range
             max_volatility = len(investments) * 1.0
-            return min(volatility_score / max_volatility if max_volatility > 0 else 0.0, 1.0)
+            return min(
+                volatility_score / max_volatility if max_volatility > 0 else 0.0, 1.0
+            )
 
         except Exception as e:
             logger.error(
@@ -393,9 +395,7 @@ class ProactiveFeatures:
             )
             return 0.0
 
-    async def _has_achieved_milestone(
-        self, goal_id: str, milestone: int
-    ) -> bool:
+    async def _has_achieved_milestone(self, goal_id: str, milestone: int) -> bool:
         """Check if a goal milestone has already been achieved."""
         try:
             # Check if this milestone has been recorded before
@@ -437,7 +437,7 @@ class ProactiveFeatures:
             )
             return 0.0
 
-    async def _get_recent_spending_patterns(self) -> List[Dict[str, Any]]:
+    async def _get_recent_spending_patterns(self) -> list[dict[str, Any]]:
         """Get recent spending patterns."""
         try:
             # This would analyze recent transactions
@@ -452,7 +452,7 @@ class ProactiveFeatures:
             )
             return []
 
-    async def _get_historical_spending_patterns(self) -> List[Dict[str, Any]]:
+    async def _get_historical_spending_patterns(self) -> list[dict[str, Any]]:
         """Get historical spending patterns."""
         try:
             # This would analyze historical transaction data
@@ -468,8 +468,10 @@ class ProactiveFeatures:
             return []
 
     async def _detect_spending_anomalies(
-        self, recent_patterns: List[Dict[str, Any]], historical_patterns: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self,
+        recent_patterns: list[dict[str, Any]],
+        historical_patterns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Detect spending anomalies."""
         try:
             anomalies = []
@@ -503,16 +505,14 @@ class ProactiveFeatures:
             return []
 
     def _is_similar_spending_pattern(
-        self, pattern1: Dict[str, Any], pattern2: Dict[str, Any]
+        self, pattern1: dict[str, Any], pattern2: dict[str, Any]
     ) -> bool:
         """Check if two spending patterns are similar."""
         # Simple similarity check based on amount, category, and timing
         try:
             return (
                 pattern1.get("category") == pattern2.get("category")
-                and abs(
-                    pattern1.get("amount", 0) - pattern2.get("amount", 0)
-                )
+                and abs(pattern1.get("amount", 0) - pattern2.get("amount", 0))
                 / max(pattern2.get("amount", 1), 1)
                 < 0.2  # Within 20% of amount
             )
@@ -621,7 +621,7 @@ class ProactiveFeatures:
             )
             return 0.0
 
-    async def _get_historical_financial_scores(self) -> List[float]:
+    async def _get_historical_financial_scores(self) -> list[float]:
         """Get historical financial scores."""
         try:
             # Get historical scores from memory
@@ -637,7 +637,7 @@ class ProactiveFeatures:
             )
             return []
 
-    async def schedule_proactive_actions(self) -> List[Dict[str, Any]]:
+    async def schedule_proactive_actions(self) -> list[dict[str, Any]]:
         """Schedule proactive actions for the current day."""
         try:
             # Check for proactive triggers

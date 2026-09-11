@@ -1,13 +1,18 @@
-import asyncio
-import json
-from typing import Any, Dict, List, Optional, AsyncGenerator
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import select, and_, or_
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from miriam_agent.database.models import Base, MemoryEntry, Conversation, Message, FinancialProfile
+from miriam_agent.database.models import (
+    Base,
+    Conversation,
+    FinancialProfile,
+    MemoryEntry,
+    Message,
+)
+
 
 class MemoryStore:
     """Memory store for handling conversations, memories, and user interactions."""
@@ -48,8 +53,8 @@ class MemoryStore:
         user_id: str,
         role: str,
         content: str,
-        conversation_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        conversation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Store an interaction (user message or assistant response)."""
         async with self.async_session() as session:
@@ -108,7 +113,7 @@ class MemoryStore:
 
     async def get_conversation_history(
         self, conversation_id: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get conversation history."""
         async with self.async_session() as session:
             try:
@@ -140,7 +145,7 @@ class MemoryStore:
 
     async def get_recent_interactions(
         self, user_id: str, limit: int = 10
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Get recent interactions for a user."""
         async with self.async_session() as session:
             try:
@@ -163,7 +168,7 @@ class MemoryStore:
         user_id: str,
         memory_type: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Store a memory entry."""
         async with self.async_session() as session:
@@ -186,10 +191,10 @@ class MemoryStore:
     async def retrieve_memory(
         self,
         user_id: str,
-        memory_type: Optional[str] = None,
+        memory_type: str | None = None,
         limit: int = 10,
-        filter_metadata: Optional[Dict[str, Any]] = None,
-    ) -> List[MemoryEntry]:
+        filter_metadata: dict[str, Any] | None = None,
+    ) -> list[MemoryEntry]:
         """Retrieve memories for a user."""
         async with self.async_session() as session:
             try:
@@ -216,7 +221,7 @@ class MemoryStore:
                 raise e
 
     async def update_memory(
-        self, memory_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
+        self, memory_id: str, content: str, metadata: dict[str, Any] | None = None
     ) -> bool:
         """Update a memory entry."""
         async with self.async_session() as session:
@@ -254,7 +259,7 @@ class MemoryStore:
 
     async def search_memories(
         self, user_id: str, query: str, limit: int = 5
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Search for memories based on query text."""
         async with self.async_session() as session:
             try:
@@ -282,7 +287,7 @@ class MemoryStore:
 
     async def get_user_financial_context(
         self, user_id: str, limit: int = 10
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Get user's financial context from memories."""
         return await self.retrieve_memory(
             user_id=user_id,
@@ -292,7 +297,7 @@ class MemoryStore:
 
     async def get_user_preferences(
         self, user_id: str, limit: int = 10
-    ) -> List[MemoryEntry]:
+    ) -> list[MemoryEntry]:
         """Get user's preferences from memories."""
         return await self.retrieve_memory(
             user_id=user_id,
@@ -300,9 +305,7 @@ class MemoryStore:
             limit=limit,
         )
 
-    async def get_user_goals(
-        self, user_id: str, limit: int = 10
-    ) -> List[MemoryEntry]:
+    async def get_user_goals(self, user_id: str, limit: int = 10) -> list[MemoryEntry]:
         """Get user's financial goals from memories."""
         return await self.retrieve_memory(
             user_id=user_id,
@@ -312,7 +315,7 @@ class MemoryStore:
 
     async def get_conversations(
         self, user_id: str, limit: int = 10
-    ) -> List[Conversation]:
+    ) -> list[Conversation]:
         """Get conversations for a user."""
         async with self.async_session() as session:
             try:
@@ -328,9 +331,7 @@ class MemoryStore:
             except Exception as e:
                 raise e
 
-    async def get_conversation_messages(
-        self, conversation_id: str
-    ) -> List[Message]:
+    async def get_conversation_messages(self, conversation_id: str) -> list[Message]:
         """Get all messages for a conversation."""
         async with self.async_session() as session:
             try:
@@ -345,9 +346,7 @@ class MemoryStore:
             except Exception as e:
                 raise e
 
-    async def create_conversation(
-        self, user_id: str, title: str
-    ) -> Conversation:
+    async def create_conversation(self, user_id: str, title: str) -> Conversation:
         """Create a new conversation."""
         async with self.async_session() as session:
             try:
@@ -364,9 +363,7 @@ class MemoryStore:
                 await session.rollback()
                 raise e
 
-    async def update_conversation_title(
-        self, conversation_id: str, title: str
-    ) -> bool:
+    async def update_conversation_title(self, conversation_id: str, title: str) -> bool:
         """Update conversation title."""
         async with self.async_session() as session:
             try:
@@ -400,7 +397,7 @@ class MemoryStore:
                 await session.rollback()
                 raise e
 
-    async def get_financial_profile(self, user_id: str) -> Optional[FinancialProfile]:
+    async def get_financial_profile(self, user_id: str) -> FinancialProfile | None:
         """Get user's financial profile."""
         async with self.async_session() as session:
             try:
@@ -411,9 +408,10 @@ class MemoryStore:
             except Exception as e:
                 raise e
 
-    async def get_config(self) -> Dict[str, Any]:
+    async def get_config(self) -> dict[str, Any]:
         """Get agent configuration."""
         from miriam_agent.config.settings import get_settings
+
         settings = get_settings()
         return {
             "grpc_endpoint": settings.GRPC_ENDPOINT,
@@ -423,7 +421,7 @@ class MemoryStore:
             "max_transaction_amount": settings.MAX_TRANSACTION_AMOUNT,
         }
 
-    async def get_portfolio_data(self, user_id: str) -> Dict[str, Any]:
+    async def get_portfolio_data(self, user_id: str) -> dict[str, Any]:
         """Get user's portfolio data (stocks, investments)."""
         return {
             "investments": [],
@@ -432,7 +430,7 @@ class MemoryStore:
             "allocations": {},
         }
 
-    async def get_income_data(self, user_id: str) -> Dict[str, Any]:
+    async def get_income_data(self, user_id: str) -> dict[str, Any]:
         """Get user's income data."""
         profile = await self.get_financial_profile(user_id)
         return {
@@ -441,7 +439,7 @@ class MemoryStore:
             "frequency": "monthly",
         }
 
-    async def get_expense_data(self, user_id: str) -> Dict[str, Any]:
+    async def get_expense_data(self, user_id: str) -> dict[str, Any]:
         """Get user's expense data."""
         return {
             "monthly_expenses": 0.0,
@@ -449,10 +447,11 @@ class MemoryStore:
             "transactions": [],
         }
 
+
 _memory_singleton: Any = None
 
 
-def get_memory_singleton(database_url: Optional[str] = None) -> "MemoryStore":
+def get_memory_singleton(database_url: str | None = None) -> "MemoryStore":
     """Get the process-wide MemoryStore singleton.
 
     Must be initialized (``await initialize()``) once at application
@@ -461,6 +460,7 @@ def get_memory_singleton(database_url: Optional[str] = None) -> "MemoryStore":
     global _memory_singleton
     if _memory_singleton is None:
         from miriam_agent.config.settings import get_settings
+
         url = database_url or get_settings().DATABASE_URL
         _memory_singleton = MemoryStore(url)
     return _memory_singleton

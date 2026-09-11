@@ -12,7 +12,7 @@ the agent still works — memory is an enhancement, never a hard dependency.
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from miriam_agent.config.settings import get_settings
 
@@ -26,7 +26,7 @@ _KEY_PREFIX = "miriam:working:"  # {prefix}{user_id}
 class WorkingMemory:
     """Redis-backed sliding window of recent conversation summaries."""
 
-    def __init__(self, redis_url: Optional[str] = None, ttl: int = DEFAULT_TTL_SECONDS):
+    def __init__(self, redis_url: str | None = None, ttl: int = DEFAULT_TTL_SECONDS):
         self.redis_url = redis_url or get_settings().REDIS_URL
         self.ttl = ttl
         self._redis = None
@@ -37,9 +37,7 @@ class WorkingMemory:
             import redis.asyncio as aioredis
 
             try:
-                self._redis = aioredis.from_url(
-                    self.redis_url, decode_responses=True
-                )
+                self._redis = aioredis.from_url(self.redis_url, decode_responses=True)
                 await self._redis.ping()
             except Exception as e:
                 logger.warning("Redis unavailable, working memory disabled: %s", e)
@@ -53,9 +51,7 @@ class WorkingMemory:
         client = await self._client()
         return client is not None
 
-    async def push(
-        self, user_id: str, entry: Dict[str, Any]
-    ) -> bool:
+    async def push(self, user_id: str, entry: dict[str, Any]) -> bool:
         """Add a summary entry to the user's recent working memory."""
         if not await self._available():
             return False
@@ -74,7 +70,7 @@ class WorkingMemory:
             logger.warning("Working memory push failed: %s", e)
             return False
 
-    async def recent(self, user_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+    async def recent(self, user_id: str, limit: int = 8) -> list[dict[str, Any]]:
         """Return the most recent working-memory entries (oldest first)."""
         if not await self._available():
             return []
@@ -110,7 +106,7 @@ class WorkingMemory:
         user_id: str,
         user_message: str,
         assistant_response: str,
-        topic: Optional[str] = None,
+        topic: str | None = None,
     ) -> bool:
         """Convenience wrapper: summarize a single turn into working memory."""
         summary = {
@@ -121,7 +117,7 @@ class WorkingMemory:
         return await self.push(user_id, summary)
 
 
-_working_memory: Optional[WorkingMemory] = None
+_working_memory: WorkingMemory | None = None
 
 
 def get_working_memory() -> WorkingMemory:

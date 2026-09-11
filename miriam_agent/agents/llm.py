@@ -10,32 +10,103 @@ Key production concerns handled here:
   - Structured tool calling (function calling)
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import AgentError, ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+# Max tokens for the conversation context sent to the LLM. The system
+# prompt, tool definitions, and newest turns are always preserved; the
+# oldest history is trimmed first when the budget is exceeded.
+DEFAULT_MAX_CONTEXT_TOKENS = 12000
+
+# Rough heuristic used when tiktoken is unavailable: ~4 chars per token.
+CHARS_PER_TOKEN = 4
+
+
+def count_tokens(text: str) -> int:
+    """Count tokens for a text using tiktoken when available, else heuristic."""
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def trim_messages(
+    messages: list[ChatMessage],
+    max_tokens: int | None = None,
+) -> list[ChatMessage]:
+    """Trim conversation history to fit within the context window.
+
+    The system message and the most recent message are never dropped.
+    History is trimmed oldest-first, then the system prompt is truncated
+    as a last resort.
+    """
+    if not messages:
+        return messages
+
+    budget = max_tokens or DEFAULT_MAX_CONTEXT_TOKENS
+    if sum(count_tokens(m.content or "") for m in messages) <= budget:
+        return messages
+
+    # Keep system (index 0) and latest message always.
+    system = messages[0]
+    latest = messages[-1]
+    middle = messages[1:-1]
+
+    trimmed = []
+    used = count_tokens(system.content or "") + count_tokens(latest.content or "")
+    # Trim oldest history messages first.
+    for m in middle:
+        m_tokens = count_tokens(m.content or "")
+        if used + m_tokens <= budget:
+            trimmed.append(m)
+            used += m_tokens
+
+    # If even the system prompt alone is too large, truncate it.
+    sys_tokens = count_tokens(system.content or "")
+    sys_content = system.content
+    while sys_tokens > budget and sys_content:
+        sys_content = sys_content[: int(len(sys_content) * 0.9)]
+        sys_tokens = count_tokens(sys_content)
+    if sys_content != system.content:
+        system = ChatMessage(role=system.role, content=sys_content)
+
+    result = [system] + trimmed + [latest]
+    logger.info(
+        "Trimmed context from %d messages to %d",
+        len(messages),
+        len(result),
+    )
+    return result
+
 
 @dataclass
 class ChatMessage:
     role: str  # system | user | assistant | tool
     content: str
-    tool_call_id: Optional[str] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
-    name: Optional[str] = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    name: str | None = None
 
 
 @dataclass
 class LLMResponse:
     content: str
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
     model: str = ""
-    usage: Dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int] = field(default_factory=dict)
     finish_reason: str = ""
 
 
@@ -54,10 +125,10 @@ class LLMProvider(ABC):
     @abstractmethod
     async def complete(
         self,
-        messages: List[ChatMessage],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Complete a chat conversation. May return tool calls."""
         ...
@@ -65,11 +136,11 @@ class LLMProvider(ABC):
     @abstractmethod
     async def stream(
         self,
-        messages: List[ChatMessage],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream a chat completion.
 
         Yields dicts with keys: ``{"type": "token"|"tool_call"|"done", ...}``
@@ -86,7 +157,7 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI-backed provider using the official SDK."""
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, model: str | None = None, api_key: str | None = None):
         from openai import AsyncOpenAI
 
         settings = get_settings()
@@ -105,10 +176,10 @@ class OpenAIProvider(LLMProvider):
             "gpt-4.1-mini": {"prompt": 0.0004, "completion": 0.0016},
         }
 
-    def _serialize(self, messages: List[ChatMessage]) -> List[Dict[str, Any]]:
+    def _serialize(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out = []
         for m in messages:
-            item: Dict[str, Any] = {"role": m.role, "content": m.content}
+            item: dict[str, Any] = {"role": m.role, "content": m.content}
             if m.tool_call_id:
                 item["tool_call_id"] = m.tool_call_id
             if m.name:
@@ -119,7 +190,7 @@ class OpenAIProvider(LLMProvider):
         return out
 
     @staticmethod
-    def _parse_tool_calls(raw: Any) -> List[Dict[str, Any]]:
+    def _parse_tool_calls(raw: Any) -> list[dict[str, Any]]:
         """Normalize OpenAI tool_calls into our dict shape."""
         if not raw:
             return []
@@ -142,16 +213,19 @@ class OpenAIProvider(LLMProvider):
 
     async def complete(
         self,
-        messages: List[ChatMessage],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         settings = get_settings()
-        kwargs: Dict[str, Any] = {
+        messages = trim_messages(messages)
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._serialize(messages),
-            "temperature": temperature if temperature is not None else settings.OPENAI_TEMPERATURE,
+            "temperature": (
+                temperature if temperature is not None else settings.OPENAI_TEMPERATURE
+            ),
         }
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
@@ -185,16 +259,19 @@ class OpenAIProvider(LLMProvider):
 
     async def stream(
         self,
-        messages: List[ChatMessage],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         settings = get_settings()
-        kwargs: Dict[str, Any] = {
+        messages = trim_messages(messages)
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._serialize(messages),
-            "temperature": temperature if temperature is not None else settings.OPENAI_TEMPERATURE,
+            "temperature": (
+                temperature if temperature is not None else settings.OPENAI_TEMPERATURE
+            ),
             "stream": True,
         }
         if max_tokens:
@@ -203,7 +280,7 @@ class OpenAIProvider(LLMProvider):
             kwargs["tools"] = tools
 
         stream = await self.client.chat.completions.create(**kwargs)
-        tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
+        tool_calls_buffer: dict[int, dict[str, Any]] = {}
         async for chunk in stream:
             if not chunk.choices:
                 continue
@@ -244,13 +321,15 @@ class OpenAIProvider(LLMProvider):
         yield {"type": "done"}
 
     def cost_estimate(self, usage: LLMUsage) -> float:
-        prices = self._cost_per_1k.get(self.model, {"prompt": 0.005, "completion": 0.015})
+        prices = self._cost_per_1k.get(
+            self.model, {"prompt": 0.005, "completion": 0.015}
+        )
         return (usage.prompt_tokens / 1000) * prices["prompt"] + (
             usage.completion_tokens / 1000
         ) * prices["completion"]
 
 
-_provider: Optional[LLMProvider] = None
+_provider: LLMProvider | None = None
 
 
 def get_llm_provider() -> LLMProvider:

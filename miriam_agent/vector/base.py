@@ -1,7 +1,7 @@
 """Vector store base class for Miriam Financial Agent."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class VectorStore(ABC):
@@ -12,8 +12,8 @@ class VectorStore(ABC):
         self,
         id: str,
         content: str,
-        embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None,
+        embedding: list[float],
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Store a vector embedding with its content."""
         ...
@@ -21,11 +21,11 @@ class VectorStore(ABC):
     @abstractmethod
     async def search_similar(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10,
         threshold: float = 0.7,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for similar vectors using cosine similarity."""
         ...
 
@@ -38,8 +38,8 @@ class VectorStore(ABC):
     async def update_embedding(
         self,
         id: str,
-        embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None,
+        embedding: list[float],
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Update an existing vector embedding."""
         ...

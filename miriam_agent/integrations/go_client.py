@@ -10,7 +10,7 @@ applies as-is.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -37,7 +37,7 @@ class GoBackendClient:
 
     # ---- data reads (delegate to Go, which owns the ledger) ----
 
-    async def get_balances(self, token: str) -> Dict[str, Any]:
+    async def get_balances(self, token: str) -> dict[str, Any]:
         return await self._token_get("/api/v1/balances", token)
 
     async def get_transactions(
@@ -45,8 +45,8 @@ class GoBackendClient:
         token: str,
         limit: int = 20,
         offset: int = 0,
-        category: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
         params = {"limit": limit, "offset": offset}
         if category:
             params["category"] = category
@@ -55,29 +55,29 @@ class GoBackendClient:
 
     async def get_spending_summary(
         self, token: str, period: str = "month"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self._token_get(
             "/api/v1/analytics/dashboard", token, params={"period": period}
         )
 
-    async def get_financial_plan(self, token: str) -> Dict[str, Any]:
+    async def get_financial_plan(self, token: str) -> dict[str, Any]:
         return await self._token_get("/api/v1/ai/financial-plan", token)
 
-    async def get_cash_flow_forecast(self, token: str) -> Dict[str, Any]:
+    async def get_cash_flow_forecast(self, token: str) -> dict[str, Any]:
         return await self._token_get("/api/v1/ai/cash-flow-forecast", token)
 
-    async def get_investment_positions(self, token: str) -> List[Dict[str, Any]]:
+    async def get_investment_positions(self, token: str) -> list[dict[str, Any]]:
         data = await self._token_get("/api/v1/investment/positions", token)
         return data.get("positions", data if isinstance(data, list) else [])
 
-    async def get_upcoming_bills(self, token: str) -> List[Dict[str, Any]]:
+    async def get_upcoming_bills(self, token: str) -> list[dict[str, Any]]:
         data = await self._token_get("/api/v1/financial-obligations", token)
         return data.get("obligations", data if isinstance(data, list) else [])
 
-    async def get_user_profile(self, token: str) -> Dict[str, Any]:
+    async def get_user_profile(self, token: str) -> dict[str, Any]:
         return await self._token_get("/api/v1/profile", token)
 
-    async def get_financial_health(self, token: str) -> Dict[str, Any]:
+    async def get_financial_health(self, token: str) -> dict[str, Any]:
         return await self._token_get("/api/v1/ai/financial-health", token)
 
     # ---- money movement (delegated; Go enforces limits + auth) ----
@@ -87,9 +87,9 @@ class GoBackendClient:
         token: str,
         recipient: str,
         amount: float,
-        message: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        message: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         payload = {
             "to": recipient,
             "amount": amount,
@@ -98,20 +98,40 @@ class GoBackendClient:
         }
         return await self._token_post("/api/v1/p2p/send", token, payload)
 
-    async def transfer_to_stash(self, token: str, amount: float) -> Dict[str, Any]:
-        return await self._token_post(
-            "/api/v1/ai/execute-tool", token, {"tool": "transfer_spending_to_stash", "amount": amount}
-        )
+    async def transfer_to_stash(
+        self, token: str, amount: float, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        payload = {
+            "tool": "transfer_spending_to_stash",
+            "amount": amount,
+            "idempotency_key": idempotency_key,
+        }
+        return await self._token_post("/api/v1/ai/execute-tool", token, payload)
 
-    async def transfer_to_spending(self, token: str, amount: float) -> Dict[str, Any]:
-        return await self._token_post(
-            "/api/v1/ai/execute-tool", token, {"tool": "transfer_stash_to_spending", "amount": amount}
-        )
+    async def transfer_to_spending(
+        self, token: str, amount: float, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        payload = {
+            "tool": "transfer_stash_to_spending",
+            "amount": amount,
+            "idempotency_key": idempotency_key,
+        }
+        return await self._token_post("/api/v1/ai/execute-tool", token, payload)
 
     async def execute_investment(
-        self, token: str, symbol: str, amount: float, side: str = "buy"
-    ) -> Dict[str, Any]:
-        payload = {"symbol": symbol, "amount": amount, "side": side}
+        self,
+        token: str,
+        symbol: str,
+        amount: float,
+        side: str = "buy",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "symbol": symbol,
+            "amount": amount,
+            "side": side,
+            "idempotency_key": idempotency_key,
+        }
         return await self._token_post("/api/v1/investment/orders", token, payload)
 
     # ---- internal helpers ----
@@ -120,8 +140,8 @@ class GoBackendClient:
         self,
         path: str,
         token: str,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             resp = await self._client.get(
                 path,
@@ -131,8 +151,12 @@ class GoBackendClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
-            logger.warning("Go backend %s %s -> %d", "GET", path, e.response.status_code)
-            raise IntegrationError(f"Go backend GET {path} failed: {e.response.text[:200]}")
+            logger.warning(
+                "Go backend %s %s -> %d", "GET", path, e.response.status_code
+            )
+            raise IntegrationError(
+                f"Go backend GET {path} failed: {e.response.text[:200]}"
+            )
         except httpx.HTTPError as e:
             raise IntegrationError(f"Go backend GET {path} unreachable: {e}")
 
@@ -140,8 +164,8 @@ class GoBackendClient:
         self,
         path: str,
         token: str,
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             resp = await self._client.post(
                 path,
@@ -151,12 +175,14 @@ class GoBackendClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
-            raise IntegrationError(f"Go backend POST {path} failed: {e.response.text[:200]}")
+            raise IntegrationError(
+                f"Go backend POST {path} failed: {e.response.text[:200]}"
+            )
         except httpx.HTTPError as e:
             raise IntegrationError(f"Go backend POST {path} unreachable: {e}")
 
 
-_client: Optional[GoBackendClient] = None
+_client: GoBackendClient | None = None
 
 
 def get_go_client() -> GoBackendClient:

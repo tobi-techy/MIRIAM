@@ -1,9 +1,5 @@
-import json
 import logging
-from typing import Any, Dict, List, Optional, Set
-from datetime import datetime, timedelta
-
-from miriam_agent.core.exceptions import PolicyError, SafetyError
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +15,7 @@ class SafetyPolicy:
         self.blocked_addresses = set()
         self.whitelisted_addresses = set()
 
-    def _load_money_movement_limits(self) -> Dict[str, Any]:
+    def _load_money_movement_limits(self) -> dict[str, Any]:
         """Load money movement limits from configuration."""
         return {
             "daily_limit": 10000.0,
@@ -29,7 +25,7 @@ class SafetyPolicy:
             "blocked_categories": ["scam", "fraud", "illegal"],
         }
 
-    def _load_suspicious_patterns(self) -> List[Dict[str, Any]]:
+    def _load_suspicious_patterns(self) -> list[dict[str, Any]]:
         """Load suspicious activity patterns."""
         return [
             {
@@ -58,7 +54,7 @@ class SafetyPolicy:
             },
         ]
 
-    def _load_approval_workflow(self) -> Dict[str, Any]:
+    def _load_approval_workflow(self) -> dict[str, Any]:
         """Load approval workflow configuration."""
         return {
             "required_for_high_risk": True,
@@ -71,7 +67,7 @@ class SafetyPolicy:
     async def validate_action(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
@@ -160,7 +156,7 @@ class SafetyPolicy:
     async def _check_safety_rules(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
@@ -217,7 +213,7 @@ class SafetyPolicy:
 
     async def _detect_suspicious_patterns(
         self,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
@@ -245,9 +241,9 @@ class SafetyPolicy:
 
     async def _check_pattern(
         self,
-        pattern: Dict[str, Any],
-        arguments: Dict[str, Any],
-        recent_activities: List[Dict[str, Any]],
+        pattern: dict[str, Any],
+        arguments: dict[str, Any],
+        recent_activities: list[dict[str, Any]],
     ) -> bool:
         """Check if a specific pattern is detected."""
         pattern_type = pattern["pattern"]
@@ -276,14 +272,13 @@ class SafetyPolicy:
 
     async def _check_multiple_large_transfers(
         self,
-        pattern: Dict[str, Any],
-        arguments: Dict[str, Any],
-        recent_activities: List[Dict[str, Any]],
+        pattern: dict[str, Any],
+        arguments: dict[str, Any],
+        recent_activities: list[dict[str, Any]],
     ) -> bool:
         """Check for multiple large transfers in short time."""
         try:
             # Get transfers in the timeframe
-            timeframe = pattern["timeframe"]
             threshold = pattern["threshold"]
 
             recent_transfers = [
@@ -306,9 +301,9 @@ class SafetyPolicy:
 
     async def _check_new_beneficiary_unusual_amount(
         self,
-        pattern: Dict[str, Any],
-        arguments: Dict[str, Any],
-        recent_activities: List[Dict[str, Any]],
+        pattern: dict[str, Any],
+        arguments: dict[str, Any],
+        recent_activities: list[dict[str, Any]],
     ) -> bool:
         """Check for new beneficiary with unusual amount."""
         try:
@@ -343,13 +338,12 @@ class SafetyPolicy:
 
     async def _check_immediate_large_transfer(
         self,
-        pattern: Dict[str, Any],
-        arguments: Dict[str, Any],
-        recent_activities: List[Dict[str, Any]],
+        pattern: dict[str, Any],
+        arguments: dict[str, Any],
+        recent_activities: list[dict[str, Any]],
     ) -> bool:
         """Check for immediate large transfer."""
         try:
-            timeframe = pattern["timeframe"]
             threshold = pattern["threshold"]
 
             amount = arguments.get("amount", 0)
@@ -378,13 +372,12 @@ class SafetyPolicy:
 
     async def _check_multiple_round_number_transfers(
         self,
-        pattern: Dict[str, Any],
-        arguments: Dict[str, Any],
-        recent_activities: List[Dict[str, Any]],
+        pattern: dict[str, Any],
+        arguments: dict[str, Any],
+        recent_activities: list[dict[str, Any]],
     ) -> bool:
         """Check for multiple round number transfers."""
         try:
-            timeframe = pattern["timeframe"]
             threshold = pattern["threshold"]
 
             # Count round number transfers
@@ -411,7 +404,7 @@ class SafetyPolicy:
 
     async def _check_limits(
         self,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
@@ -424,12 +417,10 @@ class SafetyPolicy:
 
             # Set limits based on risk level
             if risk_level == "high":
-                daily_limit = self.money_movement_limits["high_risk_daily_limit"]
                 transaction_limit = self.money_movement_limits[
                     "high_risk_transaction_limit"
                 ]
             else:
-                daily_limit = self.money_movement_limits["daily_limit"]
                 transaction_limit = self.money_movement_limits["transaction_limit"]
 
             # Check transaction limit
@@ -450,7 +441,7 @@ class SafetyPolicy:
             return False
 
     async def _check_blocked_categories(
-        self, arguments: Dict[str, Any]
+        self, arguments: dict[str, Any]
     ) -> bool:
         """Check if action is in blocked categories."""
         try:
@@ -476,7 +467,7 @@ class SafetyPolicy:
             return False
 
     async def _check_time_based_restrictions(
-        self, arguments: Dict[str, Any], user_id: str
+        self, arguments: dict[str, Any], user_id: str
     ) -> bool:
         """Check time-based restrictions."""
         try:
@@ -496,7 +487,7 @@ class SafetyPolicy:
     async def _assess_action_risk(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> str:
@@ -543,7 +534,7 @@ class SafetyPolicy:
     async def _requires_approval(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
         risk_level: str,
@@ -593,7 +584,7 @@ class SafetyPolicy:
     async def _is_action_blocked(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
@@ -673,7 +664,7 @@ class SafetyPolicy:
 
     async def _get_recent_activities(
         self, user_id: str, timeframe_hours: int = 24
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get user's recent activities."""
         try:
             # This would query the database for recent user activities
@@ -728,25 +719,14 @@ class SafetyPolicy:
     async def _log_approval_required(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
         risk_level: str,
     ) -> None:
         """Log approval requirement."""
         try:
-            # Create audit log for approval requirement
-            # This would require database access
-            log_entry = {
-                "user_id": user_id,
-                "action": tool_name,
-                "arguments": arguments,
-                "risk_level": risk_level,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": "approval_required",
-            }
-
-            # Log the approval requirement
+            # Audit-log the approval
             logger.info(
                 "Action requires approval logged",
                 user_id=user_id,

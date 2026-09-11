@@ -1,12 +1,12 @@
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from miriam_agent.agents.base import BaseAgent, AgentConfig
+from miriam_agent.agents.base import AgentConfig, BaseAgent
 from miriam_agent.core.exceptions import AgentError, FinancialError
 from miriam_agent.database.models import FinancialProfile
 from miriam_agent.financial.intelligence import FinancialIntelligence
 from miriam_agent.integrations.grpc_client import GrpcPaymentClient
 from miriam_agent.safety.policy import SafetyPolicy
+
 
 class FinancialAgent(BaseAgent):
     """Financial agent that handles financial conversations and actions."""
@@ -24,7 +24,7 @@ class FinancialAgent(BaseAgent):
         self.financial_intelligence = financial_intelligence
         self.payment_client = payment_client
 
-    async def _plan_response(self, message: str) -> Dict[str, Any]:
+    async def _plan_response(self, message: str) -> dict[str, Any]:
         """Plan response using financial intelligence."""
         try:
             # Analyze the message to understand intent
@@ -33,22 +33,16 @@ class FinancialAgent(BaseAgent):
             )
 
             # Determine if this requires tool use
-            tool_calls = await self._determine_tools_needed(
-                intent, message
-            )
+            tool_calls = await self._determine_tools_needed(intent, message)
 
             # Generate reasoning for the plan
-            reasoning = await self._generate_reasoning(
-                intent, tool_calls, message
-            )
+            reasoning = await self._generate_reasoning(intent, tool_calls, message)
 
             return {
                 "intent": intent,
                 "tool_calls": tool_calls,
                 "reasoning": reasoning,
-                "requires_approval": self._requires_approval(
-                    intent, tool_calls
-                ),
+                "requires_approval": self._requires_approval(intent, tool_calls),
             }
 
         except Exception as e:
@@ -60,8 +54,8 @@ class FinancialAgent(BaseAgent):
             raise AgentError(f"Failed to plan response: {str(e)}")
 
     async def _determine_tools_needed(
-        self, intent: Dict[str, Any], message: str
-    ) -> List[Dict[str, Any]]:
+        self, intent: dict[str, Any], message: str
+    ) -> list[dict[str, Any]]:
         """Determine which tools are needed to fulfill the intent."""
         tool_calls = []
 
@@ -69,66 +63,80 @@ class FinancialAgent(BaseAgent):
         intent_type = intent.get("type", "general")
 
         if intent_type == "analysis":
-            tool_calls.append({
-                "name": "analyze_portfolio",
-                "arguments": {
-                    "user_id": self.state.user_id,
-                    "period": intent.get("timeframe", "month"),
-                },
-            })
+            tool_calls.append(
+                {
+                    "name": "analyze_portfolio",
+                    "arguments": {
+                        "user_id": self.state.user_id,
+                        "period": intent.get("timeframe", "month"),
+                    },
+                }
+            )
 
         elif intent_type == "planning":
-            tool_calls.append({
-                "name": "generate_budget_plan",
-                "arguments": {
-                    "user_id": self.state.user_id,
-                    "goal": intent.get("goal", "balance"),
-                },
-            })
+            tool_calls.append(
+                {
+                    "name": "generate_budget_plan",
+                    "arguments": {
+                        "user_id": self.state.user_id,
+                        "goal": intent.get("goal", "balance"),
+                    },
+                }
+            )
 
         elif intent_type == "transaction":
-            tool_calls.append({
-                "name": "analyze_transaction",
-                "arguments": {
-                    "description": message,
-                    "amount": self._extract_amount(message),
-                },
-            })
+            tool_calls.append(
+                {
+                    "name": "analyze_transaction",
+                    "arguments": {
+                        "description": message,
+                        "amount": self._extract_amount(message),
+                    },
+                }
+            )
 
         elif intent_type == "advice":
-            tool_calls.append({
-                "name": "get_financial_advice",
-                "arguments": {
-                    "user_id": self.state.user_id,
-                    "context": intent.get("context", "general"),
-                },
-            })
+            tool_calls.append(
+                {
+                    "name": "get_financial_advice",
+                    "arguments": {
+                        "user_id": self.state.user_id,
+                        "context": intent.get("context", "general"),
+                    },
+                }
+            )
 
         return tool_calls
 
     async def _generate_reasoning(
         self,
-        intent: Dict[str, Any],
-        tool_calls: List[Dict[str, Any]],
+        intent: dict[str, Any],
+        tool_calls: list[dict[str, Any]],
         message: str,
     ) -> str:
         """Generate reasoning for the planned actions."""
         if not tool_calls:
             return f"I'll help you with: {intent.get('type', 'general')} analysis based on your financial situation."
 
-        reasoning = f"I need to analyze your request and gather relevant financial data. "
-        reasoning += f"The intent appears to be: {intent.get('description', 'general')}. "
+        reasoning = (
+            "I need to analyze your request and gather relevant financial data. "
+        )
+        reasoning += (
+            f"The intent appears to be: {intent.get('description', 'general')}. "
+        )
 
         if len(tool_calls) == 1:
             tool = tool_calls[0]
-            reasoning += f"I'll use the {tool['name']} tool to provide you with insights."
+            reasoning += (
+                f"I'll use the {tool['name']} tool to provide you with insights."
+            )
         else:
             reasoning += f"I'll use multiple tools: {', '.join([t['name'] for t in tool_calls])}."
 
         return reasoning
 
     def _requires_approval(
-        self, intent: Dict[str, Any], tool_calls: List[Dict[str, Any]]
+        self, intent: dict[str, Any], tool_calls: list[dict[str, Any]]
     ) -> bool:
         """Determine if user approval is required for the planned actions."""
         # Check if intent type requires approval
@@ -149,7 +157,7 @@ class FinancialAgent(BaseAgent):
 
         return False
 
-    def _extract_amount(self, message: str) -> Optional[float]:
+    def _extract_amount(self, message: str) -> float | None:
         """Extract amount from message if present."""
         import re
 
@@ -164,9 +172,7 @@ class FinancialAgent(BaseAgent):
 
         return None
 
-    async def _execute_action_plan(
-        self, action_plan: Dict[str, Any]
-    ) -> List[Any]:
+    async def _execute_action_plan(self, action_plan: dict[str, Any]) -> list[Any]:
         """Execute the planned actions."""
         tool_calls = action_plan.get("tool_calls", [])
         tool_results = []
@@ -229,8 +235,8 @@ class FinancialAgent(BaseAgent):
         return tool_results
 
     async def _execute_tool_safely(
-        self, tool_name: str, arguments: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         """Execute a tool safely with error handling."""
         try:
             # Route to appropriate tool execution method
@@ -282,8 +288,8 @@ class FinancialAgent(BaseAgent):
     async def _generate_response(
         self,
         message: str,
-        action_plan: Dict[str, Any],
-        tool_results: List[Dict[str, Any]],
+        action_plan: dict[str, Any],
+        tool_results: list[dict[str, Any]],
     ) -> str:
         """Generate final response based on action results."""
         tool_calls = action_plan.get("tool_calls", [])
@@ -292,9 +298,7 @@ class FinancialAgent(BaseAgent):
             return "I understand you want to discuss your finances. Could you provide more specific details about what you'd like to analyze or plan for?"
 
         # Analyze tool results
-        successful_results = [
-            r for r in tool_results if r.get("type") == "success"
-        ]
+        successful_results = [r for r in tool_results if r.get("type") == "success"]
         error_results = [r for r in tool_results if r.get("type") == "error"]
 
         response = "Based on my analysis, here are my insights:\n\n"
@@ -332,7 +336,7 @@ class FinancialAgent(BaseAgent):
 
         return response
 
-    def _format_portfolio_analysis(self, analysis: Dict[str, Any]) -> str:
+    def _format_portfolio_analysis(self, analysis: dict[str, Any]) -> str:
         """Format portfolio analysis for display."""
         response = "**Portfolio Analysis:**\n"
 
@@ -346,7 +350,7 @@ class FinancialAgent(BaseAgent):
         response += "\n"
         return response
 
-    def _format_budget_plan(self, plan: Dict[str, Any]) -> str:
+    def _format_budget_plan(self, plan: dict[str, Any]) -> str:
         """Format budget plan for display."""
         response = "**Budget Plan:**\n"
 
@@ -360,7 +364,7 @@ class FinancialAgent(BaseAgent):
         response += "\n"
         return response
 
-    def _format_transaction_analysis(self, analysis: Dict[str, Any]) -> str:
+    def _format_transaction_analysis(self, analysis: dict[str, Any]) -> str:
         """Format transaction analysis for display."""
         response = "**Transaction Analysis:**\n"
 
@@ -376,14 +380,12 @@ class FinancialAgent(BaseAgent):
         response += "\n"
         return response
 
-    def _format_financial_advice(self, advice: Dict[str, Any]) -> str:
+    def _format_financial_advice(self, advice: dict[str, Any]) -> str:
         """Format financial advice for display."""
         response = "**Financial Advice:**\n"
 
         if "recommendations" in advice:
-            for i, recommendation in enumerate(
-                advice["recommendations"], 1
-            ):
+            for i, recommendation in enumerate(advice["recommendations"], 1):
                 response += f"{i}. {recommendation}\n"
 
         if "priority" in advice:

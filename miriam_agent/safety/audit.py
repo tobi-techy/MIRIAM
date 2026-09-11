@@ -1,15 +1,15 @@
-import asyncio
-import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, or_
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from miriam_agent.database.models import Base, AuditLog, User
+from miriam_agent.database.models import AuditLog, Base
 
 logger = logging.getLogger(__name__)
+
 
 class AuditSystem:
     """Audit and compliance system for Miriam Financial Agent."""
@@ -44,9 +44,9 @@ class AuditSystem:
         user_id: str,
         action: str,
         resource: str,
-        resource_id: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        risk_level: Optional[str] = None,
+        resource_id: str | None = None,
+        details: dict[str, Any] | None = None,
+        risk_level: str | None = None,
     ) -> str:
         """Log an action for audit purposes."""
         try:
@@ -96,10 +96,10 @@ class AuditSystem:
         currency: str,
         action: str,
         status: str,
-        from_account: Optional[str] = None,
-        to_account: Optional[str] = None,
+        from_account: str | None = None,
+        to_account: str | None = None,
         requires_approval: bool = False,
-        approval_id: Optional[str] = None,
+        approval_id: str | None = None,
     ) -> str:
         """Log a money movement transaction."""
         try:
@@ -152,14 +152,18 @@ class AuditSystem:
 
     async def get_user_audit_logs(
         self, user_id: str, limit: int = 100, offset: int = 0
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get audit logs for a user."""
         try:
             async with self.async_session() as session:
                 # Query audit logs
-                query = select(AuditLog).where(AuditLog.user_id == user_id).order_by(
-                    AuditLog.created_at.desc()
-                ).limit(limit).offset(offset)
+                query = (
+                    select(AuditLog)
+                    .where(AuditLog.user_id == user_id)
+                    .order_by(AuditLog.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
 
                 logs = await session.execute(query)
 
@@ -186,15 +190,16 @@ class AuditSystem:
 
     async def get_transaction_audit_logs(
         self, transaction_id: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get audit logs for a specific transaction."""
         try:
             async with self.async_session() as session:
                 # Query audit logs for this transaction
-                query = select(AuditLog).where(
-                    AuditLog.resource_id == transaction_id
-                ).where(AuditLog.resource == "transaction").order_by(
-                    AuditLog.created_at.desc()
+                query = (
+                    select(AuditLog)
+                    .where(AuditLog.resource_id == transaction_id)
+                    .where(AuditLog.resource == "transaction")
+                    .order_by(AuditLog.created_at.desc())
                 )
 
                 logs = await session.execute(query)
@@ -254,15 +259,17 @@ class AuditSystem:
             raise
 
     async def export_audit_data(
-        self, start_date: datetime, end_date: datetime, user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, start_date: datetime, end_date: datetime, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Export audit data for compliance reporting."""
         try:
             async with self.async_session() as session:
                 # Build query
-                query = select(AuditLog).where(
-                    AuditLog.created_at >= start_date
-                ).where(AuditLog.created_at <= end_date)
+                query = (
+                    select(AuditLog)
+                    .where(AuditLog.created_at >= start_date)
+                    .where(AuditLog.created_at <= end_date)
+                )
 
                 if user_id:
                     query = query.where(AuditLog.user_id == user_id)
@@ -322,14 +329,16 @@ class AuditSystem:
 
     async def check_compliance_violations(
         self, start_date: datetime, end_date: datetime
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Check for compliance violations in audit logs."""
         try:
             async with self.async_session() as session:
                 # Get logs in date range
-                query = select(AuditLog).where(
-                    AuditLog.created_at >= start_date
-                ).where(AuditLog.created_at <= end_date)
+                query = (
+                    select(AuditLog)
+                    .where(AuditLog.created_at >= start_date)
+                    .where(AuditLog.created_at <= end_date)
+                )
 
                 logs = await session.execute(query)
 
@@ -353,7 +362,7 @@ class AuditSystem:
 
     async def _check_log_for_violations(
         self, log: AuditLog
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Check a single log for potential violations."""
         try:
             # Check if log details contain suspicious information

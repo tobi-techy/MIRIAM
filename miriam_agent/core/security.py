@@ -4,7 +4,8 @@ import hashlib
 import hmac
 import secrets
 
-from cryptography.fernet import Fernet, InvalidToken as FernetInvalidToken
+from cryptography.fernet import Fernet
+from cryptography.fernet import InvalidToken as FernetInvalidToken
 
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import SecurityError

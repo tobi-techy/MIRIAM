@@ -7,9 +7,8 @@ third-party integrations initiated from the Python side.
 
 import secrets
 import time
-from typing import Dict, Optional
 
-_STATE_TOKENS: Dict[str, float] = {}
+_STATE_TOKENS: dict[str, float] = {}
 _TTL_SECONDS = 10 * 60
 
 

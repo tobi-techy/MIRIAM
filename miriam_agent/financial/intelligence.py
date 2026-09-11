@@ -1,13 +1,9 @@
-import asyncio
-import json
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
 from miriam_agent.core.exceptions import FinancialError
-from miriam_agent.core.models import FinancialGoal, InvestmentStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +19,7 @@ class FinancialIntelligence:
 
     async def analyze_intent(
         self, message: str, financial_profile: Any
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Analyze user message to determine intent."""
         try:
             # Simple intent detection based on keywords
@@ -96,7 +92,7 @@ class FinancialIntelligence:
             )
             raise FinancialError(f"Failed to analyze intent: {str(e)}")
 
-    def _extract_timeframe(self, message: str) -> Optional[str]:
+    def _extract_timeframe(self, message: str) -> str | None:
         """Extract timeframe from message."""
         timeframes = {
             "today": "day",
@@ -115,7 +111,7 @@ class FinancialIntelligence:
 
         return None
 
-    def _extract_amount(self, message: str) -> Optional[float]:
+    def _extract_amount(self, message: str) -> float | None:
         """Extract monetary amount from message."""
         import re
 
@@ -131,7 +127,7 @@ class FinancialIntelligence:
 
         return None
 
-    def _extract_categories(self, message: str) -> List[str]:
+    def _extract_categories(self, message: str) -> list[str]:
         """Extract financial categories from message."""
         categories = {
             "food": ["food", "groceries", "dining", "restaurant", "meal"],
@@ -263,7 +259,7 @@ class FinancialIntelligence:
 
     async def analyze_portfolio(
         self, user_id: str, period: str = "month"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Analyze user's investment portfolio."""
         try:
             # Get portfolio data from memory store
@@ -308,8 +304,8 @@ class FinancialIntelligence:
             raise FinancialError(f"Failed to analyze portfolio: {str(e)}")
 
     def _calculate_portfolio_performance(
-        self, portfolio_data: Dict[str, Any], period: str
-    ) -> Dict[str, Any]:
+        self, portfolio_data: dict[str, Any], period: str
+    ) -> dict[str, Any]:
         """Calculate portfolio performance metrics."""
         try:
             # Calculate returns
@@ -358,8 +354,8 @@ class FinancialIntelligence:
             return {"error": str(e)}
 
     def _identify_risk_factors(
-        self, portfolio_data: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, portfolio_data: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Identify risk factors in the portfolio."""
         risk_factors = []
 
@@ -423,10 +419,10 @@ class FinancialIntelligence:
 
     async def _generate_portfolio_recommendations(
         self,
-        portfolio_data: Dict[str, Any],
-        performance: Dict[str, Any],
-        risk_factors: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        portfolio_data: dict[str, Any],
+        performance: dict[str, Any],
+        risk_factors: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Generate portfolio recommendations."""
         recommendations = []
 
@@ -502,7 +498,7 @@ class FinancialIntelligence:
 
         return recommendations
 
-    def _calculate_diversification_score(self, portfolio_data: Dict[str, Any]) -> float:
+    def _calculate_diversification_score(self, portfolio_data: dict[str, Any]) -> float:
         """Calculate portfolio diversification score."""
         try:
             holdings = portfolio_data.get("holdings", [])
@@ -533,7 +529,7 @@ class FinancialIntelligence:
             )
             return 0.0
 
-    def _get_cash_percentage(self, portfolio_data: Dict[str, Any]) -> float:
+    def _get_cash_percentage(self, portfolio_data: dict[str, Any]) -> float:
         """Get percentage of portfolio in cash."""
         try:
             holdings = portfolio_data.get("holdings", [])
@@ -563,7 +559,7 @@ class FinancialIntelligence:
 
     async def generate_budget_plan(
         self, user_id: str, goal: str = "balance"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate a budget plan for the user."""
         try:
             # Get user's financial data
@@ -605,7 +601,7 @@ class FinancialIntelligence:
             )
             raise FinancialError(f"Failed to generate budget plan: {str(e)}")
 
-    def _calculate_monthly_income(self, income_data: Dict[str, Any]) -> float:
+    def _calculate_monthly_income(self, income_data: dict[str, Any]) -> float:
         """Calculate monthly income from income data."""
         try:
             monthly_income = 0.0
@@ -641,8 +637,8 @@ class FinancialIntelligence:
             return 0.0
 
     def _calculate_monthly_expenses(
-        self, expense_data: Dict[str, Any]
-    ) -> Dict[str, float]:
+        self, expense_data: dict[str, Any]
+    ) -> dict[str, float]:
         """Calculate monthly expenses by category."""
         try:
             monthly_expenses = {}
@@ -694,9 +690,9 @@ class FinancialIntelligence:
     def _allocate_budget(
         self,
         monthly_income: float,
-        expense_data: Dict[str, Any],
+        expense_data: dict[str, Any],
         savings_target: float,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Allocate budget to categories based on expenses and income."""
         try:
             # Get current expense percentages
@@ -740,9 +736,9 @@ class FinancialIntelligence:
 
     async def _generate_budget_recommendations(
         self,
-        budget_allocation: Dict[str, Any],
-        expense_data: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        budget_allocation: dict[str, Any],
+        expense_data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """Generate budget recommendations."""
         recommendations = []
 
@@ -809,8 +805,8 @@ class FinancialIntelligence:
         return recommendations
 
     async def analyze_transaction(
-        self, description: str, amount: Optional[float] = None
-    ) -> Dict[str, Any]:
+        self, description: str, amount: float | None = None
+    ) -> dict[str, Any]:
         """Analyze a single transaction."""
         try:
             # Categorize transaction
@@ -846,7 +842,7 @@ class FinancialIntelligence:
             raise FinancialError(f"Failed to analyze transaction: {str(e)}")
 
     def _categorize_transaction(
-        self, description: str, amount: Optional[float]
+        self, description: str, amount: float | None
     ) -> str:
         """Categorize a transaction based on description and amount."""
         description_lower = description.lower()
@@ -872,7 +868,7 @@ class FinancialIntelligence:
             return "other"
 
     def _identify_transaction_type(
-        self, description: str, amount: Optional[float]
+        self, description: str, amount: float | None
     ) -> str:
         """Identify transaction type (expense, income, transfer)."""
         description_lower = description.lower()
@@ -895,8 +891,8 @@ class FinancialIntelligence:
         description: str,
         category: str,
         transaction_type: str,
-        amount: Optional[float],
-    ) -> List[str]:
+        amount: float | None,
+    ) -> list[str]:
         """Generate insights for a transaction."""
         insights = []
 
@@ -966,7 +962,7 @@ class FinancialIntelligence:
 
     async def get_financial_advice(
         self, user_id: str, context: str = "general"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get personalized financial advice."""
         try:
             # Get user financial profile
@@ -1011,8 +1007,8 @@ class FinancialIntelligence:
             raise FinancialError(f"Failed to generate financial advice: {str(e)}")
 
     async def _generate_budgeting_advice(
-        self, profile: Any, income_data: Dict[str, Any], expense_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, profile: Any, income_data: dict[str, Any], expense_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Generate budgeting-specific advice."""
         recommendations = []
         next_steps = []
@@ -1067,8 +1063,8 @@ class FinancialIntelligence:
         }
 
     async def _generate_investing_advice(
-        self, profile: Any, portfolio_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, profile: Any, portfolio_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Generate investing-specific advice."""
         recommendations = []
         next_steps = []
@@ -1099,7 +1095,7 @@ class FinancialIntelligence:
             # Default advice
             if not recommendations:
                 recommendations.append(
-                    f"Your investment portfolio shows good diversification and performance. Continue with your current strategy and consider tax-loss harvesting if you have losses."
+                    "Your investment portfolio shows good diversification and performance. Continue with your current strategy and consider tax-loss harvesting if you have losses."
                 )
                 next_steps.append("Continue monitoring your investments and consider annual tax-loss harvesting")
 
@@ -1117,8 +1113,8 @@ class FinancialIntelligence:
         }
 
     async def _generate_debt_advice(
-        self, profile: Any, income_data: Dict[str, Any], expense_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, profile: Any, income_data: dict[str, Any], expense_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Generate debt-specific advice."""
         recommendations = []
         next_steps = []
@@ -1126,13 +1122,9 @@ class FinancialIntelligence:
         try:
             # Calculate debt-to-income ratio
             monthly_income = self._calculate_monthly_income(income_data)
-            monthly_expenses = self._calculate_monthly_expenses(expense_data)
 
             # Get debt information from profile
             debt_info = getattr(profile, "debt_info", {})
-            total_debt = sum(
-                debt.get("amount", 0) for debt in debt_info.get("debts", [])
-            )
             monthly_debt_payment = sum(
                 debt.get("monthly_payment", 0)
                 for debt in debt_info.get("debts", [])
@@ -1186,10 +1178,10 @@ class FinancialIntelligence:
     async def _generate_general_advice(
         self,
         profile: Any,
-        portfolio_data: Dict[str, Any],
-        income_data: Dict[str, Any],
-        expense_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        portfolio_data: dict[str, Any],
+        income_data: dict[str, Any],
+        expense_data: dict[str, Any],
+    ) -> dict[str, Any]:
         """Generate general financial advice."""
         recommendations = []
         next_steps = []
@@ -1243,9 +1235,9 @@ class FinancialIntelligence:
     def _calculate_financial_health_score(
         self,
         profile: Any,
-        portfolio_data: Dict[str, Any],
-        income_data: Dict[str, Any],
-        expense_data: Dict[str, Any],
+        portfolio_data: dict[str, Any],
+        income_data: dict[str, Any],
+        expense_data: dict[str, Any],
     ) -> float:
         """Calculate overall financial health score (0-100)."""
         try:
@@ -1300,8 +1292,8 @@ class FinancialIntelligence:
             return 0.0
 
     async def _calculate_daily_returns(
-        self, portfolio_data: Dict[str, Any]
-    ) -> List[float]:
+        self, portfolio_data: dict[str, Any]
+    ) -> list[float]:
         """Calculate daily returns from portfolio data."""
         try:
             # This is a simplified calculation
@@ -1354,7 +1346,7 @@ class FinancialIntelligence:
 
     def _generate_strategy_for_goal(
         self, goal: str, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate a strategy based on goal."""
         strategies = {
             "retirement": self._generate_retirement_strategy(profile, timeframe),
@@ -1379,7 +1371,7 @@ class FinancialIntelligence:
 
     def _generate_retirement_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate retirement strategy."""
         return {
             "goal_type": "retirement",
@@ -1399,7 +1391,7 @@ class FinancialIntelligence:
 
     def _generate_home_purchase_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate home purchase strategy."""
         return {
             "goal_type": "home_purchase",
@@ -1414,7 +1406,7 @@ class FinancialIntelligence:
 
     def _generate_emergency_fund_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate emergency fund strategy."""
         return {
             "goal_type": "emergency_fund",
@@ -1426,7 +1418,7 @@ class FinancialIntelligence:
 
     def _generate_debt_paydown_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate debt paydown strategy."""
         debt_info = getattr(profile, "debt_info", {})
 
@@ -1443,7 +1435,7 @@ class FinancialIntelligence:
 
     def _generate_wealth_building_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate wealth building strategy."""
         return {
             "goal_type": "wealth_building",
@@ -1461,7 +1453,7 @@ class FinancialIntelligence:
 
     def _generate_income_generation_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate income generation strategy."""
         return {
             "goal_type": "income_generation",
@@ -1472,7 +1464,7 @@ class FinancialIntelligence:
 
     def _generate_generic_strategy(
         self, profile: Any, timeframe: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate generic strategy."""
         return {
             "goal_type": "general",
@@ -1481,8 +1473,8 @@ class FinancialIntelligence:
         }
 
     async def _generate_execution_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate execution steps for a strategy."""
         steps = []
 
@@ -1513,8 +1505,8 @@ class FinancialIntelligence:
             return []
 
     async def _generate_retirement_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate retirement execution steps."""
         steps = []
 
@@ -1556,8 +1548,8 @@ class FinancialIntelligence:
         return steps
 
     async def _generate_home_purchase_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate home purchase execution steps."""
         steps = []
 
@@ -1598,8 +1590,8 @@ class FinancialIntelligence:
         return steps
 
     async def _generate_emergency_fund_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate emergency fund execution steps."""
         steps = []
 
@@ -1641,8 +1633,8 @@ class FinancialIntelligence:
         return steps
 
     async def _generate_debt_paydown_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate debt paydown execution steps."""
         steps = []
 
@@ -1684,8 +1676,8 @@ class FinancialIntelligence:
         return steps
 
     async def _generate_wealth_building_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate wealth building execution steps."""
         steps = []
 
@@ -1727,8 +1719,8 @@ class FinancialIntelligence:
         return steps
 
     async def _generate_income_generation_steps(
-        self, strategy: Dict[str, Any], profile: Any
-    ) -> List[Dict[str, Any]]:
+        self, strategy: dict[str, Any], profile: Any
+    ) -> list[dict[str, Any]]:
         """Generate income generation execution steps."""
         steps = []
 
@@ -1773,12 +1765,7 @@ class FinancialIntelligence:
     def _calculate_retirement_target(self, profile: Any, timeframe: str) -> float:
         """Calculate retirement target amount."""
         try:
-            current_age = getattr(profile, "current_age", 30)
-            retirement_age = getattr(profile, "retirement_age", 65)
-            years_in_retirement = getattr(profile, "years_in_retirement", 30)
             annual_expenses = getattr(profile, "annual_expenses", 50000)
-
-            timeline_years = retirement_age - current_age
 
             # Simple calculation: need 25x annual expenses for retirement
             target_amount = annual_expenses * 25
@@ -1866,7 +1853,6 @@ class FinancialIntelligence:
         """Calculate monthly home savings."""
         try:
             monthly_income = getattr(profile, "monthly_income", 10000)
-            current_savings = getattr(profile, "current_savings", 0)
             target_down_payment = self._calculate_home_down_payment_target(profile)
 
             if target_down_payment <= 0:
@@ -1927,7 +1913,7 @@ class FinancialIntelligence:
             )
             return 0.0
 
-    def _get_highest_interest_debt(self, debt_info: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_highest_interest_debt(self, debt_info: dict[str, Any]) -> dict[str, Any]:
         """Get highest interest debt."""
         try:
             debts = debt_info.get("debts", [])
@@ -1998,11 +1984,8 @@ class FinancialIntelligence:
         """Calculate wealth building target."""
         try:
             monthly_income = getattr(profile, "monthly_income", 10000)
-            current_age = getattr(profile, "current_age", 30)
-            retirement_age = getattr(profile, "retirement_age", 65)
 
             # Simple target: 10x annual income by retirement
-            years_to_retirement = retirement_age - current_age
             target_amount = monthly_income * 12 * 10
 
             return target_amount

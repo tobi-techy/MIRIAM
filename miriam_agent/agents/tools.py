@@ -12,11 +12,11 @@ The registry serves three consumers:
   3. The audit system - every execution is logged.
 """
 
-import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any
 
 from miriam_agent.core.exceptions import (
     IntegrationError,
@@ -32,7 +32,7 @@ class RiskLevel(str, Enum):
     CRITICAL = "critical"
 
 
-Handler = Callable[..., Awaitable[Dict[str, Any]]]
+Handler = Callable[..., Awaitable[dict[str, Any]]]
 
 
 @dataclass
@@ -41,16 +41,16 @@ class Tool:
 
     name: str
     description: str
-    args_schema: Dict[str, Any]
+    args_schema: dict[str, Any]
     handler: Handler
     category: str = "general"
     risk_level: RiskLevel = RiskLevel.LOW
     is_mutation: bool = False
     requires_approval: bool = False
     allow_auto_execute: bool = True
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
-    def to_llm_schema(self) -> Dict[str, Any]:
+    def to_llm_schema(self) -> dict[str, Any]:
         """Return an OpenAI-style function definition."""
         return {
             "type": "function",
@@ -62,7 +62,7 @@ class Tool:
         }
 
 
-def validate_args(tool: Tool, args: Dict[str, Any]) -> Dict[str, Any]:
+def validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
     """Validate tool arguments against the tool's JSON Schema."""
     required = [r for r in tool.args_schema.get("required", []) if r not in args]
     properties = tool.args_schema.get("properties", {})
@@ -105,10 +105,10 @@ class ToolRegistry:
     """Central registry of all agent tools."""
 
     def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
-        self._observers: List[Callable[[str, Dict[str, Any]], None]] = []
+        self._tools: dict[str, Tool] = {}
+        self._observers: list[Callable[[str, dict[str, Any]], None]] = []
 
-    def register(self, tool: Optional[Tool] = None, **fields: Any) -> Tool:
+    def register(self, tool: Tool | None = None, **fields: Any) -> Tool:
         """Register a tool. Duplicate names raise ValueError.
 
         Accepts a ``Tool`` instance positionally, a dict of Tool fields, or
@@ -127,13 +127,13 @@ class ToolRegistry:
         self,
         name: str,
         description: str,
-        args_schema: Dict[str, Any],
+        args_schema: dict[str, Any],
         category: str = "general",
         risk_level: RiskLevel = RiskLevel.LOW,
         is_mutation: bool = False,
         requires_approval: bool = False,
         allow_auto_execute: bool = True,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ):
         """Decorator for registering a handler function as a tool."""
 
@@ -156,23 +156,23 @@ class ToolRegistry:
 
         return decorator
 
-    def get(self, name: str) -> Optional[Tool]:
+    def get(self, name: str) -> Tool | None:
         """Look up a tool by name."""
         return self._tools.get(name)
 
-    def list_names(self) -> List[str]:
+    def list_names(self) -> list[str]:
         """Return all registered tool names."""
         return sorted(self._tools.keys())
 
-    def list_by_category(self, category: str) -> List[Tool]:
+    def list_by_category(self, category: str) -> list[Tool]:
         """Return tools in a given category."""
         return [t for t in self._tools.values() if t.category == category]
 
     def llm_schemas(
         self,
-        include_only: Optional[List[str]] = None,
-        exclude: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        include_only: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return LLM-ready function schemas, optionally filtered."""
         exclude = set(exclude or [])
         result = []
@@ -184,7 +184,7 @@ class ToolRegistry:
             result.append(self._tools[name].to_llm_schema())
         return result
 
-    def auto_execute_names(self) -> Set[str]:
+    def auto_execute_names(self) -> set[str]:
         """Names of tools safe to auto-execute without user confirmation."""
         return {
             name
@@ -192,7 +192,7 @@ class ToolRegistry:
             if tool.allow_auto_execute and not tool.is_mutation
         }
 
-    def stage_confirm_names(self) -> Set[str]:
+    def stage_confirm_names(self) -> set[str]:
         """Names of tools that must be staged for user confirmation."""
         return {
             name
@@ -200,11 +200,11 @@ class ToolRegistry:
             if tool.is_mutation or tool.requires_approval
         }
 
-    def add_observer(self, observer: Callable[[str, Dict[str, Any]], None]) -> None:
+    def add_observer(self, observer: Callable[[str, dict[str, Any]], None]) -> None:
         """Add a telemetry/audit observer called after each execution."""
         self._observers.append(observer)
 
-    def _notify(self, tool_name: str, result: Dict[str, Any]) -> None:
+    def _notify(self, tool_name: str, result: dict[str, Any]) -> None:
         for observer in self._observers:
             try:
                 observer(tool_name, result)
@@ -214,9 +214,9 @@ class ToolRegistry:
     async def execute(
         self,
         name: str,
-        args: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        args: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Validate and execute a tool with telemetry.
 
         ``context`` carries per-request state such as user_id so handlers
@@ -229,10 +229,7 @@ class ToolRegistry:
         start = time.perf_counter()
         try:
             validated = validate_args(tool, args or {})
-            handler_args = dict(validated)
-            if context:
-                handler_args["_context"] = context
-            result = await tool.handler(**handler_args)
+            result = await tool.handler(validated, context or {})
         except ValidationError:
             raise
         except IntegrationError:
@@ -241,7 +238,15 @@ class ToolRegistry:
             raise
         except Exception as e:
             elapsed = time.perf_counter() - start
-            self._notify(name, {"status": "error", "error": str(e), "elapsed": elapsed})
+            self._notify(
+                name,
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "elapsed": elapsed,
+                    "_context": context or {},
+                },
+            )
             raise ToolExecutionError(f"Tool '{name}' failed: {e}")
 
         elapsed = time.perf_counter() - start
@@ -250,7 +255,15 @@ class ToolRegistry:
         result.setdefault("_tool_name", name)
         result.setdefault("_risk_level", tool.risk_level.value)
         result.setdefault("_is_mutation", tool.is_mutation)
-        self._notify(name, {"status": "success", "elapsed": elapsed, "result": result})
+        self._notify(
+            name,
+            {
+                "status": "success",
+                "elapsed": elapsed,
+                "result": result,
+                "_context": context or {},
+            },
+        )
         return result
 
     def __contains__(self, name: str) -> bool:
@@ -264,7 +277,7 @@ class ToolRegistry:
 
 
 # Singleton registry shared across the process.
-_default_registry: Optional[ToolRegistry] = None
+_default_registry: ToolRegistry | None = None
 
 
 def get_registry() -> ToolRegistry:

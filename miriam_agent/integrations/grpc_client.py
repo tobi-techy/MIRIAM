@@ -1,15 +1,17 @@
 import asyncio
-import grpc
 import logging
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any
+
+import grpc
 
 from miriam_agent.core.exceptions import IntegrationError
-from miriam_agent.core.models import PaymentRequest, PaymentResult
 
 logger = logging.getLogger(__name__)
 
 # Import the generated gRPC stubs
 # from generated import payment_service_pb2, payment_service_pb2_grpc
+
 
 class GrpcPaymentClient:
     """gRPC client for connecting to the Go payment service."""
@@ -38,13 +40,11 @@ class GrpcPaymentClient:
                 error=str(e),
                 exc_info=True,
             )
-            raise IntegrationError(
-                f"Failed to connect to gRPC endpoint: {str(e)}"
-            )
+            raise IntegrationError(f"Failed to connect to gRPC endpoint: {str(e)}")
 
     async def execute_payment_action(
-        self, action: str, parameters: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, action: str, parameters: dict[str, Any]
+    ) -> dict[str, Any]:
         """Execute a payment action through the Go service."""
         try:
             if not self.stub:
@@ -76,7 +76,7 @@ class GrpcPaymentClient:
             # Parse response
             return self._parse_response(action, response)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "gRPC request timeout",
                 action=action,
@@ -91,9 +91,7 @@ class GrpcPaymentClient:
                 error=str(e),
                 exc_info=True,
             )
-            raise IntegrationError(
-                f"Payment action {action} failed: {str(e)}"
-            )
+            raise IntegrationError(f"Payment action {action} failed: {str(e)}")
 
     async def _execute_grpc_method(self, method_name: str, request):
         """Execute a specific gRPC method."""
@@ -153,7 +151,7 @@ class GrpcPaymentClient:
 
         return response
 
-    def _prepare_request(self, action: str, parameters: Dict[str, Any]):
+    def _prepare_request(self, action: str, parameters: dict[str, Any]):
         """Prepare gRPC request from action and parameters."""
         from datetime import datetime
 
@@ -193,7 +191,7 @@ class GrpcPaymentClient:
 
         return request
 
-    def _parse_response(self, action: str, response) -> Dict[str, Any]:
+    def _parse_response(self, action: str, response) -> dict[str, Any]:
         """Parse gRPC response into standard format."""
         result = {
             "success": True,

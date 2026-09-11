@@ -7,7 +7,6 @@ when they fail).
 
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional
 
 from miriam_agent.config.settings import get_settings
 
@@ -17,10 +16,10 @@ logger = logging.getLogger(__name__)
 class Embedder:
     """Generates text embeddings via OpenAI."""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key
         self.model = model or get_settings().EMBEDDING_MODEL
-        self._cache: Dict[str, List[float]] = {}
+        self._cache: dict[str, list[float]] = {}
         self._enabled = bool(self.api_key or get_settings().OPENAI_API_KEY)
 
     def _ensure_client(self):
@@ -32,7 +31,7 @@ class Embedder:
     def _cache_key(self, text: str) -> str:
         return hashlib.sha256(text.encode()).hexdigest()
 
-    async def embed(self, text: str) -> Optional[List[float]]:
+    async def embed(self, text: str) -> list[float] | None:
         """Embed a single text. Returns None when unavailable."""
         if not self._enabled:
             return None
@@ -52,11 +51,9 @@ class Embedder:
             logger.warning("Embedding failed: %s", e)
             return None
 
-    async def embed_batch(
-        self, texts: List[str]
-    ) -> List[Optional[List[float]]]:
+    async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         """Embed a batch of texts, tolerating individual failures."""
-        results: List[Optional[List[float]]] = []
+        results: list[list[float] | None] = []
         for text in texts:
             results.append(await self.embed(text))
         return results
@@ -66,7 +63,7 @@ class Embedder:
         return self._enabled
 
 
-_embedder: Optional[Embedder] = None
+_embedder: Embedder | None = None
 
 
 def get_embedder() -> Embedder:

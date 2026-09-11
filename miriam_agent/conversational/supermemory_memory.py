@@ -17,7 +17,7 @@ returns empty data so the agent still works, just without memory.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from miriam_agent.integrations.supermemory_client import (
     SupermemoryClient,
@@ -32,7 +32,7 @@ MAX_FACTS = 12
 class SupermemoryMemory:
     """High-level memory operations backed by Supermemory."""
 
-    def __init__(self, client: Optional[SupermemoryClient] = None):
+    def __init__(self, client: SupermemoryClient | None = None):
         self.client = client or get_supermemory_client()
 
     @property
@@ -46,10 +46,10 @@ class SupermemoryMemory:
     async def build_memory_facts(
         self,
         container_tag: str,
-        query: Optional[str] = None,
+        query: str | None = None,
         limit: int = MAX_FACTS,
         include_related: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Assemble the memory block shown to the LLM every turn.
 
         Combines Supermemory's always-on profile (static + dynamic) with a
@@ -61,7 +61,7 @@ class SupermemoryMemory:
         if not self.enabled:
             return []
 
-        facts: List[Dict[str, Any]] = []
+        facts: list[dict[str, Any]] = []
         seen_contents: set = set()
 
         def add(kind: str, content: str) -> None:
@@ -125,7 +125,7 @@ class SupermemoryMemory:
         limit: int = 5,
         search_mode: str = "memories",
         include_related: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Explicit semantic search (backs the ``search_memory`` tool)."""
         if not self.enabled or not query:
             return []
@@ -137,7 +137,7 @@ class SupermemoryMemory:
                 limit=limit,
                 include_related=include_related,
             )
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for hit in result.get("results", []):
                 memory = (hit.get("memory") or "").strip()
                 if not memory:
@@ -165,8 +165,8 @@ class SupermemoryMemory:
         conversation_id: str,
         user_message: str,
         assistant_message: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Send one user/assistant turn into the memory graph.
 
         Uses a stable ``conversation_id`` so the whole session stays one
@@ -175,7 +175,7 @@ class SupermemoryMemory:
         """
         if not self.enabled or not conversation_id:
             return None
-        messages: List[Dict[str, Any]] = []
+        messages: list[dict[str, Any]] = []
         if user_message:
             messages.append({"role": "user", "content": user_message})
         if assistant_message:
@@ -198,15 +198,21 @@ class SupermemoryMemory:
         container_tag: str,
         content: str,
         is_static: bool = False,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Write an explicit fact directly (preference, trait, correction)."""
         if not self.enabled or not content:
             return None
         try:
             return await self.client.create_memories(
                 container_tag,
-                [{"content": content, "isStatic": is_static, "metadata": metadata or {}}],
+                [
+                    {
+                        "content": content,
+                        "isStatic": is_static,
+                        "metadata": metadata or {},
+                    }
+                ],
             )
         except Exception as e:
             logger.warning("Supermemory remember failed: %s", e)
@@ -215,11 +221,11 @@ class SupermemoryMemory:
     async def forget(
         self,
         container_tag: str,
-        query: Optional[str] = None,
-        memory_id: Optional[str] = None,
+        query: str | None = None,
+        memory_id: str | None = None,
         dry_run: bool = True,
-        reason: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
         """Forget memories matching a query/topic (dry-run safe by default)."""
         if not self.enabled:
             return None

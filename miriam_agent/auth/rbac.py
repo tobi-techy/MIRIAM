@@ -10,12 +10,11 @@ Permissions come from tool metadata in the registry to avoid drift:
 - money-movement (mutation) tools require ``execute`` (verified users)
 """
 
-from typing import Dict, Set
 
 from miriam_agent.core.exceptions import AuthorizationError
 
 # Roles granted by identity tier (verified status drives capability)
-ROLE_LEVELS: Dict[str, Set[str]] = {
+ROLE_LEVELS: dict[str, set[str]] = {
     "guest": {"read"},
     "user": {"read", "plan"},
     "verified": {"read", "plan", "execute"},
@@ -24,7 +23,7 @@ ROLE_LEVELS: Dict[str, Set[str]] = {
 
 # Tool name -> minimum required permission (filled from registry on import).
 # Unknown tools default to "read" (safe default: they may be audit-only).
-_TOOL_PERMISSIONS: Dict[str, str] = {}
+_TOOL_PERMISSIONS: dict[str, str] = {}
 
 
 def _load_tool_permissions() -> None:
@@ -53,7 +52,7 @@ def _load_tool_permissions() -> None:
 _load_tool_permissions()
 
 
-def can_execute(user_roles: Set[str], tool_name: str) -> bool:
+def can_execute(user_roles: set[str], tool_name: str) -> bool:
     """Check whether the user's roles allow executing the given tool."""
     if tool_name not in _TOOL_PERMISSIONS:
         _load_tool_permissions()
@@ -65,7 +64,7 @@ def can_execute(user_roles: Set[str], tool_name: str) -> bool:
     return False
 
 
-def require_tool_access(user_roles: Set[str], tool_name: str) -> None:
+def require_tool_access(user_roles: set[str], tool_name: str) -> None:
     """Raise AuthorizationError if the user cannot execute the tool."""
     if not can_execute(user_roles, tool_name):
         raise AuthorizationError(

@@ -9,12 +9,10 @@ Embeddings are serialized to pgvector's bracket form ``[0.1,0.2,...]``.
 """
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from miriam_agent.vector.base import VectorStore
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 TABLE = "memory_entries_vector"
 
 
-def _vec(embedding: List[float]) -> str:
+def _vec(embedding: list[float]) -> str:
     """Serialize a float list to pgvector's text form."""
     return "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
 
@@ -42,9 +40,7 @@ class PgVectorStore(VectorStore):
         self.engine = create_async_engine(self.database_url)
         async with self.engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            await conn.execute(
-                text(
-                    f"""
+            await conn.execute(text(f"""
                     CREATE TABLE IF NOT EXISTS {TABLE} (
                         id UUID PRIMARY KEY,
                         user_id VARCHAR(255) NOT NULL,
@@ -55,9 +51,7 @@ class PgVectorStore(VectorStore):
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
-                    """
-                )
-            )
+                    """))
             await conn.execute(
                 text(
                     f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_user ON {TABLE} (user_id)"
@@ -97,13 +91,12 @@ class PgVectorStore(VectorStore):
         self,
         id: str,
         content: str,
-        embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
+        embedding: list[float],
+        metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
         content_type: str = "text",
     ) -> bool:
         """Store (or upsert) a vector embedding."""
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         async with self.async_session() as session:
             values = {
@@ -117,15 +110,12 @@ class PgVectorStore(VectorStore):
             try:
                 # Build upsert manually with text() since pgvector type is custom.
                 existing = await session.execute(
-                    text(
-                        f"SELECT 1 FROM {TABLE} WHERE id = :id"
-                    ),
+                    text(f"SELECT 1 FROM {TABLE} WHERE id = :id"),
                     {"id": id},
                 )
                 if existing.first():
                     await session.execute(
-                        text(
-                            f"""
+                        text(f"""
                             UPDATE {TABLE} SET
                                 content = :content,
                                 metadata = :metadata::jsonb,
@@ -134,20 +124,17 @@ class PgVectorStore(VectorStore):
                                 user_id = :user_id,
                                 updated_at = NOW()
                             WHERE id = :id
-                            """
-                        ),
+                            """),
                         values,
                     )
                 else:
                     await session.execute(
-                        text(
-                            f"""
+                        text(f"""
                             INSERT INTO {TABLE}
                                 (id, user_id, content, metadata, embedding, content_type)
                             VALUES
                                 (:id, :user_id, :content, :metadata::jsonb, :embedding::vector, :content_type)
-                            """
-                        ),
+                            """),
                         values,
                     )
                 await session.commit()
@@ -159,17 +146,17 @@ class PgVectorStore(VectorStore):
 
     async def search_similar(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         limit: int = 10,
         threshold: float = 0.3,
-        filters: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
-        content_type: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        filters: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        content_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Cosine-similarity search. Returns rows with a ``similarity`` field."""
         filters = filters or {}
         where = []
-        params: Dict[str, Any] = {"emb": _vec(query_embedding), "lim": limit}
+        params: dict[str, Any] = {"emb": _vec(query_embedding), "lim": limit}
 
         if user_id:
             where.append("user_id = :user_id")
@@ -183,8 +170,7 @@ class PgVectorStore(VectorStore):
             params[f"fval{i}"] = str(value)
 
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-        sql = text(
-            f"""
+        sql = text(f"""
             SELECT id, user_id, content, metadata, content_type,
                    1 - (embedding <=> :emb::vector) AS similarity
             FROM {TABLE}
@@ -192,8 +178,7 @@ class PgVectorStore(VectorStore):
             AND 1 - (embedding <=> :emb::vector) >= :thresh
             ORDER BY similarity DESC
             LIMIT :lim
-            """
-        )
+            """)
         # sqlalchemy text() bound params can't be re-used twice; inline threshold.
         rendered = str(sql)
         rendered = rendered.replace(":thresh", str(threshold))
@@ -217,7 +202,7 @@ class PgVectorStore(VectorStore):
                 logger.error("search_similar failed: %s", e)
                 return []
 
-    async def delete_embedding(self, id: str, user_id: Optional[str] = None) -> bool:
+    async def delete_embedding(self, id: str, user_id: str | None = None) -> bool:
         params = {"id": id}
         where = "id = :id"
         if user_id:
@@ -238,21 +223,19 @@ class PgVectorStore(VectorStore):
     async def update_embedding(
         self,
         id: str,
-        embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None,
+        embedding: list[float],
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         async with self.async_session() as session:
             try:
                 await session.execute(
-                    text(
-                        f"""
+                    text(f"""
                         UPDATE {TABLE} SET
                             embedding = :embedding::vector,
                             metadata = :metadata::jsonb,
                             updated_at = NOW()
                         WHERE id = :id
-                        """
-                    ),
+                        """),
                     {
                         "id": id,
                         "embedding": _vec(embedding),
@@ -273,7 +256,7 @@ def json_dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)
 
 
-def json_loads(raw: Any) -> Dict[str, Any]:
+def json_loads(raw: Any) -> dict[str, Any]:
     import json
 
     if raw is None:

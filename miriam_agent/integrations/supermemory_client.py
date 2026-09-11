@@ -40,7 +40,7 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -82,14 +82,16 @@ class SupermemoryClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 20.0,
         max_retries: int = 2,
     ):
         settings = get_settings()
         self.api_key = api_key if api_key is not None else settings.SUPERMEMORY_API_KEY
-        self.base_url = (base_url or settings.SUPERMEMORY_BASE_URL or _BASE_URL).rstrip("/")
+        self.base_url = (base_url or settings.SUPERMEMORY_BASE_URL or _BASE_URL).rstrip(
+            "/"
+        )
         self.timeout = timeout
         self.max_retries = max_retries
         headers = dict(_DEFAULT_HEADERS)
@@ -117,10 +119,10 @@ class SupermemoryClient:
         self,
         container_tag: str,
         conversation_id: str,
-        messages: List[Dict[str, Any]],
-        metadata: Optional[Dict[str, Any]] = None,
+        messages: list[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
         dreaming: str = "dynamic",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Ingest or update a chat session.
 
         Keep ``conversation_id`` stable across turns so Supermemory treats
@@ -130,7 +132,7 @@ class SupermemoryClient:
         """
         if not await self._can_call(conversation_id):
             return None
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "conversationId": conversation_id,
             "messages": messages,
             "containerTag": container_tag,
@@ -144,11 +146,11 @@ class SupermemoryClient:
         self,
         container_tag: str,
         content: str,
-        custom_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        custom_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
         task_type: str = "memory",
         dreaming: str = "dynamic",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Send raw content (text, notes, articles) through the pipeline.
 
         ``task_type="memory"`` extracts facts + updates the profile +
@@ -157,7 +159,7 @@ class SupermemoryClient:
         """
         if not content:
             return None
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "content": content,
             "containerTag": container_tag,
             "taskType": task_type,
@@ -169,7 +171,7 @@ class SupermemoryClient:
             payload["metadata"] = _flat_metadata(metadata)
         return await self._post("/v3/documents", payload)
 
-    async def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
+    async def get_document(self, doc_id: str) -> dict[str, Any] | None:
         """Fetch document status: queued | processing | done | failed."""
         return await self._get(f"/v3/documents/{doc_id}")
 
@@ -178,7 +180,7 @@ class SupermemoryClient:
         doc_id: str,
         timeout: float = 60.0,
         interval: float = 1.5,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Poll document status until done/failed or timeout."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -199,16 +201,16 @@ class SupermemoryClient:
     async def profile(
         self,
         container_tag: str,
-        query: Optional[str] = None,
-        include: Optional[List[str]] = None,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        query: str | None = None,
+        include: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Fetch the always-on user profile plus optional search results.
 
         Returns ``{profile: {static: [], dynamic: [], buckets: {}},
         search_results: {results: [], total, timing}}`` (empty on failure).
         """
-        payload: Dict[str, Any] = {"containerTag": container_tag}
+        payload: dict[str, Any] = {"containerTag": container_tag}
         if query:
             payload["q"] = query
         if include:
@@ -217,7 +219,10 @@ class SupermemoryClient:
             payload["filters"] = filters
         data = await self._post("/v4/profile", payload)
         if not data:
-            return {"profile": {"static": [], "dynamic": [], "buckets": {}}, "search_results": None}
+            return {
+                "profile": {"static": [], "dynamic": [], "buckets": {}},
+                "search_results": None,
+            }
         profile = data.get("profile") or {}
         return {
             "profile": {
@@ -235,10 +240,10 @@ class SupermemoryClient:
         search_mode: str = "memories",
         limit: int = 5,
         include_related: bool = False,
-        filters: Optional[Dict[str, Any]] = None,
-        threshold: Optional[float] = None,
+        filters: dict[str, Any] | None = None,
+        threshold: float | None = None,
         rerank: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Semantic recall.
 
         ``search_mode``: memories | documents | hybrid.
@@ -246,7 +251,7 @@ class SupermemoryClient:
         """
         if not query:
             return {"results": [], "total": 0}
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "containerTag": container_tag,
             "q": query,
             "searchMode": search_mode,
@@ -277,8 +282,8 @@ class SupermemoryClient:
     async def create_memories(
         self,
         container_tag: str,
-        memories: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        memories: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Write facts directly, bypassing the document pipeline.
 
         ``memories``: [{content, isStatic?, metadata?}]. Use when the agent
@@ -286,7 +291,7 @@ class SupermemoryClient:
         """
         if not memories:
             return None
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "containerTag": container_tag,
             "memories": list(memories),
         }
@@ -296,15 +301,15 @@ class SupermemoryClient:
         self,
         container_tag: str,
         new_content: str,
-        memory_id: Optional[str] = None,
-        content: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        memory_id: str | None = None,
+        content: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Versioned update: creates a new version, original keeps isLatest=False."""
         if memory_id is None and content is None:
             logger.warning("update_memory requires id or content")
             return None
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "containerTag": container_tag,
             "newContent": new_content,
         }
@@ -319,15 +324,15 @@ class SupermemoryClient:
     async def forget_memory(
         self,
         container_tag: str,
-        memory_id: Optional[str] = None,
-        content: Optional[str] = None,
-        reason: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        memory_id: str | None = None,
+        content: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
         """Soft-delete a single memory (excluded from search, kept for audit)."""
         if memory_id is None and content is None:
             logger.warning("forget_memory requires id or content")
             return None
-        payload: Dict[str, Any] = {"containerTag": container_tag}
+        payload: dict[str, Any] = {"containerTag": container_tag}
         if memory_id:
             payload["id"] = memory_id
         if content:
@@ -339,17 +344,17 @@ class SupermemoryClient:
     async def forget_matching(
         self,
         container_tag: str,
-        query: Optional[str] = None,
-        ids: Optional[List[str]] = None,
+        query: str | None = None,
+        ids: list[str] | None = None,
         dry_run: bool = True,
-        reason: Optional[str] = None,
+        reason: str | None = None,
         max_forget: int = 100,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Semantic bulk forget ('forget everything about X') with dry run."""
         if query is None and not ids:
             logger.warning("forget_matching requires query or ids")
             return None
-        payload: Dict[str, Any] = {"containerTag": container_tag, "dryRun": dry_run}
+        payload: dict[str, Any] = {"containerTag": container_tag, "dryRun": dry_run}
         if query:
             payload["query"] = query
             payload["maxForget"] = max_forget
@@ -370,18 +375,22 @@ class SupermemoryClient:
             return False
         return True
 
-    async def _post(self, path: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _post(
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
         return await self._request("POST", path, json=payload)
 
-    async def _get(self, path: str) -> Optional[Dict[str, Any]]:
+    async def _get(self, path: str) -> dict[str, Any] | None:
         return await self._request("GET", path)
 
-    async def _patch(self, path: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _patch(
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
         return await self._request("PATCH", path, json=payload)
 
     async def _delete(
-        self, path: str, payload: Optional[Dict[str, Any]] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, path: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
         return await self._request("DELETE", path, json=payload)
 
     async def _request(
@@ -389,9 +398,9 @@ class SupermemoryClient:
         method: str,
         path: str,
         *,
-        json: Optional[Dict[str, Any]] = None,
-        retries: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
+        json: dict[str, Any] | None = None,
+        retries: int | None = None,
+    ) -> dict[str, Any] | None:
         if not self.enabled:
             return None
         attempts = self.max_retries if retries is None else retries
@@ -399,7 +408,7 @@ class SupermemoryClient:
             try:
                 resp = await self._client.request(method, path, json=json)
                 if resp.status_code in _RETRYABLE_STATUS and attempt < attempts:
-                    await asyncio.sleep(0.3 * (2 ** attempt))
+                    await asyncio.sleep(0.3 * (2**attempt))
                     continue
                 resp.raise_for_status()
                 if resp.content and resp.status_code != 204:
@@ -412,7 +421,7 @@ class SupermemoryClient:
                     code in _RETRYABLE_STATUS or code is None or (code or 0) >= 500
                 )
                 if is_transient and attempt < attempts:
-                    await asyncio.sleep(0.3 * (2 ** attempt))
+                    await asyncio.sleep(0.3 * (2**attempt))
                     continue
                 logger.warning(
                     "Supermemory %s %s failed: %s",
@@ -425,7 +434,7 @@ class SupermemoryClient:
         return None
 
 
-_supermemory_client: Optional[SupermemoryClient] = None
+_supermemory_client: SupermemoryClient | None = None
 
 
 def get_supermemory_client() -> SupermemoryClient:
@@ -436,9 +445,9 @@ def get_supermemory_client() -> SupermemoryClient:
     return _supermemory_client
 
 
-def _flat_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _flat_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Keep only string/number/bool values (Supermemory's metadata rule)."""
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for key, value in metadata.items():
         if isinstance(value, (str, int, float, bool)) and value is not None:
             out[key] = value

@@ -1,15 +1,14 @@
-import asyncio
-import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
 from collections import deque
+from datetime import datetime, timedelta
+from typing import Any
 
-from miriam_agent.database.models import User, FinancialProfile
 from miriam_agent.database.memory import MemoryStore
+from miriam_agent.database.models import FinancialProfile
 from miriam_agent.vector.base import VectorStore
 
 logger = logging.getLogger(__name__)
+
 
 class ConversationContext:
     """Memory-based conversational context for Miriam Financial Agent."""
@@ -50,9 +49,9 @@ class ConversationContext:
         self,
         message: str,
         role: str,
-        intent: Optional[Dict[str, Any]] = None,
-        entities: Optional[Dict[str, Any]] = None,
-        sentiment: Optional[str] = None,
+        intent: dict[str, Any] | None = None,
+        entities: dict[str, Any] | None = None,
+        sentiment: str | None = None,
     ) -> None:
         """Update conversation context with new message."""
         try:
@@ -102,8 +101,8 @@ class ConversationContext:
         self,
         message: str,
         role: str,
-        intent: Optional[Dict[str, Any]],
-        entities: Optional[Dict[str, Any]],
+        intent: dict[str, Any] | None,
+        entities: dict[str, Any] | None,
     ) -> None:
         """Update user state based on message."""
         if role != "user":
@@ -161,9 +160,7 @@ class ConversationContext:
 
         return False
 
-    async def _extract_long_term_memories(
-        self, message: str, role: str
-    ):
+    async def _extract_long_term_memories(self, message: str, role: str):
         """Extract long-term memories from conversation."""
         try:
             if role != "user":
@@ -194,7 +191,7 @@ class ConversationContext:
                 exc_info=True,
             )
 
-    async def _extract_preferences(self, message: str) -> Dict[str, Any]:
+    async def _extract_preferences(self, message: str) -> dict[str, Any]:
         """Extract preferences from message."""
         preferences = {}
 
@@ -218,7 +215,7 @@ class ConversationContext:
 
         return preferences
 
-    async def _extract_goals(self, message: str) -> List[str]:
+    async def _extract_goals(self, message: str) -> list[str]:
         """Extract goals from message."""
         goals = []
 
@@ -240,7 +237,7 @@ class ConversationContext:
 
         return goals
 
-    async def _extract_patterns(self, message: str) -> List[Dict[str, Any]]:
+    async def _extract_patterns(self, message: str) -> list[dict[str, Any]]:
         """Extract patterns from message."""
         patterns = []
 
@@ -306,7 +303,7 @@ class ConversationContext:
             metadata={"goal": goal},
         )
 
-    async def _store_pattern(self, pattern: Dict[str, Any]) -> None:
+    async def _store_pattern(self, pattern: dict[str, Any]) -> None:
         """Store a pattern."""
         await self.memory_store.store_memory(
             user_id=self.user_id,
@@ -319,8 +316,8 @@ class ConversationContext:
         self,
         message: str,
         role: str,
-        intent: Optional[Dict[str, Any]],
-        sentiment: Optional[str],
+        intent: dict[str, Any] | None,
+        sentiment: str | None,
     ) -> None:
         """Update topic tracking."""
         if role != "user":
@@ -371,7 +368,7 @@ class ConversationContext:
                     }
                 )
 
-    async def get_context_summary(self) -> Dict[str, Any]:
+    async def get_context_summary(self) -> dict[str, Any]:
         """Get summary of current context."""
         try:
             # Get recent memories
@@ -380,9 +377,7 @@ class ConversationContext:
             )
 
             # Get user preferences
-            preferences = await self.memory_store.get_user_preferences(
-                self.user_id
-            )
+            preferences = await self.memory_store.get_user_preferences(self.user_id)
 
             # Get goals
             goals = await self.memory_store.get_user_goals(self.user_id)
@@ -443,9 +438,7 @@ class ConversationContext:
                 "goals": [],
             }
 
-    async def generate_context_for_prompt(
-        self, max_tokens: int = 1000
-    ) -> str:
+    async def generate_context_for_prompt(self, max_tokens: int = 1000) -> str:
         """Generate context string for prompt."""
         try:
             # Get context summary
@@ -456,8 +449,12 @@ class ConversationContext:
 
             # User state
             context_parts.append("User Profile:")
-            context_parts.append(f"- Knowledge level: {context['user_state']['knowledge_level']}")
-            context_parts.append(f"- Risk tolerance: {context['user_state']['risk_tolerance']}")
+            context_parts.append(
+                f"- Knowledge level: {context['user_state']['knowledge_level']}"
+            )
+            context_parts.append(
+                f"- Risk tolerance: {context['user_state']['risk_tolerance']}"
+            )
             context_parts.append(
                 f"- Current goals: {', '.join(context['user_state']['current_goals'])}"
             )
@@ -467,7 +464,9 @@ class ConversationContext:
 
             # Topics
             if context["current_topics"]:
-                context_parts.append(f"\nCurrent topics: {', '.join(context['current_topics'])}")
+                context_parts.append(
+                    f"\nCurrent topics: {', '.join(context['current_topics'])}"
+                )
 
             # Topic analysis
             if context["topic_analysis"]:
@@ -522,9 +521,7 @@ class ConversationContext:
             cutoff_date = datetime.utcnow() - timedelta(days=days_old)
 
             # Clear old memories
-            memories = await self.memory_store.retrieve_memory(
-                self.user_id, limit=1000
-            )
+            memories = await self.memory_store.retrieve_memory(self.user_id, limit=1000)
 
             for memory in memories:
                 if memory.created_at < cutoff_date:
