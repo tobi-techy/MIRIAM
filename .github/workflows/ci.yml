@@ -1,0 +1,74 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: miriam
+          POSTGRES_PASSWORD: miriam_password
+          POSTGRES_DB: miriam_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run linter
+        run: |
+          black --check .
+          isort --check-only .
+          ruff check .
+
+      - name: Run mypy type checking
+        run: mypy miriam_agent
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=miriam_agent --cov-report=xml
+        env:
+          DATABASE_URL: postgresql://miriam:miriam_password@localhost:5432/miriam_test
+          REDIS_URL: redis://localhost:6379/0
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run security scan
+        run: |
+          pip install safety semgrep
+          safety check
+          semgrep --config=auto --severity=ERROR --quiet
