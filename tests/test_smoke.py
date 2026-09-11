@@ -233,7 +233,7 @@ def test_system_prompt_has_voice():
         user_context={"name": "Tobi"},
         memory_facts=[{"type": "goal", "content": "build emergency fund"}],
     )
-    assert "Ramit Sethi" in p
+    assert "Not an app, not a dashboard" in p
     assert "Tobi" in p
     assert "emergency fund" in p
 
