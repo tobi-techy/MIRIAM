@@ -55,7 +55,11 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Liveness landing page (AtlasFlow probes this path by default)."""
-    return {"service": "miriam-agent", "status": "ok", "endpoints": ["/health", "/api/v1"]}
+    return {
+        "service": "miriam-agent",
+        "status": "ok",
+        "endpoints": ["/health", "/api/v1"],
+    }
 
 
 @app.get("/health")
