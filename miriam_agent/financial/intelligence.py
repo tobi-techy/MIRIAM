@@ -1,4 +1,5 @@
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -6,6 +7,8 @@ import numpy as np
 from miriam_agent.core.exceptions import FinancialError
 
 logger = logging.getLogger(__name__)
+
+_MONTH_DAYS = 30.4375
 
 
 def _first_numeric(data: dict[str, Any], *keys: str) -> float | None:
@@ -38,8 +41,6 @@ def _money(value: Any) -> float:
 
 def _calendar() -> tuple[int, int, int]:
     """days_elapsed, days_in_month, days_remaining (elapsed at least 1)."""
-    from datetime import date
-
     today = date.today()
     elapsed = max(1, today.day)
     if today.month == 12:
@@ -51,167 +52,308 @@ def _calendar() -> tuple[int, int, int]:
     return elapsed, days_in_month, remaining
 
 
-def _snapshot_totals(snapshot: dict[str, Any]) -> dict[str, float]:
-    balances = snapshot.get("balances") or {}
-    spending = snapshot.get("spending_summary") or {}
-    spend = _money(
-        balances.get("spending_balance")
-        if isinstance(balances, dict)
-        else None
-        or (balances.get("SpendingBalance") if isinstance(balances, dict) else None)
-    )
-    if isinstance(balances, dict):
-        spend = _first_numeric(balances, "spending_balance", "SpendingBalance") or 0.0
-        stash = _first_numeric(balances, "stash_balance", "StashBalance") or 0.0
-        total = _first_numeric(balances, "total_usdc", "TotalUSDC") or (spend + stash)
-    else:
-        spend = stash = total = 0.0
-    spent = 0.0
-    if isinstance(spending, dict):
-        spent = _first_numeric(spending, "total_spent", "spent", "total", "outflow") or 0.0
-        if spent == 0.0:
-            cats = spending.get("top_categories") or spending.get("categories") or []
-            if isinstance(cats, list):
-                spent = sum(
-                    _first_numeric(c, "amount", "monthly_amount", "total") or 0.0
-                    for c in cats
-                    if isinstance(c, dict)
-                )
+# ---------------------------------------------------------------------------
+# Financial-snapshot engine
+#
+# These functions consume the ledger-backed snapshot returned by Go's
+# ``GET /api/v1/analytics/financial-snapshot`` (balances, ``money_flow``,
+# ``monthly_flow`` series, ``budget``, ``profile``) plus optional
+# ``upcoming_obligations``. They intentionally mirror the Go orchestrator's
+# scoring so the delegated brain produces the same numbers as the in-process
+# engine used before agent delegation.
+# ---------------------------------------------------------------------------
+
+
+def period_to_window(
+    period: str, today: date | None = None
+) -> tuple[str | None, str | None]:
+    """Map a health-audit period to an (from, to) YYYY-MM-DD window.
+
+    Returns (None, None) for unknown periods, which lets the backend use its
+    current-calendar-month default.
+    """
+    today = today or date.today()
+    if period == "this_month":
+        return today.strftime("%Y-%m-01"), today.strftime("%Y-%m-%d")
+    if period == "last_month":
+        last_month_last = today.replace(day=1) - timedelta(days=1)
+        return last_month_last.strftime("%Y-%m-01"), last_month_last.strftime(
+            "%Y-%m-%d"
+        )
+    if period == "last_90_days":
+        return (today - timedelta(days=89)).strftime("%Y-%m-%d"), today.strftime(
+            "%Y-%m-%d"
+        )
+    if period == "last_6_months":
+        first = (today - timedelta(days=183)).strftime("%Y-%m-%d")
+        return first, today.strftime("%Y-%m-%d")
+    if period == "last_12_months":
+        first = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+        return first, today.strftime("%Y-%m-%d")
+    return None, None
+
+
+def _period_bounds(snapshot: dict[str, Any]) -> tuple[str | None, str | None]:
+    period = snapshot.get("period")
+    if not isinstance(period, dict):
+        return None, None
+    return period.get("from"), period.get("to")
+
+
+def _flow_metrics(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Money-in/out for the snapshot window.
+
+    Primary source is Go's ``money_flow`` block (string amounts). Falls back
+    to the legacy ``spending_summary`` shape so callers that still scrape
+    ``/api/v1/analytics/dashboard`` degrade gracefully instead of breaking.
+    """
+    flow = snapshot.get("money_flow")
+    if isinstance(flow, dict) and not flow.get("error"):
+        withdrawals = _money(flow.get("total_withdrawals"))
+        card = _money(flow.get("total_card_spend"))
+        p2p = _money(flow.get("total_p2p"))
+        receipts = _money(flow.get("total_receipts"))
+        income = _money(flow.get("total_deposits"))
+        deposit_count = _money(flow.get("deposit_count"))
+        outflow = withdrawals + card + p2p + receipts
+        return {
+            "income": income,
+            "outflow": outflow,
+            "card_spend": card,
+            "net": income - outflow,
+            "deposit_count": deposit_count,
+        }
+
+    legacy = snapshot.get("spending_summary") or {}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    income = _first_numeric(legacy, "income", "total_income", "inflow") or 0.0
+    outflow = _first_numeric(legacy, "total_spent", "spent", "total", "outflow") or 0.0
+    if outflow == 0.0:
+        cats = legacy.get("top_categories") or legacy.get("categories") or []
+        if isinstance(cats, list):
+            outflow = sum(
+                _first_numeric(c, "amount", "monthly_amount", "total") or 0.0
+                for c in cats
+                if isinstance(c, dict)
+            )
+    return {
+        "income": income,
+        "outflow": outflow,
+        "card_spend": outflow,
+        "net": income - outflow,
+        "deposit_count": _first_numeric(legacy, "deposit_count", "income_count") or 0.0,
+    }
+
+
+def _budget_block(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    budget = snapshot.get("budget")
+    if not isinstance(budget, dict) or not budget.get("set"):
+        return None
+    limit = _money(budget.get("monthly_limit"))
+    if limit <= 0:
+        return None
+    return {"limit": limit, "currency": budget.get("currency")}
+
+
+def _profile_block(snapshot: dict[str, Any]) -> dict[str, Any]:
+    profile = snapshot.get("profile")
+    if not isinstance(profile, dict) or not profile.get("has_profile"):
+        return {
+            "has_profile": False,
+            "primary_currency": "USD",
+            "income_frequency": "monthly",
+            "financial_goal": None,
+            "risk_tolerance": "moderate",
+            "investment_horizon": "medium",
+            "monthly_income": 0.0,
+            "monthly_fixed_costs": 0.0,
+            "monthly_savings_target": 0.0,
+            "emergency_fund_target": 0.0,
+        }
+    return {
+        "has_profile": True,
+        "primary_currency": profile.get("primary_currency") or "USD",
+        "income_frequency": profile.get("income_frequency") or "monthly",
+        "financial_goal": profile.get("financial_goal"),
+        "risk_tolerance": profile.get("risk_tolerance") or "moderate",
+        "investment_horizon": profile.get("investment_horizon") or "medium",
+        "monthly_income": _money(profile.get("monthly_income")),
+        "monthly_fixed_costs": _money(profile.get("monthly_fixed_costs")),
+        "monthly_savings_target": _money(profile.get("monthly_savings_target")),
+        "emergency_fund_target": _money(profile.get("emergency_fund_target")),
+    }
+
+
+def _bills_due(snapshot: dict[str, Any]) -> float:
     obligations = snapshot.get("upcoming_obligations") or []
-    bills_due = 0.0
-    if isinstance(obligations, list):
-        for ob in obligations:
-            if not isinstance(ob, dict):
-                continue
-            status = str(ob.get("status") or ob.get("Status") or "").lower()
-            if status in {"paid", "cancelled"}:
-                continue
-            bills_due += _first_numeric(ob, "amount", "Amount") or 0.0
-    positions = snapshot.get("positions") or []
-    invested = 0.0
-    if isinstance(positions, list):
-        for p in positions:
-            if isinstance(p, dict):
-                invested += _first_numeric(p, "value", "market_value", "total_value") or 0.0
+    total = 0.0
+    if not isinstance(obligations, list):
+        return total
+    for ob in obligations:
+        if not isinstance(ob, dict):
+            continue
+        status = str(ob.get("status") or ob.get("Status") or "").lower()
+        if status in {"paid", "cancelled"}:
+            continue
+        total += _first_numeric(ob, "amount", "Amount") or 0.0
+    return total
+
+
+def _window_metrics(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Observed totals plus monthly averages for the snapshot window.
+
+    Mirrors Go's ``observedMonths`` (window days / 30.4375, clamped to >=1)
+    so monthly figures stay comparable across single- and multi-month audits.
+    """
+    flow = _flow_metrics(snapshot)
+    from_date, to_date = _period_bounds(snapshot)
+    observed_months = 1.0
+    if from_date and to_date:
+        try:
+            start = datetime.strptime(from_date, "%Y-%m-%d")
+            end = datetime.strptime(to_date, "%Y-%m-%d")
+            observed_months = max(1.0, (end - start).days / _MONTH_DAYS)
+        except ValueError:
+            observed_months = 1.0
     return {
-        "spend": spend,
-        "stash": stash,
-        "total": total,
-        "spent_this_period": spent,
-        "bills_due": bills_due,
-        "invested": invested,
+        "income": flow["income"],
+        "outflow": flow["outflow"],
+        "net": flow["net"],
+        "deposit_count": flow["deposit_count"],
+        "observed_months": observed_months,
+        "monthly_income": flow["income"] / observed_months,
+        "monthly_outflow": flow["outflow"] / observed_months,
+        "monthly_net": flow["net"] / observed_months,
     }
 
 
-def compute_cash_flow_forecast(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Project the rest of this month from live balances, spend, and bills."""
-    from datetime import date
-
-    elapsed, days_in_month, remaining = _calendar()
-    t = _snapshot_totals(snapshot)
-    daily_burn = t["spent_this_period"] / elapsed if elapsed else 0.0
-    projected_out = daily_burn * days_in_month
-    projected_end = max(0.0, t["total"] - daily_burn * remaining)
-    safe_daily = t["spend"] / remaining if remaining else 0.0
-    if t["bills_due"] > 0 and remaining:
-        after_bills = max(0.0, t["spend"] - t["bills_due"])
-        safe_daily = after_bills / remaining
-
-    if t["spent_this_period"] <= 0 and t["bills_due"] <= 0:
-        confidence = "low"
-        action = "Not enough spending history yet to project the month."
-    elif projected_end <= 0 or (t["spend"] < t["bills_due"]):
-        confidence = "medium"
-        action = "Slow down. Upcoming bills look bigger than spend cash on hand."
-    elif daily_burn * remaining > t["spend"] * 0.8:
-        confidence = "medium"
-        action = f"Stay under ${safe_daily:.2f}/day for the rest of the month."
+def _monthly_trend(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """Per-month buckets from the snapshot's ``monthly_flow`` series and a
+    direction label (improving / worsening / flat), or ([], "flat").
+    """
+    series = snapshot.get("monthly_flow")
+    buckets: list[dict[str, Any]] = []
+    nets: list[float] = []
+    if isinstance(series, list):
+        for bucket in series:
+            if not isinstance(bucket, dict):
+                continue
+            inflow = _money(bucket.get("total_deposits"))
+            outflow = _money(bucket.get("total_outflow"))
+            buckets.append(
+                {
+                    "month": bucket.get("month"),
+                    "income": round(inflow, 2),
+                    "outflow": round(outflow, 2),
+                    "net": round(inflow - outflow, 2),
+                }
+            )
+            nets.append(inflow - outflow)
+    if len(buckets) < 2 or len(nets) < 2:
+        return buckets, "flat"
+    half = max(1, len(nets) // 2)
+    first_half = sum(nets[:half]) / half
+    second_half = sum(nets[half:]) / (len(nets) - half)
+    delta = second_half - first_half
+    noise = max(1.0, abs(first_half) * 0.1)
+    if delta > noise:
+        direction = "improving"
+    elif delta < -noise:
+        direction = "worsening"
     else:
-        confidence = "high"
-        action = f"Keep spending near ${daily_burn:.2f}/day; you are on track."
-
-    today = date.today()
-    return {
-        "source": "python",
-        "period": f"{today.strftime('%B')} {today.year}",
-        "days_elapsed": elapsed,
-        "days_remaining": remaining,
-        "spent_so_far": round(t["spent_this_period"], 2),
-        "bills_still_due": round(t["bills_due"], 2),
-        "daily_burn_rate": round(daily_burn, 2),
-        "safe_daily_spend": round(safe_daily, 2),
-        "projected_outflow": round(projected_out, 2),
-        "projected_end_balance": round(projected_end, 2),
-        "spend_balance": round(t["spend"], 2),
-        "stash_balance": round(t["stash"], 2),
-        "confidence": confidence,
-        "primary_action": action,
-        "data_used": ["balances", "spending_summary", "upcoming_obligations"],
-    }
+        direction = "flat"
+    return buckets, direction
 
 
-def compute_financial_health(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Score 0-100 from savings rate, runway, stash share, and bill cover."""
-    t = _snapshot_totals(snapshot)
-    elapsed, _, _ = _calendar()
-    monthly_out = t["spent_this_period"]
-    if elapsed and elapsed < 28 and monthly_out > 0:
-        monthly_out = monthly_out / elapsed * 30.4375
+def _period_label(period: str, from_date: str | None, to_date: str | None) -> str:
+    if period == "this_month":
+        return "This month to date"
+    if period == "last_month":
+        return "Last month"
+    if from_date and to_date:
+        return f"{from_date} to {to_date}"
+    return period.replace("_", " ")
 
-    # Income is not always on the spending payload; treat deposits/income if present.
-    spending = snapshot.get("spending_summary") or {}
-    income = 0.0
-    if isinstance(spending, dict):
-        income = _first_numeric(spending, "income", "total_income", "inflow") or 0.0
-    net = income - monthly_out if income > 0 else t["total"] - monthly_out
-    savings_rate = (net / income * 100.0) if income > 0 else 0.0
 
+def compute_financial_health(
+    snapshot: dict[str, Any], period: str = "last_90_days"
+) -> dict[str, Any]:
+    """Score 0-100 across savings rate, budget control, runway, and stash.
+
+    Scoring mirrors the Go orchestrator (savings 25 + budget 20 + runway 25 +
+    stash 20 + 10 base) and adds a month-over-month trend when the snapshot
+    window spans two or more months.
+    """
+    from_date, to_date = _period_bounds(snapshot)
+    balances = snapshot.get("balances") or {}
+    spend = _money(balances.get("spending_balance"))
+    stash = _money(balances.get("stash_balance"))
+    total = _money(balances.get("total_balance"))
+    if total <= 0:
+        total = spend + stash
+
+    m = _window_metrics(snapshot)
+    budget = _budget_block(snapshot)
+    bills = _bills_due(snapshot)
+
+    budget_score = 20
+    budget_status = "not_set"
+    budget_limit = 0.0
+    budget_remaining = 0.0
+    if budget:
+        budget_limit = budget["limit"]
+        budget_remaining = budget_limit - m["monthly_outflow"]
+        used = (m["monthly_outflow"] / budget_limit * 100) if budget_limit > 0 else 0.0
+        budget_status = "on_track"
+        if used <= 70:
+            budget_score = 20
+        elif used <= 90:
+            budget_score, budget_status = 14, "tight"
+        elif used <= 100:
+            budget_score, budget_status = 8, "near_limit"
+        else:
+            budget_score, budget_status = 2, "over_budget"
+
+    savings_rate = (m["net"] / m["income"] * 100.0) if m["income"] > 0 else 0.0
+    savings_score = 8
     if savings_rate >= 25:
         savings_score = 25
     elif savings_rate >= 15:
         savings_score = 20
     elif savings_rate >= 5:
         savings_score = 14
-    elif savings_rate >= 0 and income > 0:
+    elif savings_rate >= 0:
         savings_score = 8
     else:
-        savings_score = 8 if t["stash"] > 0 else 4
+        savings_score = 2
 
-    daily_out = monthly_out / 30.4375 if monthly_out > 0 else 0.0
-    runway_days = (t["total"] / daily_out) if daily_out > 0 else 90.0
-    if runway_days >= 90:
-        runway_score = 25
-    elif runway_days >= 30:
-        runway_score = 18
-    elif runway_days >= 14:
-        runway_score = 10
-    else:
-        runway_score = 4
+    runway_score = 10
+    runway_days: float | None = None
+    if m["monthly_outflow"] > 0:
+        avg_daily_out = m["monthly_outflow"] / _MONTH_DAYS
+        runway_days = total / avg_daily_out if avg_daily_out > 0 else 0.0
+        if runway_days >= 90:
+            runway_score = 25
+        elif runway_days >= 30:
+            runway_score = 18
+        elif runway_days >= 14:
+            runway_score = 10
+        else:
+            runway_score = 4
 
-    stash_pct = (t["stash"] / t["total"] * 100.0) if t["total"] > 0 else 0.0
-    if stash_pct >= 30:
+    stash_pct = (stash / total * 100.0) if total > 0 else 0.0
+    stash_score = 5
+    if total > 0 and stash_pct >= 30:
         stash_score = 20
-    elif stash_pct >= 20:
+    elif total > 0 and stash_pct >= 20:
         stash_score = 15
-    elif stash_pct >= 10:
+    elif total > 0 and stash_pct >= 10:
         stash_score = 10
-    else:
-        stash_score = 5
 
-    if t["bills_due"] <= 0:
-        bill_score = 15
-        bill_status = "none_due"
-    elif t["spend"] >= t["bills_due"]:
-        bill_score = 15
-        bill_status = "covered"
-    elif t["total"] >= t["bills_due"]:
-        bill_score = 8
-        bill_status = "covered_from_stash"
-    else:
-        bill_score = 2
-        bill_status = "short"
-
-    score = max(0, min(100, savings_score + runway_score + stash_score + bill_score + 10))
+    score = max(
+        0, min(100, savings_score + budget_score + runway_score + stash_score + 10)
+    )
     if score >= 80:
         status = "strong"
     elif score >= 60:
@@ -221,36 +363,254 @@ def compute_financial_health(snapshot: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "needs_attention"
 
+    buckets, trend_direction = _monthly_trend(snapshot)
+
     actions: list[str] = []
-    if bill_status == "short":
-        actions.append("Upcoming bills are larger than cash on hand. Move money to spend or cut this week.")
-    if runway_days < 14 and daily_out > 0:
-        actions.append("At this burn rate, cash lasts under two weeks.")
-    if stash_pct < 10 and t["spend"] > 50:
-        actions.append("Almost nothing is in stash. Park a slice of spend so it can earn.")
+    if budget_status == "not_set":
+        actions.append(
+            "Set a monthly spending budget so Miriam can track safe daily spend."
+        )
+    elif budget_status == "over_budget" and budget_remaining < 0:
+        actions.append(
+            f"Pause non-essential spend; you are ${abs(budget_remaining):.2f} "
+            "over budget on average."
+        )
+    if savings_rate < 10 and m["income"] > 0:
+        actions.append("Aim to save at least 10% of incoming money.")
+    if stash < spend * 0.25 and spend > 20:
+        actions.append(
+            "Move a small amount from Spend to Stash so more of your money earns yield."
+        )
+    if runway_days is not None and runway_days < 14:
+        actions.append(
+            "At the current outflow rate, available cash lasts under two weeks."
+        )
+    if bills > total > 0:
+        actions.append(
+            "Upcoming bills are larger than cash on hand this month. Trim spend "
+            "or move money from Stash."
+        )
     if not actions:
-        actions.append("Hold the line. No fire to put out from the numbers we have.")
+        actions.append("Keep your current pace and review your forecast weekly.")
+
+    result: dict[str, Any] = {
+        "source": "python",
+        "engine": "financial-snapshot",
+        "score": int(score),
+        "status": status,
+        "period": period,
+        "period_label": _period_label(period, from_date, to_date),
+        "spend_balance": round(spend, 2),
+        "stash_balance": round(stash, 2),
+        "total_balance": round(total, 2),
+        "total_income": round(m["income"], 2),
+        "total_outflow": round(m["outflow"], 2),
+        "total_net_flow": round(m["net"], 2),
+        "monthly_income": round(m["monthly_income"], 2),
+        "monthly_outflow": round(m["monthly_outflow"], 2),
+        "monthly_net_flow": round(m["monthly_net"], 2),
+        "savings_rate_pct": round(savings_rate, 1),
+        "budget_status": budget_status,
+        "budget_limit": round(budget_limit, 2),
+        "budget_remaining": round(budget_remaining, 2),
+        "stash_pct": round(stash_pct, 1),
+        "runway_days": round(runway_days, 1) if runway_days is not None else None,
+        "recommended_actions": actions,
+        "score_components": [
+            {"name": "Savings Rate", "score": savings_score, "max": 25},
+            {"name": "Budget Control", "score": budget_score, "max": 20},
+            {"name": "Runway", "score": runway_score, "max": 25},
+            {"name": "Stash Discipline", "score": stash_score, "max": 20},
+        ],
+        "data_used": [
+            "balances",
+            "money_flow",
+            "monthly_flow",
+            "budget",
+            "financial_profile",
+        ],
+    }
+    if buckets and trend_direction != "flat":
+        result["monthly_trend"] = buckets
+        result["trend_direction"] = trend_direction
+    return result
+
+
+def _next_month_anchor(snapshot: dict[str, Any], fallback_net: float) -> dict[str, Any]:
+    series = snapshot.get("monthly_flow")
+    months: list[tuple[float, float]] = []
+    if isinstance(series, list):
+        for bucket in series:
+            if not isinstance(bucket, dict):
+                continue
+            months.append(
+                (
+                    _money(bucket.get("total_deposits")),
+                    _money(bucket.get("total_outflow")),
+                )
+            )
+    if not months:
+        return {
+            "expected_income": 0.0,
+            "expected_outflow": 0.0,
+            "expected_net": round(fallback_net, 2),
+        }
+    last_three = months[-3:]
+    expected_income = sum(x[0] for x in last_three) / len(last_three)
+    expected_outflow = sum(x[1] for x in last_three) / len(last_three)
+    return {
+        "expected_income": round(expected_income, 2),
+        "expected_outflow": round(expected_outflow, 2),
+        "expected_net": round(expected_income - expected_outflow, 2),
+    }
+
+
+def compute_cash_flow_forecast(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Project the rest of this month from live balances, spend, and budget.
+
+    Mirrors Go's forecast: daily burn rate from month-to-date outflow, a
+    projected end-of-month balance, and a safe daily spend capped by whatever
+    budget is left. The snapshot's per-month series anchors a next-month
+    estimate.
+    """
+    today = date.today()
+    elapsed, days_in_month, remaining = _calendar()
+
+    flow = _flow_metrics(snapshot)
+    balances = snapshot.get("balances") or {}
+    spend = _money(balances.get("spending_balance"))
+    stash = _money(balances.get("stash_balance"))
+    total = _money(balances.get("total_balance"))
+    if total <= 0:
+        total = spend + stash
+    budget = _budget_block(snapshot)
+
+    daily_burn = flow["outflow"] / elapsed if elapsed else 0.0
+    projected_out = daily_burn * days_in_month
+    projected_net = flow["income"] - projected_out
+    projected_end = max(0.0, total - daily_burn * remaining)
+
+    safe_daily = 0.0
+    primary_action = "Keep spending near your current daily average."
+    if budget and remaining > 0:
+        left_in_budget = budget["limit"] - flow["outflow"]
+        if left_in_budget > 0:
+            safe_daily = left_in_budget / remaining
+            primary_action = (
+                f"Stay under ${safe_daily:.2f}/day for the rest of the month."
+            )
+        elif left_in_budget < 0:
+            primary_action = (
+                f"You are ${abs(left_in_budget):.2f} over budget; "
+                "pause discretionary spend."
+            )
+    if safe_daily <= 0 and remaining > 0 and spend > 0:
+        safe_daily = spend / remaining
+
+    confidence = "medium"
+    if flow["deposit_count"] > 0 and flow["outflow"] > 0:
+        confidence = "high"
+    elif flow["outflow"] <= 0:
+        confidence = "low"
 
     return {
         "source": "python",
-        "score": int(score),
-        "status": status,
-        "breakdown": {
-            "savings_score": savings_score,
-            "runway_score": runway_score,
-            "stash_score": stash_score,
-            "bill_cover_score": bill_score,
+        "engine": "financial-snapshot",
+        "period": f"{today.strftime('%B')} {today.year}",
+        "days_elapsed": elapsed,
+        "days_remaining": remaining,
+        "income_so_far": round(flow["income"], 2),
+        "spent_so_far": round(flow["outflow"], 2),
+        "daily_burn_rate": round(daily_burn, 2),
+        "safe_daily_spend": round(safe_daily, 2),
+        "projected_outflow": round(projected_out, 2),
+        "projected_net_flow": round(projected_net, 2),
+        "projected_end_balance": round(projected_end, 2),
+        "spend_balance": round(spend, 2),
+        "stash_balance": round(stash, 2),
+        "next_month": _next_month_anchor(snapshot, projected_net),
+        "confidence": confidence,
+        "primary_action": primary_action,
+        "data_used": ["money_flow", "balances", "budget", "monthly_flow"],
+    }
+
+
+def compute_financial_plan(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Assemble a practical plan from health, forecast, and the profile."""
+    health = compute_financial_health(snapshot, period="last_90_days")
+    forecast = compute_cash_flow_forecast(snapshot)
+    profile = _profile_block(snapshot)
+
+    steps: list[dict[str, Any]] = [
+        {
+            "priority": 1,
+            "title": "Protect this month",
+            "action": forecast["primary_action"],
         },
-        "savings_rate_pct": round(savings_rate, 1),
-        "runway_days": round(runway_days, 1),
-        "stash_pct": round(stash_pct, 1),
-        "spend_balance": round(t["spend"], 2),
-        "stash_balance": round(t["stash"], 2),
-        "invested": round(t["invested"], 2),
-        "bills_due": round(t["bills_due"], 2),
-        "bill_status": bill_status,
-        "actions": actions,
-        "data_used": ["balances", "spending_summary", "upcoming_obligations", "positions"],
+        {
+            "priority": 2,
+            "title": "Build automatic savings",
+            "action": "Use Stash as the default place for money you do not need this week.",
+        },
+        {
+            "priority": 3,
+            "title": "Review recurring spend",
+            "action": "Check subscriptions and recurring merchants before increasing savings targets.",
+        },
+    ]
+    if profile["has_profile"]:
+        available = health["stash_balance"] + health["spend_balance"]
+        if profile["emergency_fund_target"] > 0:
+            gap = max(0.0, profile["emergency_fund_target"] - available)
+            if gap > 0:
+                steps.append(
+                    {
+                        "priority": 4,
+                        "title": "Close the emergency-fund gap",
+                        "action": (
+                            f"About ${gap:,.2f} more toward your emergency fund "
+                            f"target of ${profile['emergency_fund_target']:,.2f}."
+                        ),
+                    }
+                )
+        if profile["monthly_savings_target"] > 0 and health["monthly_income"] > 0:
+            target_pct = (
+                profile["monthly_savings_target"] / health["monthly_income"] * 100
+            )
+            if health["savings_rate_pct"] < target_pct:
+                steps.append(
+                    {
+                        "priority": 5,
+                        "title": "Hit your savings target",
+                        "action": (
+                            f"Aim to save about ${profile['monthly_savings_target']:,.2f} "
+                            "each month."
+                        ),
+                    }
+                )
+
+    return {
+        "source": "python",
+        "engine": "financial-snapshot",
+        "health": health,
+        "forecast": forecast,
+        "profile": {
+            "has_profile": profile["has_profile"],
+            "primary_currency": profile["primary_currency"],
+            "income_frequency": profile["income_frequency"],
+            "financial_goal": profile["financial_goal"],
+            "risk_tolerance": profile["risk_tolerance"],
+            "investment_horizon": profile["investment_horizon"],
+            "monthly_savings_target": round(profile["monthly_savings_target"], 2),
+            "emergency_fund_target": round(profile["emergency_fund_target"], 2),
+        },
+        "next_steps": steps,
+        "data_used": [
+            "financial_health",
+            "cash_flow_forecast",
+            "financial_profile",
+            "budget",
+        ],
     }
 
 

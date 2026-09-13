@@ -72,51 +72,45 @@ class GoBackendClient:
             "/api/v1/analytics/dashboard", token, params={"period": period}
         )
 
-    async def get_financial_plan(self, token: str) -> dict[str, Any]:
-        """Assemble a short plan note from data Python already fetches.
+    async def get_financial_snapshot(
+        self,
+        token: str,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """One call for everything the Python intelligence engine needs.
 
-        The Go ``/api/v1/ai/financial-plan`` endpoint lives inside the
-        AI-orchestrator group being phased out. A full Python-side
-        replacement is a fast-follow; until then, return live balances,
-        spending, and obligations so the LLM is not handed a silent 404.
+        Go's ``/api/v1/analytics/financial-snapshot`` endpoint returns
+        ledger-accurate balances, period + per-month money flow, the spending
+        budget, and the user's financial profile in a single response.
         """
-        balances: dict[str, Any] = {}
-        spending: dict[str, Any] = {}
-        obligations: list[dict[str, Any]] = []
-        try:
-            balances = await self.get_balances(token)
-        except IntegrationError:
-            logger.info("financial plan: balances unavailable")
-        try:
-            spending = await self.get_spending_summary(token)
-        except IntegrationError:
-            logger.info("financial plan: spending summary unavailable")
-        try:
-            obligations = await self.get_upcoming_bills(token)
-        except IntegrationError:
-            logger.info("financial plan: obligations unavailable")
-        snapshot = {
-            "balances": balances,
-            "spending_summary": spending,
-            "upcoming_obligations": obligations,
-            "positions": [],
-        }
-        from miriam_agent.financial.intelligence import compute_financial_health
+        params: dict[str, Any] = {}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        return await self._token_get(
+            "/api/v1/analytics/financial-snapshot", token, params=params
+        )
 
-        health = compute_financial_health(snapshot)
-        return {
-            "source": "python",
-            "balances": balances,
-            "spending_summary": spending,
-            "upcoming_obligations": obligations,
-            "health": health,
-        }
+    async def get_financial_plan(self, token: str) -> dict[str, Any]:
+        """Real financial plan from the ledger-backed financial snapshot.
+
+        Health, cash-flow forecast, and profile-driven next steps are computed
+        by the Python intelligence engine from Go's
+        ``/api/v1/analytics/financial-snapshot`` response (the old
+        ``/api/v1/ai/financial-plan`` endpoint is gone).
+        """
+        from miriam_agent.financial.intelligence import compute_financial_plan
+
+        snapshot = await self._engine_snapshot(token)
+        return compute_financial_plan(snapshot)
 
     async def get_cash_flow_forecast(self, token: str) -> dict[str, Any]:
-        """Python-side forecast from live Go balances, spending, and bills."""
+        """Forecast computed from the ledger-backed financial snapshot."""
         from miriam_agent.financial.intelligence import compute_cash_flow_forecast
 
-        snapshot = await self._money_snapshot(token)
+        snapshot = await self._engine_snapshot(token)
         return compute_cash_flow_forecast(snapshot)
 
     async def get_investment_positions(self, token: str) -> list[dict[str, Any]]:
@@ -138,12 +132,46 @@ class GoBackendClient:
         # (camelCase: id, email, firstName, lastName, kycStatus, ...).
         return await self._token_get("/api/v1/users/me", token)
 
-    async def get_financial_health(self, token: str) -> dict[str, Any]:
-        """Python-side health score from live Go money data."""
-        from miriam_agent.financial.intelligence import compute_financial_health
+    async def get_financial_health(
+        self, token: str, period: str = "last_90_days"
+    ) -> dict[str, Any]:
+        """Python-side health score from the ledger-backed financial snapshot."""
+        from miriam_agent.financial.intelligence import (
+            compute_financial_health,
+            period_to_window,
+        )
 
-        snapshot = await self._money_snapshot(token)
-        return compute_financial_health(snapshot)
+        from_date, to_date = period_to_window(period)
+        snapshot = await self._engine_snapshot(token, from_date, to_date)
+        return compute_financial_health(snapshot, period=period)
+
+    async def _engine_snapshot(
+        self,
+        token: str,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Snapshot the intelligence engine needs: Go's ledger-backed
+        financial snapshot plus upcoming obligations.
+
+        Fails open: if the financial-snapshot endpoint is unreachable (e.g.
+        a backend that predates it) we fall back to the legacy
+        ``_money_snapshot`` shape so the engine degrades instead of raising.
+        """
+        try:
+            snapshot = await self.get_financial_snapshot(token, from_date, to_date)
+        except IntegrationError:
+            logger.warning(
+                "financial-snapshot unavailable; using legacy money snapshot"
+            )
+            snapshot = await self._money_snapshot(token)
+        try:
+            obligations = await self.get_upcoming_bills(token)
+        except IntegrationError:
+            obligations = []
+        if isinstance(obligations, list):
+            snapshot["upcoming_obligations"] = obligations
+        return snapshot
 
     async def _money_snapshot(self, token: str) -> dict[str, Any]:
         balances: dict[str, Any] = {}

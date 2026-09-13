@@ -293,28 +293,61 @@ def test_billpay_uses_real_paths_and_idempotency_header():
     _run(client.close())
 
 
-def test_get_financial_plan_assembles_from_live_reads_not_ai_endpoint():
+def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
     seen_paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen_paths.append(request.url.path)
-        if request.url.path == "/api/v1/balances":
-            return httpx.Response(200, json={"spending_balance": "10.00"})
-        if request.url.path == "/api/v1/analytics/dashboard":
-            return httpx.Response(200, json={"total": 4})
+        if request.url.path == "/api/v1/analytics/financial-snapshot":
+            return httpx.Response(
+                200,
+                json={
+                    "period": {"from": "2026-09-01", "to": "2026-09-13"},
+                    "balances": {
+                        "spending_balance": "10.00",
+                        "stash_balance": "5.00",
+                        "total_balance": "15.00",
+                    },
+                    "money_flow": {
+                        "total_deposits": "100.00",
+                        "total_withdrawals": "40.00",
+                        "total_card_spend": "10.00",
+                        "total_p2p": "0.00",
+                        "total_receipts": "0.00",
+                        "deposit_count": 2,
+                        "card_spend_count": 3,
+                    },
+                    "monthly_flow": [],
+                    "budget": {"set": False},
+                    "profile": {"has_profile": False},
+                },
+            )
         if request.url.path == "/api/v1/financial-obligations":
             return httpx.Response(200, json={"obligations": [{"name": "rent"}]})
+        if request.url.path in {"/api/v1/balances", "/api/v1/analytics/dashboard"}:
+            return httpx.Response(
+                200, json={"error": "legacy path should not be called"}
+            )
         return httpx.Response(404, json={"error": "not found"})
 
     client = _client_for(handler)
     plan = _run(client.get_financial_plan("tok"))
+    assert "/api/v1/analytics/financial-snapshot" in seen_paths
+    assert "/api/v1/financial-obligations" in seen_paths
     assert "/api/v1/ai/financial-plan" not in seen_paths
+    assert "/api/v1/balances" not in seen_paths
+    assert "/api/v1/analytics/dashboard" not in seen_paths
     assert plan["source"] == "python"
-    assert plan["balances"]["spending_balance"] == "10.00"
-    assert plan["upcoming_obligations"][0]["name"] == "rent"
+    assert plan["engine"] == "financial-snapshot"
+    assert plan["next_steps"][0]["priority"] == 1
+    assert plan["health"]["score"] >= 0
     health = _run(client.get_financial_health("tok"))
     assert health["source"] == "python"
+    assert health["engine"] == "financial-snapshot"
     assert "/api/v1/ai/financial-health" not in seen_paths
+    forecast = _run(client.get_cash_flow_forecast("tok"))
+    assert forecast["engine"] == "financial-snapshot"
+    assert forecast["spend_balance"] == 10.0
     _run(client.close())
 
 

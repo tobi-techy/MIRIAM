@@ -143,9 +143,10 @@ async def _get_financial_plan(
 registry.register(
     name="get_financial_plan",
     description=(
-        "Summarize the user's current financial position from live balances, "
-        "spending, and upcoming obligations. A dedicated financial-plan "
-        "computation is not available yet."
+        "Build a practical, personalized financial plan from the user's "
+        "financial health score, cash-flow forecast, and financial profile "
+        "(savings target, emergency fund, risk tolerance). Use when the user "
+        "asks what they should do next or wants a plan."
     ),
     args_schema={"type": "object", "properties": {}},
     category="planning",
@@ -1070,8 +1071,10 @@ async def _get_cash_flow_forecast(
 registry.register(
     name="get_cash_flow_forecast",
     description=(
-        "Summarize near-term cash flow from live balances, spending, and "
-        "obligations. A dedicated forecast engine is not available yet."
+        "Forecast the user's end-of-month balance and safe daily spend from "
+        "month-to-date income/spending, recurring expenses, current balances, "
+        "and budget. Use when the user asks 'can I afford this', will they run "
+        "out of money, or what they can safely spend per day."
     ),
     args_schema={"type": "object", "properties": {}},
     category="planning",
@@ -1084,16 +1087,39 @@ async def _get_financial_health(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
     client = get_go_client()
-    return await client.get_financial_health(ctx["token"])
+    return await client.get_financial_health(
+        ctx["token"], period=args.get("period", "last_90_days")
+    )
 
 
 registry.register(
     name="get_financial_health",
     description=(
-        "Summarize financial health from live balances, spending, obligations, "
-        "and positions. A dedicated health-score engine is not available yet."
+        "Calculate the user's financial health score from balances, savings "
+        "rate, budget progress, cash flow, and profile targets. Use for 'how "
+        "am I doing', financial score, financial health, or progress-check "
+        "questions. Supports multi-period analysis; use last_6_months or "
+        "last_12_months for long-term health trends."
     ),
-    args_schema={"type": "object", "properties": {}},
+    args_schema={
+        "type": "object",
+        "properties": {
+            "period": {
+                "type": "string",
+                "enum": [
+                    "last_90_days",
+                    "last_6_months",
+                    "last_12_months",
+                    "this_month",
+                    "last_month",
+                ],
+                "description": (
+                    "Time period to analyze. Default to last_90_days for a "
+                    "comprehensive view."
+                ),
+            }
+        },
+    },
     category="planning",
     risk_level=RiskLevel.LOW,
     handler=_get_financial_health,
