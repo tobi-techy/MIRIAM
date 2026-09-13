@@ -269,6 +269,10 @@ class FakeState:
 
 
 class FakeGoAgentClient:
+    def __init__(self):
+        self.health_periods = []
+        self.plan_calls = 0
+
     async def get_balances(self, token):
         return {"wallets": [{"wallet_type": "spend", "balance": "120.00"}]}
 
@@ -287,8 +291,13 @@ class FakeGoAgentClient:
     async def get_upcoming_bills(self, token):
         return []
 
-    async def get_financial_health(self, token):
-        return {"score": 72}
+    async def get_financial_health(self, token, period="last_90_days"):
+        self.health_periods.append(period)
+        return {"score": 72, "period": period}
+
+    async def get_financial_plan(self, token):
+        self.plan_calls += 1
+        return {"plan": "engine", "next_steps": ["top up emergency fund"]}
 
     async def get_user_profile(self, token):
         return {"profile": {"name": "Test User"}}
@@ -343,6 +352,92 @@ def test_analyst_reaches_out_on_real_snapshot(monkeypatch):
     assert outcome.category == "cashflow"
     assert "120" in outcome.message
     assert outcome.message.strip()
+
+
+def test_analyst_threads_period_into_health_and_uses_engine_plan(monkeypatch):
+    from miriam_agent.integrations import go_client as gc
+    from miriam_agent.proactive import analyst
+
+    fake = FakeGoAgentClient()
+    monkeypatch.setattr(gc, "_client", fake)
+
+    captured = {}
+
+    class Provider:
+        model = "mock"
+
+        async def complete(
+            self, messages, tools=None, temperature=None, max_tokens=None
+        ):
+            from miriam_agent.agents.llm import LLMResponse
+
+            captured["content"] = messages[1].content
+            return LLMResponse(content='{"should_reach_out": false}', model=self.model)
+
+        async def stream(self, *args, **kwargs):
+            yield {}
+
+        def cost_estimate(self, usage):
+            return 0.0
+
+    monkeypatch.setattr(analyst, "get_llm_provider", lambda: Provider())
+
+    _run(
+        analyst.analyze_finances(
+            user_id="u-1",
+            token="tok",
+            period="last_12_months",
+            state=FakeState(),
+        )
+    )
+
+    assert fake.health_periods == ["last_12_months"]
+    assert fake.plan_calls == 1
+    snapshot = captured["content"]
+    assert "Financial health" in snapshot
+    assert "Financial plan" in snapshot
+    assert "emergency fund" in snapshot
+
+
+def test_analyst_reuses_caller_provided_plan_without_duplicate_fetch(monkeypatch):
+    from miriam_agent.integrations import go_client as gc
+    from miriam_agent.proactive import analyst
+
+    fake = FakeGoAgentClient()
+    monkeypatch.setattr(gc, "_client", fake)
+
+    captured = {}
+
+    class Provider:
+        model = "mock"
+
+        async def complete(
+            self, messages, tools=None, temperature=None, max_tokens=None
+        ):
+            from miriam_agent.agents.llm import LLMResponse
+
+            captured["content"] = messages[1].content
+            return LLMResponse(content='{"should_reach_out": false}', model=self.model)
+
+        async def stream(self, *args, **kwargs):
+            yield {}
+
+        def cost_estimate(self, usage):
+            return 0.0
+
+    monkeypatch.setattr(analyst, "get_llm_provider", lambda: Provider())
+
+    _run(
+        analyst.analyze_finances(
+            user_id="u-1",
+            token="tok",
+            financial_plan={"next_steps": ["top up emergency fund"]},
+            state=FakeState(),
+        )
+    )
+
+    assert fake.plan_calls == 0
+    assert "Financial plan" in captured["content"]
 
 
 def test_analyst_stays_quiet_on_garbage(monkeypatch):

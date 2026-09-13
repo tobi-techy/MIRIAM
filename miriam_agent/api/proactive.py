@@ -10,7 +10,7 @@ feature, or an unreachable model all resolve to "stay quiet".
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from miriam_agent.api.chat import _load_financial_plan, _load_memory_facts
 from miriam_agent.api.dependencies import (
@@ -34,6 +34,11 @@ router = APIRouter()
 async def proactive_analyze(
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
+    period: str = Query(
+        default="last_90_days",
+        description="Financial-health window the analyst reasons over.",
+        pattern="^(last_90_days|last_6_months|last_12_months|this_month|last_month)$",
+    ),
     memory_store: MemoryStore = Depends(get_memory_store),
     supermemory_memory: Any = Depends(get_supermemory_memory_dep),
 ) -> dict[str, Any]:
@@ -76,6 +81,7 @@ async def proactive_analyze(
     outcome = await analyze_finances(
         user_id=user.id,
         token=token,
+        period=period,
         financial_plan=financial_plan,
         memory_facts=memory_facts,
     )

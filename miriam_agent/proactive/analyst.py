@@ -27,10 +27,9 @@ logger = logging.getLogger(__name__)
 
 VALID_PRIORITIES = ("low", "medium", "high")
 
-ANALYST_SYSTEM_PROMPT = (
-    """You are Miriam, a warm, finance-savvy best friend who watches a user's
-money day and night. You are NOT a customer-service agent, not a dashboard, not a
-bank alert system.
+ANALYST_SYSTEM_PROMPT = """You are Miriam, a warm, finance-savvy best friend
+who watches a user's money day and night. You are NOT a customer-service
+agent, not a dashboard, not a bank alert system.
 
 Your job: look at the snapshot of the user's financial life below and decide whether
 there is ONE genuinely useful thing worth telling them right now. If yes, write the
@@ -58,7 +57,6 @@ Respond with ONLY a JSON object like:
 or {"should_reach_out": false, "priority": "low", "category": "general",
  "message": "", "reason": "Nothing worth interrupting for"}.
 """
-)
 
 
 @dataclass
@@ -148,8 +146,20 @@ def _fmt_snapshot_value(value: Any) -> str:
         return str(value)[:1200]
 
 
-async def _go_snapshot_lines(token: str, client: Any) -> list[str]:
-    """Fetch live money data from Go (fail-open; any miss just narrows the view)."""
+async def _go_snapshot_lines(
+    token: str,
+    client: Any,
+    *,
+    period: str = "last_90_days",
+    financial_plan: dict[str, Any] | None = None,
+) -> list[str]:
+    """Fetch live money data from Go (fail-open; any miss just narrows the view).
+
+    Sources are the real financial-intelligence outputs: the period-aware
+    health score and the full plan (health + cash-flow forecast + next steps)
+    computed by the Python engine from the ledger-backed snapshot, plus raw
+    balances/transactions/bills for detail.
+    """
     lines: list[str] = []
     fetchers: list[tuple[str, Any]] = [
         ("Balances", lambda: client.get_balances(token)),
@@ -159,7 +169,10 @@ async def _go_snapshot_lines(token: str, client: Any) -> list[str]:
             lambda: client.get_spending_summary(token, period="month"),
         ),
         ("Upcoming bills", lambda: client.get_upcoming_bills(token)),
-        ("Financial health", lambda: client.get_financial_health(token)),
+        (
+            "Financial health",
+            lambda: client.get_financial_health(token, period=period),
+        ),
     ]
     for label, fetch in fetchers:
         try:
@@ -167,6 +180,15 @@ async def _go_snapshot_lines(token: str, client: Any) -> list[str]:
             lines.append(f"{label}: " + _fmt_snapshot_value(value))
         except Exception as e:
             logger.info("Proactive snapshot: %s unavailable (%s)", label, e)
+    # The financial plan is the engine's own synthesis; use the caller's copy
+    # when one is already loaded (avoids a duplicate Go call).
+    if financial_plan is None:
+        try:
+            financial_plan = await client.get_financial_plan(token)
+        except Exception as e:
+            logger.info("Proactive snapshot: financial plan unavailable (%s)", e)
+    if financial_plan:
+        lines.append("Financial plan: " + _fmt_snapshot_value(financial_plan))
     try:
         profile = await client.get_user_profile(token)
         lines.append(
@@ -181,6 +203,7 @@ async def analyze_finances(
     *,
     user_id: str,
     token: str,
+    period: str = "last_90_days",
     financial_plan: dict[str, Any] | None = None,
     memory_facts: list[dict[str, Any]] | None = None,
     provider: LLMProvider | None = None,
@@ -188,9 +211,11 @@ async def analyze_finances(
 ) -> ProactiveOutcome:
     """Decide whether to reach out to a user, and with what message.
 
-    Fetches a live money snapshot from the Go backend (fail-open), thinks
-    about it once, and returns a ProactiveOutcome. The caller (Go's reacher
-    worker) owns quiet hours, the daily cap, and the actual iMessage delivery.
+    Fetches a live money snapshot from the Go backend (fail-open), thought
+    about through the real financial-intelligence outputs (period-aware
+    health + plan), and returned as a ProactiveOutcome. The caller (Go's
+    reacher worker) owns quiet hours, the daily cap, and the actual iMessage
+    delivery.
     """
     outcome = ProactiveOutcome()
     prov = provider or get_llm_provider()
@@ -201,12 +226,11 @@ async def analyze_finances(
     try:
         from miriam_agent.integrations.go_client import get_go_client
 
-        snapshot_lines = await _go_snapshot_lines(token, get_go_client())
+        snapshot_lines = await _go_snapshot_lines(
+            token, get_go_client(), period=period, financial_plan=financial_plan
+        )
     except Exception as e:
         logger.warning("Proactive snapshot fetch failed entirely: %s", e)
-
-    if financial_plan:
-        snapshot_lines.append("Financial plan: " + _fmt_snapshot_value(financial_plan))
 
     if memory_facts:
         facts = [
