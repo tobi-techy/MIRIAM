@@ -52,6 +52,12 @@ app.add_middleware(
 
 
 # Add health check endpoint
+@app.get("/")
+async def root():
+    """Liveness landing page (AtlasFlow probes this path by default)."""
+    return {"service": "miriam-agent", "status": "ok", "endpoints": ["/health", "/api/v1"]}
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring."""
