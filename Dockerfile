@@ -14,6 +14,8 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY miriam_agent ./miriam_agent
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir "uvicorn[standard]" .
@@ -23,4 +25,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
-CMD ["uvicorn", "miriam_agent.cli:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["./entrypoint.sh"]
