@@ -4,6 +4,19 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _to_money(value: Any) -> float:
+    """Normalize an amount that may arrive as a str (LLM-emitted), int, or
+    float to a float. The safety numeric checks below compare amounts against
+    thresholds, and a string amount (e.g. ``"2"``) would TypeError and silently
+    deny the action via the blanket ``except`` in :meth:`validate_action`."""
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class SafetyPolicy:
     """Safety and policy enforcement for Miriam Financial Agent."""
 
@@ -328,7 +341,7 @@ class SafetyPolicy:
         """Check for new beneficiary with unusual amount."""
         try:
             threshold = pattern["threshold"]
-            amount = arguments.get("amount", 0)
+            amount = _to_money(arguments.get("amount"))
 
             if amount < threshold:
                 return False
@@ -365,7 +378,7 @@ class SafetyPolicy:
         try:
             threshold = pattern["threshold"]
 
-            amount = arguments.get("amount", 0)
+            amount = _to_money(arguments.get("amount"))
             if amount < threshold:
                 return False
 
@@ -436,7 +449,9 @@ class SafetyPolicy:
         try:
             # Bill payments carry their face value as amount_ngn (amount stays
             # empty), so read both so per-transaction/daily caps apply to them.
-            amount = arguments.get("amount", 0) or arguments.get("amount_ngn", 0)
+            amount = _to_money(arguments.get("amount")) or _to_money(
+                arguments.get("amount_ngn")
+            )
 
             # Get user's risk level
             risk_level = await self._get_user_risk_level(user_id)
@@ -536,7 +551,7 @@ class SafetyPolicy:
             risk_score += tool_risk
 
             # Additional risk based on arguments
-            amount = arguments.get("amount", 0)
+            amount = _to_money(arguments.get("amount"))
             if amount > 0:
                 if amount > 10000:
                     risk_score += 0.3
@@ -587,7 +602,7 @@ class SafetyPolicy:
                 return True
 
             # Check amount
-            amount = arguments.get("amount", 0)
+            amount = _to_money(arguments.get("amount"))
             if amount > self.approval_workflow.get("required_for_large_amounts", 0):
                 return True
 

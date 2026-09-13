@@ -285,6 +285,7 @@ class Agent:
         user_context: dict[str, Any] | None = None,
         memory_facts: list[dict[str, Any]] | None = None,
         financial_plan: dict[str, Any] | None = None,
+        approved_actions: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Streaming variant. Yields events: token / tool_result / done / error."""
         messages = self._build_messages(
@@ -297,6 +298,38 @@ class Agent:
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
         llm_extra: list[ChatMessage] = []
+
+        # OTP-confirmed action replay: execute approved actions eagerly and
+        # cache by signature (as in run()), so the stream never re-runs an
+        # already-executed money action and never waits for the LLM to re-emit
+        # the exact call. Narrate from the cached results instead.
+        self._approved_actions = list(approved_actions or [])
+        approved_lookup = {
+            self._signature(a.get("tool"), a.get("arguments", {})): True
+            for a in self._approved_actions
+        }
+        executed_results: dict[str, dict[str, Any]] = {}
+        for a in approved_actions or []:
+            sig = self._signature(a.get("tool"), a.get("arguments", {}))
+            try:
+                result = await self._safe_execute(
+                    a.get("tool"), a.get("arguments", {}), ctx, user_id, None
+                )
+                executed_results[sig] = result
+                yield {
+                    "type": "tool_result",
+                    "tool": a.get("tool"),
+                    "status": "success",
+                    "result": result,
+                }
+            except Exception as e:  # noqa: BLE001
+                executed_results[sig] = {"error": str(e)}
+                yield {
+                    "type": "tool_result",
+                    "tool": a.get("tool"),
+                    "status": "error",
+                    "result": {"error": str(e)},
+                }
 
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages) + llm_extra
@@ -358,14 +391,59 @@ class Agent:
                     }
                     continue
                 if tool.is_mutation or tool.requires_approval:
-                    proposed = self._summarize_action(tool, args)
-                    yield {
-                        "type": "action_required",
-                        "tool": name,
-                        "arguments": args,
-                        "summary": proposed,
-                    }
-                    stage_next = True
+                    signature = self._signature(name, args)
+                    if signature in approved_lookup and signature in executed_results:
+                        llm_extra.append(
+                            self._tool_message(
+                                call.get("id"),
+                                name,
+                                executed_results[signature],
+                            )
+                        )
+                        yield {
+                            "type": "tool_result",
+                            "tool": name,
+                            "status": "success",
+                            "result": executed_results[signature],
+                        }
+                    elif signature in approved_lookup or self._matches_pending(
+                        name, args
+                    ):
+                        try:
+                            result = await self._safe_execute(
+                                name, args, ctx, user_id, None
+                            )
+                            executed_results[signature] = result
+                            llm_extra.append(
+                                self._tool_message(call.get("id"), name, result)
+                            )
+                            yield {
+                                "type": "tool_result",
+                                "tool": name,
+                                "status": "success",
+                                "result": result,
+                            }
+                        except Exception as e:  # noqa: BLE001
+                            llm_extra.append(
+                                self._tool_message(
+                                    call.get("id"), name, {"error": str(e)}
+                                )
+                            )
+                            yield {
+                                "type": "tool_result",
+                                "tool": name,
+                                "status": "error",
+                                "result": {"error": str(e)},
+                            }
+                    else:
+                        proposed = self._summarize_action(tool, args)
+                        yield {
+                            "type": "action_required",
+                            "tool": name,
+                            "arguments": args,
+                            "summary": proposed,
+                        }
+                        stage_next = True
                     continue
                 try:
                     result = await self._safe_execute(name, args, ctx, user_id, None)

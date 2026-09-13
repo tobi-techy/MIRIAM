@@ -77,6 +77,24 @@ def validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
             continue
         value = args[key]
         expected = spec.get("type")
+        if expected == "number" and isinstance(value, str):
+            try:
+                value = float(value)
+                args[key] = value
+            except ValueError:
+                raise ValidationError(
+                    f"Argument '{key}' for '{tool.name}' must be type 'number', "
+                    f"got '{value!r}'"
+                )
+        elif expected == "integer" and isinstance(value, str):
+            try:
+                value = int(float(value))
+                args[key] = value
+            except ValueError:
+                raise ValidationError(
+                    f"Argument '{key}' for '{tool.name}' must be type 'integer', "
+                    f"got '{value!r}'"
+                )
         if expected and not _type_matches(value, expected):
             raise ValidationError(
                 f"Argument '{key}' for '{tool.name}' must be type '{expected}', "

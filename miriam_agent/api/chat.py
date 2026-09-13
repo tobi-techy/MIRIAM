@@ -182,18 +182,21 @@ async def chat_with_agent(
     # Conversational onboarding: while a user has an unfinished financial
     # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
     # instead of the general agent. Action intents and completed interviews pass
-    # straight through.
-    onboarding = await OnboardingService(memory_store).handle_turn(
-        user,
-        message=message,
-        is_poll_vote=bool(request.get("is_poll_vote", False)),
-        poll_title=request.get("poll_title") or "",
-        document=request.get("document"),
-    )
-    if onboarding.took_over:
-        return await _finish_onboarding_turn(
-            memory_store, supermemory_memory, user, message, onboarding
+    # straight through. An OTP-confirmed action replay is the one case that
+    # must never be handed to onboarding: the user already reviewed and proved
+    # the action by email code, so it goes straight to the agent for execution.
+    if not approved_actions:
+        onboarding = await OnboardingService(memory_store).handle_turn(
+            user,
+            message=message,
+            is_poll_vote=bool(request.get("is_poll_vote", False)),
+            poll_title=request.get("poll_title") or "",
+            document=request.get("document"),
         )
+        if onboarding.took_over:
+            return await _finish_onboarding_turn(
+                memory_store, supermemory_memory, user, message, onboarding
+            )
 
     registry = build_tool_registry()
     agent = Agent(
@@ -285,6 +288,7 @@ async def chat_stream(
     """Stream chat tokens via Server-Sent Events."""
     message = request.get("message", "")
     conversation_id = request.get("conversation_id")
+    approved_actions = request.get("approved_actions")
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -307,17 +311,21 @@ async def chat_stream(
     # Conversational onboarding owns the turn here too, exactly as in /chat
     # (polls only render in the iMessage bridge; the web stream carries the text
     # and, when one is pending, the poll payload for the client to render).
-    onboarding = await OnboardingService(memory_store).handle_turn(
-        user,
-        message=message,
-        is_poll_vote=bool(request.get("is_poll_vote", False)),
-        poll_title=request.get("poll_title") or "",
-        document=request.get("document"),
-    )
+    # OTP-confirmed action replays skip onboarding just like in /chat:
+    # approved_actions were already reviewed and email-verified by the user.
+    onboarding = None
+    if not approved_actions:
+        onboarding = await OnboardingService(memory_store).handle_turn(
+            user,
+            message=message,
+            is_poll_vote=bool(request.get("is_poll_vote", False)),
+            poll_title=request.get("poll_title") or "",
+            document=request.get("document"),
+        )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            if onboarding.took_over:
+            if onboarding is not None and onboarding.took_over:
                 conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
                 await memory_store.store_interaction(
                     user_id=user.id,
@@ -384,6 +392,7 @@ async def chat_stream(
                 user_context=user_context,
                 memory_facts=memory_facts,
                 financial_plan=financial_plan,
+                approved_actions=approved_actions,
             ):
                 evt = event["type"]
                 if evt == "token":
