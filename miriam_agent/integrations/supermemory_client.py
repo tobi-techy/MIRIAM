@@ -375,17 +375,13 @@ class SupermemoryClient:
             return False
         return True
 
-    async def _post(
-        self, path: str, payload: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         return await self._request("POST", path, json=payload)
 
     async def _get(self, path: str) -> dict[str, Any] | None:
         return await self._request("GET", path)
 
-    async def _patch(
-        self, path: str, payload: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    async def _patch(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         return await self._request("PATCH", path, json=payload)
 
     async def _delete(

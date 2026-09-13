@@ -322,9 +322,7 @@ class ConcentrateProvider(LLMProvider):
             return RateLimitError(f"Concentrate rate limit exceeded: {detail}")
         return AgentError(f"Concentrate API error {status}: {detail}")
 
-    async def _request_json(
-        self, body: dict[str, Any], stream: bool
-    ) -> httpx.Response:
+    async def _request_json(self, body: dict[str, Any], stream: bool) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             request = self._client.build_request(
@@ -341,9 +339,7 @@ class ConcentrateProvider(LLMProvider):
                 if attempt < self.max_retries:
                     await asyncio.sleep(self._backoff(attempt))
                     continue
-                raise AgentError(
-                    f"Concentrate request failed: {e}"
-                ) from e
+                raise AgentError(f"Concentrate request failed: {e}") from e
 
             if resp.status_code == 200:
                 return resp
@@ -403,9 +399,9 @@ class ConcentrateProvider(LLMProvider):
                 "completion_tokens": usage_obj.completion_tokens,
                 "total_tokens": usage_obj.total_tokens,
                 "cached_tokens": int(
-                    (data.get("usage") or {}).get("input_tokens_details", {}).get(
-                        "cached_tokens", 0
-                    )
+                    (data.get("usage") or {})
+                    .get("input_tokens_details", {})
+                    .get("cached_tokens", 0)
                     or 0
                 ),
             },

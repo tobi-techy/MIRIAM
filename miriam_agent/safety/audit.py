@@ -70,20 +70,28 @@ class AuditSystem:
 
                 logger.info(
                     "Action logged",
-                    user_id=user_id,
-                    action=action,
-                    resource=resource,
-                    audit_id=audit_log.id,
+                    extra={
+                        "user_id": user_id,
+                        "action": action,
+                        "resource": resource,
+                        "audit_id": audit_log.id,
+                    },
                 )
 
                 return audit_log.id
 
-        except Exception as e:
+        except Exception:
+            # Bug fix: this used to pass user_id/action as raw keyword
+            # arguments to logger.error, which stdlib logging rejects
+            # ("unexpected keyword argument"). That raised a *second*,
+            # uncaught exception right here, which meant `log_action`
+            # never actually completed successfully OR failed cleanly --
+            # every call silently threw, so the audit trail was never
+            # actually being written despite being invoked on every tool
+            # execution.
             logger.error(
                 "Error logging action",
-                user_id=user_id,
-                action=action,
-                error=str(e),
+                extra={"user_id": user_id, "action": action},
                 exc_info=True,
             )
             raise
@@ -130,22 +138,22 @@ class AuditSystem:
 
                 logger.info(
                     "Money movement logged",
-                    user_id=user_id,
-                    transaction_id=transaction_id,
-                    amount=amount,
-                    currency=currency,
-                    status=status,
-                    audit_id=audit_log.id,
+                    extra={
+                        "user_id": user_id,
+                        "transaction_id": transaction_id,
+                        "amount": amount,
+                        "currency": currency,
+                        "status": status,
+                        "audit_id": audit_log.id,
+                    },
                 )
 
                 return audit_log.id
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error logging money movement",
-                user_id=user_id,
-                transaction_id=transaction_id,
-                error=str(e),
+                extra={"user_id": user_id, "transaction_id": transaction_id},
                 exc_info=True,
             )
             raise
@@ -179,11 +187,10 @@ class AuditSystem:
                     for log in logs.scalars()
                 ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error getting user audit logs",
-                user_id=user_id,
-                error=str(e),
+                extra={"user_id": user_id},
                 exc_info=True,
             )
             raise
@@ -215,11 +222,10 @@ class AuditSystem:
                     for log in logs.scalars()
                 ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error getting transaction audit logs",
-                transaction_id=transaction_id,
-                error=str(e),
+                extra={"transaction_id": transaction_id},
                 exc_info=True,
             )
             raise
@@ -244,16 +250,14 @@ class AuditSystem:
 
                 logger.info(
                     "Old audit logs cleaned",
-                    count=count,
-                    cutoff_date=cutoff_date.isoformat(),
+                    extra={"count": count, "cutoff_date": cutoff_date.isoformat()},
                 )
 
                 return count
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error cleaning old logs",
-                error=str(e),
                 exc_info=True,
             )
             raise
@@ -319,10 +323,9 @@ class AuditSystem:
 
                 return export_data
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error exporting audit data",
-                error=str(e),
                 exc_info=True,
             )
             raise
@@ -352,17 +355,14 @@ class AuditSystem:
 
                 return violations
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking compliance violations",
-                error=str(e),
                 exc_info=True,
             )
             raise
 
-    async def _check_log_for_violations(
-        self, log: AuditLog
-    ) -> dict[str, Any] | None:
+    async def _check_log_for_violations(self, log: AuditLog) -> dict[str, Any] | None:
         """Check a single log for potential violations."""
         try:
             # Check if log details contain suspicious information
@@ -401,10 +401,9 @@ class AuditSystem:
 
             return None
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking log for violations",
-                error=str(e),
                 exc_info=True,
             )
             return None
@@ -415,3 +414,25 @@ class AuditSystem:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+
+_audit_singleton: AuditSystem | None = None
+
+
+async def get_audit_system_singleton(database_url: str | None = None) -> AuditSystem:
+    """Get the process-wide, lazily-initialized AuditSystem singleton.
+
+    Used by SafetyPolicy to read real recent activity for a user. Unlike
+    the request-scoped instance in api/dependencies.py, this one is shared
+    across requests (audit rows are cheap to read repeatedly and the
+    engine/session factory is safe to reuse).
+    """
+    global _audit_singleton
+    if _audit_singleton is None:
+        from miriam_agent.config.settings import get_settings
+
+        url = database_url or get_settings().DATABASE_URL
+        instance = AuditSystem(url)
+        await instance.initialize()
+        _audit_singleton = instance
+    return _audit_singleton

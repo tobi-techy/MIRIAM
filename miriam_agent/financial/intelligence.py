@@ -1,4 +1,5 @@
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -6,6 +7,612 @@ import numpy as np
 from miriam_agent.core.exceptions import FinancialError
 
 logger = logging.getLogger(__name__)
+
+_MONTH_DAYS = 30.4375
+
+
+def _first_numeric(data: dict[str, Any], *keys: str) -> float | None:
+    """Return the first present, parseable numeric value among ``keys``.
+
+    The Go backend serializes money amounts as strings (e.g. ``"420.00"``),
+    and different endpoints don't all use the same field name for the same
+    concept, so callers pass a few candidate names in priority order.
+    """
+    for key in keys:
+        if key not in data:
+            continue
+        try:
+            return float(data[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _money(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _calendar() -> tuple[int, int, int]:
+    """days_elapsed, days_in_month, days_remaining (elapsed at least 1)."""
+    today = date.today()
+    elapsed = max(1, today.day)
+    if today.month == 12:
+        next_month = date(today.year + 1, 1, 1)
+    else:
+        next_month = date(today.year, today.month + 1, 1)
+    days_in_month = (next_month - date(today.year, today.month, 1)).days
+    remaining = max(0, days_in_month - today.day)
+    return elapsed, days_in_month, remaining
+
+
+# ---------------------------------------------------------------------------
+# Financial-snapshot engine
+#
+# These functions consume the ledger-backed snapshot returned by Go's
+# ``GET /api/v1/analytics/financial-snapshot`` (balances, ``money_flow``,
+# ``monthly_flow`` series, ``budget``, ``profile``) plus optional
+# ``upcoming_obligations``. They intentionally mirror the Go orchestrator's
+# scoring so the delegated brain produces the same numbers as the in-process
+# engine used before agent delegation.
+# ---------------------------------------------------------------------------
+
+
+def period_to_window(
+    period: str, today: date | None = None
+) -> tuple[str | None, str | None]:
+    """Map a health-audit period to an (from, to) YYYY-MM-DD window.
+
+    Returns (None, None) for unknown periods, which lets the backend use its
+    current-calendar-month default.
+    """
+    today = today or date.today()
+    if period == "this_month":
+        return today.strftime("%Y-%m-01"), today.strftime("%Y-%m-%d")
+    if period == "last_month":
+        last_month_last = today.replace(day=1) - timedelta(days=1)
+        return last_month_last.strftime("%Y-%m-01"), last_month_last.strftime(
+            "%Y-%m-%d"
+        )
+    if period == "last_90_days":
+        return (today - timedelta(days=89)).strftime("%Y-%m-%d"), today.strftime(
+            "%Y-%m-%d"
+        )
+    if period == "last_6_months":
+        first = (today - timedelta(days=183)).strftime("%Y-%m-%d")
+        return first, today.strftime("%Y-%m-%d")
+    if period == "last_12_months":
+        first = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+        return first, today.strftime("%Y-%m-%d")
+    return None, None
+
+
+def _period_bounds(snapshot: dict[str, Any]) -> tuple[str | None, str | None]:
+    period = snapshot.get("period")
+    if not isinstance(period, dict):
+        return None, None
+    return period.get("from"), period.get("to")
+
+
+def _flow_metrics(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Money-in/out for the snapshot window.
+
+    Primary source is Go's ``money_flow`` block (string amounts). Falls back
+    to the legacy ``spending_summary`` shape so callers that still scrape
+    ``/api/v1/analytics/dashboard`` degrade gracefully instead of breaking.
+    """
+    flow = snapshot.get("money_flow")
+    if isinstance(flow, dict) and not flow.get("error"):
+        withdrawals = _money(flow.get("total_withdrawals"))
+        card = _money(flow.get("total_card_spend"))
+        p2p = _money(flow.get("total_p2p"))
+        receipts = _money(flow.get("total_receipts"))
+        income = _money(flow.get("total_deposits"))
+        deposit_count = _money(flow.get("deposit_count"))
+        outflow = withdrawals + card + p2p + receipts
+        return {
+            "income": income,
+            "outflow": outflow,
+            "card_spend": card,
+            "net": income - outflow,
+            "deposit_count": deposit_count,
+        }
+
+    legacy = snapshot.get("spending_summary") or {}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    income = _first_numeric(legacy, "income", "total_income", "inflow") or 0.0
+    outflow = _first_numeric(legacy, "total_spent", "spent", "total", "outflow") or 0.0
+    if outflow == 0.0:
+        cats = legacy.get("top_categories") or legacy.get("categories") or []
+        if isinstance(cats, list):
+            outflow = sum(
+                _first_numeric(c, "amount", "monthly_amount", "total") or 0.0
+                for c in cats
+                if isinstance(c, dict)
+            )
+    return {
+        "income": income,
+        "outflow": outflow,
+        "card_spend": outflow,
+        "net": income - outflow,
+        "deposit_count": _first_numeric(legacy, "deposit_count", "income_count") or 0.0,
+    }
+
+
+def _budget_block(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    budget = snapshot.get("budget")
+    if not isinstance(budget, dict) or not budget.get("set"):
+        return None
+    limit = _money(budget.get("monthly_limit"))
+    if limit <= 0:
+        return None
+    return {"limit": limit, "currency": budget.get("currency")}
+
+
+def _profile_block(snapshot: dict[str, Any]) -> dict[str, Any]:
+    profile = snapshot.get("profile")
+    if not isinstance(profile, dict) or not profile.get("has_profile"):
+        return {
+            "has_profile": False,
+            "primary_currency": "USD",
+            "income_frequency": "monthly",
+            "financial_goal": None,
+            "risk_tolerance": "moderate",
+            "investment_horizon": "medium",
+            "monthly_income": 0.0,
+            "monthly_fixed_costs": 0.0,
+            "monthly_savings_target": 0.0,
+            "emergency_fund_target": 0.0,
+        }
+    return {
+        "has_profile": True,
+        "primary_currency": profile.get("primary_currency") or "USD",
+        "income_frequency": profile.get("income_frequency") or "monthly",
+        "financial_goal": profile.get("financial_goal"),
+        "risk_tolerance": profile.get("risk_tolerance") or "moderate",
+        "investment_horizon": profile.get("investment_horizon") or "medium",
+        "monthly_income": _money(profile.get("monthly_income")),
+        "monthly_fixed_costs": _money(profile.get("monthly_fixed_costs")),
+        "monthly_savings_target": _money(profile.get("monthly_savings_target")),
+        "emergency_fund_target": _money(profile.get("emergency_fund_target")),
+    }
+
+
+def _bills_due(snapshot: dict[str, Any]) -> float:
+    obligations = snapshot.get("upcoming_obligations") or []
+    total = 0.0
+    if not isinstance(obligations, list):
+        return total
+    for ob in obligations:
+        if not isinstance(ob, dict):
+            continue
+        status = str(ob.get("status") or ob.get("Status") or "").lower()
+        if status in {"paid", "cancelled"}:
+            continue
+        total += _first_numeric(ob, "amount", "Amount") or 0.0
+    return total
+
+
+def _window_metrics(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Observed totals plus monthly averages for the snapshot window.
+
+    Mirrors Go's ``observedMonths`` (window days / 30.4375, clamped to >=1)
+    so monthly figures stay comparable across single- and multi-month audits.
+    """
+    flow = _flow_metrics(snapshot)
+    from_date, to_date = _period_bounds(snapshot)
+    observed_months = 1.0
+    if from_date and to_date:
+        try:
+            start = datetime.strptime(from_date, "%Y-%m-%d")
+            end = datetime.strptime(to_date, "%Y-%m-%d")
+            observed_months = max(1.0, (end - start).days / _MONTH_DAYS)
+        except ValueError:
+            observed_months = 1.0
+    return {
+        "income": flow["income"],
+        "outflow": flow["outflow"],
+        "net": flow["net"],
+        "deposit_count": flow["deposit_count"],
+        "observed_months": observed_months,
+        "monthly_income": flow["income"] / observed_months,
+        "monthly_outflow": flow["outflow"] / observed_months,
+        "monthly_net": flow["net"] / observed_months,
+    }
+
+
+def _monthly_trend(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """Per-month buckets from the snapshot's ``monthly_flow`` series and a
+    direction label (improving / worsening / flat), or ([], "flat").
+    """
+    series = snapshot.get("monthly_flow")
+    buckets: list[dict[str, Any]] = []
+    nets: list[float] = []
+    if isinstance(series, list):
+        for bucket in series:
+            if not isinstance(bucket, dict):
+                continue
+            inflow = _money(bucket.get("total_deposits"))
+            outflow = _money(bucket.get("total_outflow"))
+            buckets.append(
+                {
+                    "month": bucket.get("month"),
+                    "income": round(inflow, 2),
+                    "outflow": round(outflow, 2),
+                    "net": round(inflow - outflow, 2),
+                }
+            )
+            nets.append(inflow - outflow)
+    if len(buckets) < 2 or len(nets) < 2:
+        return buckets, "flat"
+    half = max(1, len(nets) // 2)
+    first_half = sum(nets[:half]) / half
+    second_half = sum(nets[half:]) / (len(nets) - half)
+    delta = second_half - first_half
+    noise = max(1.0, abs(first_half) * 0.1)
+    if delta > noise:
+        direction = "improving"
+    elif delta < -noise:
+        direction = "worsening"
+    else:
+        direction = "flat"
+    return buckets, direction
+
+
+def _period_label(period: str, from_date: str | None, to_date: str | None) -> str:
+    if period == "this_month":
+        return "This month to date"
+    if period == "last_month":
+        return "Last month"
+    if from_date and to_date:
+        return f"{from_date} to {to_date}"
+    return period.replace("_", " ")
+
+
+def compute_financial_health(
+    snapshot: dict[str, Any], period: str = "last_90_days"
+) -> dict[str, Any]:
+    """Score 0-100 across savings rate, budget control, runway, and stash.
+
+    Scoring mirrors the Go orchestrator (savings 25 + budget 20 + runway 25 +
+    stash 20 + 10 base) and adds a month-over-month trend when the snapshot
+    window spans two or more months.
+    """
+    from_date, to_date = _period_bounds(snapshot)
+    balances = snapshot.get("balances") or {}
+    spend = _money(balances.get("spending_balance"))
+    stash = _money(balances.get("stash_balance"))
+    total = _money(balances.get("total_balance"))
+    if total <= 0:
+        total = spend + stash
+
+    m = _window_metrics(snapshot)
+    budget = _budget_block(snapshot)
+    bills = _bills_due(snapshot)
+
+    budget_score = 20
+    budget_status = "not_set"
+    budget_limit = 0.0
+    budget_remaining = 0.0
+    if budget:
+        budget_limit = budget["limit"]
+        budget_remaining = budget_limit - m["monthly_outflow"]
+        used = (m["monthly_outflow"] / budget_limit * 100) if budget_limit > 0 else 0.0
+        budget_status = "on_track"
+        if used <= 70:
+            budget_score = 20
+        elif used <= 90:
+            budget_score, budget_status = 14, "tight"
+        elif used <= 100:
+            budget_score, budget_status = 8, "near_limit"
+        else:
+            budget_score, budget_status = 2, "over_budget"
+
+    savings_rate = (m["net"] / m["income"] * 100.0) if m["income"] > 0 else 0.0
+    savings_score = 8
+    if savings_rate >= 25:
+        savings_score = 25
+    elif savings_rate >= 15:
+        savings_score = 20
+    elif savings_rate >= 5:
+        savings_score = 14
+    elif savings_rate >= 0:
+        savings_score = 8
+    else:
+        savings_score = 2
+
+    runway_score = 10
+    runway_days: float | None = None
+    if m["monthly_outflow"] > 0:
+        avg_daily_out = m["monthly_outflow"] / _MONTH_DAYS
+        runway_days = total / avg_daily_out if avg_daily_out > 0 else 0.0
+        if runway_days >= 90:
+            runway_score = 25
+        elif runway_days >= 30:
+            runway_score = 18
+        elif runway_days >= 14:
+            runway_score = 10
+        else:
+            runway_score = 4
+
+    stash_pct = (stash / total * 100.0) if total > 0 else 0.0
+    stash_score = 5
+    if total > 0 and stash_pct >= 30:
+        stash_score = 20
+    elif total > 0 and stash_pct >= 20:
+        stash_score = 15
+    elif total > 0 and stash_pct >= 10:
+        stash_score = 10
+
+    score = max(
+        0, min(100, savings_score + budget_score + runway_score + stash_score + 10)
+    )
+    if score >= 80:
+        status = "strong"
+    elif score >= 60:
+        status = "steady"
+    elif score >= 40:
+        status = "fragile"
+    else:
+        status = "needs_attention"
+
+    buckets, trend_direction = _monthly_trend(snapshot)
+
+    actions: list[str] = []
+    if budget_status == "not_set":
+        actions.append(
+            "Set a monthly spending budget so Miriam can track safe daily spend."
+        )
+    elif budget_status == "over_budget" and budget_remaining < 0:
+        actions.append(
+            f"Pause non-essential spend; you are ${abs(budget_remaining):.2f} "
+            "over budget on average."
+        )
+    if savings_rate < 10 and m["income"] > 0:
+        actions.append("Aim to save at least 10% of incoming money.")
+    if stash < spend * 0.25 and spend > 20:
+        actions.append(
+            "Move a small amount from Spend to Stash so more of your money earns yield."
+        )
+    if runway_days is not None and runway_days < 14:
+        actions.append(
+            "At the current outflow rate, available cash lasts under two weeks."
+        )
+    if bills > total > 0:
+        actions.append(
+            "Upcoming bills are larger than cash on hand this month. Trim spend "
+            "or move money from Stash."
+        )
+    if not actions:
+        actions.append("Keep your current pace and review your forecast weekly.")
+
+    result: dict[str, Any] = {
+        "source": "python",
+        "engine": "financial-snapshot",
+        "score": int(score),
+        "status": status,
+        "period": period,
+        "period_label": _period_label(period, from_date, to_date),
+        "spend_balance": round(spend, 2),
+        "stash_balance": round(stash, 2),
+        "total_balance": round(total, 2),
+        "total_income": round(m["income"], 2),
+        "total_outflow": round(m["outflow"], 2),
+        "total_net_flow": round(m["net"], 2),
+        "monthly_income": round(m["monthly_income"], 2),
+        "monthly_outflow": round(m["monthly_outflow"], 2),
+        "monthly_net_flow": round(m["monthly_net"], 2),
+        "savings_rate_pct": round(savings_rate, 1),
+        "budget_status": budget_status,
+        "budget_limit": round(budget_limit, 2),
+        "budget_remaining": round(budget_remaining, 2),
+        "stash_pct": round(stash_pct, 1),
+        "runway_days": round(runway_days, 1) if runway_days is not None else None,
+        "recommended_actions": actions,
+        "score_components": [
+            {"name": "Savings Rate", "score": savings_score, "max": 25},
+            {"name": "Budget Control", "score": budget_score, "max": 20},
+            {"name": "Runway", "score": runway_score, "max": 25},
+            {"name": "Stash Discipline", "score": stash_score, "max": 20},
+        ],
+        "data_used": [
+            "balances",
+            "money_flow",
+            "monthly_flow",
+            "budget",
+            "financial_profile",
+        ],
+    }
+    if buckets and trend_direction != "flat":
+        result["monthly_trend"] = buckets
+        result["trend_direction"] = trend_direction
+    return result
+
+
+def _next_month_anchor(snapshot: dict[str, Any], fallback_net: float) -> dict[str, Any]:
+    series = snapshot.get("monthly_flow")
+    months: list[tuple[float, float]] = []
+    if isinstance(series, list):
+        for bucket in series:
+            if not isinstance(bucket, dict):
+                continue
+            months.append(
+                (
+                    _money(bucket.get("total_deposits")),
+                    _money(bucket.get("total_outflow")),
+                )
+            )
+    if not months:
+        return {
+            "expected_income": 0.0,
+            "expected_outflow": 0.0,
+            "expected_net": round(fallback_net, 2),
+        }
+    last_three = months[-3:]
+    expected_income = sum(x[0] for x in last_three) / len(last_three)
+    expected_outflow = sum(x[1] for x in last_three) / len(last_three)
+    return {
+        "expected_income": round(expected_income, 2),
+        "expected_outflow": round(expected_outflow, 2),
+        "expected_net": round(expected_income - expected_outflow, 2),
+    }
+
+
+def compute_cash_flow_forecast(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Project the rest of this month from live balances, spend, and budget.
+
+    Mirrors Go's forecast: daily burn rate from month-to-date outflow, a
+    projected end-of-month balance, and a safe daily spend capped by whatever
+    budget is left. The snapshot's per-month series anchors a next-month
+    estimate.
+    """
+    today = date.today()
+    elapsed, days_in_month, remaining = _calendar()
+
+    flow = _flow_metrics(snapshot)
+    balances = snapshot.get("balances") or {}
+    spend = _money(balances.get("spending_balance"))
+    stash = _money(balances.get("stash_balance"))
+    total = _money(balances.get("total_balance"))
+    if total <= 0:
+        total = spend + stash
+    budget = _budget_block(snapshot)
+
+    daily_burn = flow["outflow"] / elapsed if elapsed else 0.0
+    projected_out = daily_burn * days_in_month
+    projected_net = flow["income"] - projected_out
+    projected_end = max(0.0, total - daily_burn * remaining)
+
+    safe_daily = 0.0
+    primary_action = "Keep spending near your current daily average."
+    if budget and remaining > 0:
+        left_in_budget = budget["limit"] - flow["outflow"]
+        if left_in_budget > 0:
+            safe_daily = left_in_budget / remaining
+            primary_action = (
+                f"Stay under ${safe_daily:.2f}/day for the rest of the month."
+            )
+        elif left_in_budget < 0:
+            primary_action = (
+                f"You are ${abs(left_in_budget):.2f} over budget; "
+                "pause discretionary spend."
+            )
+    if safe_daily <= 0 and remaining > 0 and spend > 0:
+        safe_daily = spend / remaining
+
+    confidence = "medium"
+    if flow["deposit_count"] > 0 and flow["outflow"] > 0:
+        confidence = "high"
+    elif flow["outflow"] <= 0:
+        confidence = "low"
+
+    return {
+        "source": "python",
+        "engine": "financial-snapshot",
+        "period": f"{today.strftime('%B')} {today.year}",
+        "days_elapsed": elapsed,
+        "days_remaining": remaining,
+        "income_so_far": round(flow["income"], 2),
+        "spent_so_far": round(flow["outflow"], 2),
+        "daily_burn_rate": round(daily_burn, 2),
+        "safe_daily_spend": round(safe_daily, 2),
+        "projected_outflow": round(projected_out, 2),
+        "projected_net_flow": round(projected_net, 2),
+        "projected_end_balance": round(projected_end, 2),
+        "spend_balance": round(spend, 2),
+        "stash_balance": round(stash, 2),
+        "next_month": _next_month_anchor(snapshot, projected_net),
+        "confidence": confidence,
+        "primary_action": primary_action,
+        "data_used": ["money_flow", "balances", "budget", "monthly_flow"],
+    }
+
+
+def compute_financial_plan(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Assemble a practical plan from health, forecast, and the profile."""
+    health = compute_financial_health(snapshot, period="last_90_days")
+    forecast = compute_cash_flow_forecast(snapshot)
+    profile = _profile_block(snapshot)
+
+    steps: list[dict[str, Any]] = [
+        {
+            "priority": 1,
+            "title": "Protect this month",
+            "action": forecast["primary_action"],
+        },
+        {
+            "priority": 2,
+            "title": "Build automatic savings",
+            "action": "Use Stash as the default place for money you do not need this week.",
+        },
+        {
+            "priority": 3,
+            "title": "Review recurring spend",
+            "action": "Check subscriptions and recurring merchants before increasing savings targets.",
+        },
+    ]
+    if profile["has_profile"]:
+        available = health["stash_balance"] + health["spend_balance"]
+        if profile["emergency_fund_target"] > 0:
+            gap = max(0.0, profile["emergency_fund_target"] - available)
+            if gap > 0:
+                steps.append(
+                    {
+                        "priority": 4,
+                        "title": "Close the emergency-fund gap",
+                        "action": (
+                            f"About ${gap:,.2f} more toward your emergency fund "
+                            f"target of ${profile['emergency_fund_target']:,.2f}."
+                        ),
+                    }
+                )
+        if profile["monthly_savings_target"] > 0 and health["monthly_income"] > 0:
+            target_pct = (
+                profile["monthly_savings_target"] / health["monthly_income"] * 100
+            )
+            if health["savings_rate_pct"] < target_pct:
+                steps.append(
+                    {
+                        "priority": 5,
+                        "title": "Hit your savings target",
+                        "action": (
+                            f"Aim to save about ${profile['monthly_savings_target']:,.2f} "
+                            "each month."
+                        ),
+                    }
+                )
+
+    return {
+        "source": "python",
+        "engine": "financial-snapshot",
+        "health": health,
+        "forecast": forecast,
+        "profile": {
+            "has_profile": profile["has_profile"],
+            "primary_currency": profile["primary_currency"],
+            "income_frequency": profile["income_frequency"],
+            "financial_goal": profile["financial_goal"],
+            "risk_tolerance": profile["risk_tolerance"],
+            "investment_horizon": profile["investment_horizon"],
+            "monthly_savings_target": round(profile["monthly_savings_target"], 2),
+            "emergency_fund_target": round(profile["emergency_fund_target"], 2),
+        },
+        "next_steps": steps,
+        "data_used": [
+            "financial_health",
+            "cash_flow_forecast",
+            "financial_profile",
+            "budget",
+        ],
+    }
+
 
 class FinancialIntelligence:
     """Financial intelligence and analysis module for Miriam Financial Agent."""
@@ -87,7 +694,6 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error analyzing intent",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to analyze intent: {str(e)}")
@@ -174,9 +780,7 @@ class FinancialIntelligence:
 
         return detected_categories
 
-    def _generate_intent_description(
-        self, intent_type: str, message: str
-    ) -> str:
+    def _generate_intent_description(self, intent_type: str, message: str) -> str:
         """Generate description of the detected intent."""
         descriptions = {
             "analysis": "User wants to analyze their financial situation or data",
@@ -187,9 +791,7 @@ class FinancialIntelligence:
             "general": "User is asking general financial questions",
         }
 
-        base_description = descriptions.get(
-            intent_type, "User has a financial inquiry"
-        )
+        base_description = descriptions.get(intent_type, "User has a financial inquiry")
 
         # Add context from message
         if "budget" in message.lower():
@@ -230,9 +832,7 @@ class FinancialIntelligence:
 
         return "low"
 
-    def _assess_risk_level(
-        self, message: str, financial_profile: Any
-    ) -> str:
+    def _assess_risk_level(self, message: str, financial_profile: Any) -> str:
         """Assess risk level of the requested action."""
         # Check message for high-risk keywords
         high_risk_words = [
@@ -258,25 +858,39 @@ class FinancialIntelligence:
         return "low"
 
     async def analyze_portfolio(
-        self, user_id: str, period: str = "month"
+        self, user_id: str, token: str | None = None, period: str = "month"
     ) -> dict[str, Any]:
-        """Analyze user's investment portfolio."""
-        try:
-            # Get portfolio data from memory store
-            portfolio_data = await self.memory_store.get_portfolio_data(
-                user_id, period
-            )
+        """Analyze user's investment portfolio.
 
-            if not portfolio_data:
+        Bug fix: this used to call ``memory_store.get_portfolio_data(user_id,
+        period)``, but that method only ever accepted ``user_id`` -- every
+        call raised ``TypeError`` (wrapped into ``FinancialError`` by the
+        outer except below). When ``token`` is supplied, real positions are
+        now pulled from the Go backend (the actual source of truth for
+        holdings) instead.
+        """
+        try:
+            portfolio_data: dict[str, Any] = {}
+            if token and self.go_client is not None:
+                try:
+                    positions = await self.go_client.get_investment_positions(token)
+                    portfolio_data = self._shape_positions(positions)
+                except Exception as e:
+                    logger.warning("Falling back to local portfolio data: %s", e)
+            if not portfolio_data.get("holdings"):
+                # No token, Go unreachable, or genuinely no positions: fall
+                # back to the local snapshot (currently always empty, since
+                # Miriam doesn't independently track investment positions).
+                portfolio_data = await self.memory_store.get_portfolio_data(user_id)
+
+            if not portfolio_data or not portfolio_data.get("holdings"):
                 return {
                     "error": "No portfolio data found",
                     "suggestions": "Please connect your accounts to analyze portfolio",
                 }
 
             # Calculate performance metrics
-            performance = self._calculate_portfolio_performance(
-                portfolio_data, period
-            )
+            performance = self._calculate_portfolio_performance(portfolio_data, period)
 
             # Identify risk factors
             risk_factors = self._identify_risk_factors(portfolio_data)
@@ -298,7 +912,6 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error analyzing portfolio",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to analyze portfolio: {str(e)}")
@@ -313,8 +926,7 @@ class FinancialIntelligence:
                 holding["value"] for holding in portfolio_data.get("holdings", [])
             )
             cost_basis = sum(
-                holding["cost_basis"]
-                for holding in portfolio_data.get("holdings", [])
+                holding["cost_basis"] for holding in portfolio_data.get("holdings", [])
             )
 
             total_return = total_value - cost_basis
@@ -326,9 +938,12 @@ class FinancialIntelligence:
             returns = self._calculate_daily_returns(portfolio_data)
             volatility = np.std(returns) * np.sqrt(252) if returns else 0
 
-            # Calculate Sharpe ratio (simplified)
+            # Calculate Sharpe ratio (simplified). Bug fix: `returns` is a
+            # plain list, and `list - float` isn't valid Python (only numpy
+            # arrays support elementwise subtraction) -- this raised
+            # TypeError on every call that reached this line.
             risk_free_rate = 0.02  # 2% risk-free rate
-            excess_returns = returns - risk_free_rate if len(returns) > 0 else []
+            excess_returns = [r - risk_free_rate for r in returns] if returns else []
             sharpe_ratio = (
                 (np.mean(excess_returns) / np.std(returns))
                 if returns and np.std(returns) > 0
@@ -348,7 +963,6 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error calculating portfolio performance",
-                error=str(e),
                 exc_info=True,
             )
             return {"error": str(e)}
@@ -367,8 +981,7 @@ class FinancialIntelligence:
                 total_value = sum(holding["value"] for holding in holdings)
                 if total_value > 0:
                     max_position = max(
-                        (holding["value"] / total_value)
-                        for holding in holdings
+                        (holding["value"] / total_value) for holding in holdings
                     )
                     if max_position > 0.5:
                         risk_factors.append(
@@ -408,10 +1021,9 @@ class FinancialIntelligence:
                     }
                 )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error identifying risk factors",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -489,10 +1101,9 @@ class FinancialIntelligence:
                     }
                 )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating portfolio recommendations",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -511,23 +1122,50 @@ class FinancialIntelligence:
             if total_value <= 0:
                 return 0.0
 
-            hhi = sum(
-                (holding["value"] / total_value) ** 2
-                for holding in holdings
-            )
+            hhi = sum((holding["value"] / total_value) ** 2 for holding in holdings)
 
             # Convert HHI to diversification score (0-1, where 1 is most diversified)
             diversification_score = max(0, 1 - hhi)
 
             return diversification_score
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating diversification score",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
+
+    @staticmethod
+    def _shape_positions(positions: Any) -> dict[str, Any]:
+        """Convert Go's investment-positions payload into the internal
+        ``{"holdings": [...]}`` shape the analysis methods above expect.
+
+        There's no shared schema pinning down Go's exact field names here,
+        so this reads the common aliases defensively (``value``/``market_value``/
+        ``current_value``, ``cost_basis``/``book_value``) and skips any entry
+        with no positive value rather than guessing at a number.
+        """
+        if isinstance(positions, dict):
+            positions = positions.get("positions", [])
+        holdings = []
+        for p in positions or []:
+            if not isinstance(p, dict):
+                continue
+            value = _first_numeric(p, "value", "market_value", "current_value")
+            if value is None or value <= 0:
+                continue
+            cost_basis = _first_numeric(p, "cost_basis", "book_value", "cost") or value
+            holdings.append(
+                {
+                    "symbol": p.get("symbol") or p.get("ticker") or "UNKNOWN",
+                    "value": value,
+                    "cost_basis": cost_basis,
+                    "sector": p.get("sector", "unknown"),
+                    "type": p.get("type", "investment"),
+                }
+            )
+        return {"holdings": holdings}
 
     def _get_cash_percentage(self, portfolio_data: dict[str, Any]) -> float:
         """Get percentage of portfolio in cash."""
@@ -549,33 +1187,41 @@ class FinancialIntelligence:
 
             return cash_value / total_value
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating cash percentage",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
 
     async def generate_budget_plan(
-        self, user_id: str, goal: str = "balance"
+        self, user_id: str, token: str | None = None, goal: str = "balance"
     ) -> dict[str, Any]:
-        """Generate a budget plan for the user."""
+        """Generate a budget plan for the user.
+
+        Bug fix: this used to crash for any user with no locally-stored
+        income (i.e. almost everyone, since nothing populates a
+        ``FinancialProfile`` row yet) via a division-by-zero in
+        ``_allocate_budget``, and separately via a
+        ``float - dict`` TypeError when computing ``net_cash_flow`` (see
+        the fixes in ``_allocate_budget`` and below). Income still comes
+        from the local financial profile; expenses now come from the Go
+        backend's real spending summary when ``token`` is available,
+        replacing a stub that always reported zero spending.
+        """
         try:
             # Get user's financial data
             income_data = await self.memory_store.get_income_data(user_id)
-            expense_data = await self.memory_store.get_expense_data(user_id)
+            expense_data = await self._get_expense_data(user_id, token)
 
             # Calculate monthly income
             monthly_income = self._calculate_monthly_income(income_data)
 
-            # Calculate monthly expenses
+            # Calculate monthly expenses (category -> monthly amount)
             monthly_expenses = self._calculate_monthly_expenses(expense_data)
 
             # Determine savings target
-            savings_target = self._calculate_savings_target(
-                monthly_income, goal
-            )
+            savings_target = self._calculate_savings_target(monthly_income, goal)
 
             # Allocate budget to categories
             budget_allocation = self._allocate_budget(
@@ -587,7 +1233,9 @@ class FinancialIntelligence:
                 "monthly_expenses": monthly_expenses,
                 "savings_target": savings_target,
                 "budget_allocation": budget_allocation,
-                "net_cash_flow": monthly_income - monthly_expenses - savings_target,
+                "net_cash_flow": (
+                    monthly_income - sum(monthly_expenses.values()) - savings_target
+                ),
                 "recommendations": await self._generate_budget_recommendations(
                     budget_allocation, expense_data
                 ),
@@ -596,10 +1244,38 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error generating budget plan",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to generate budget plan: {str(e)}")
+
+    async def _get_expense_data(
+        self, user_id: str, token: str | None
+    ) -> dict[str, Any]:
+        """Real expenses from Go's spending summary when reachable, else the
+        local stub (which currently always reports zero spend, since Miriam
+        doesn't independently track transactions).
+        """
+        if token and self.go_client is not None:
+            try:
+                summary = await self.go_client.get_spending_summary(
+                    token, period="month"
+                )
+                categories = (
+                    summary.get("top_categories") or summary.get("categories") or []
+                )
+                category_expenses = {}
+                for c in categories:
+                    if not isinstance(c, dict):
+                        continue
+                    name = c.get("category") or c.get("name")
+                    amount = _first_numeric(c, "amount", "monthly_amount", "total")
+                    if name and amount is not None:
+                        category_expenses[name] = {"monthly_amount": amount}
+                if category_expenses:
+                    return {"category_expenses": category_expenses}
+            except Exception as e:
+                logger.warning("Falling back to local expense data: %s", e)
+        return await self.memory_store.get_expense_data(user_id)
 
     def _calculate_monthly_income(self, income_data: dict[str, Any]) -> float:
         """Calculate monthly income from income data."""
@@ -628,10 +1304,9 @@ class FinancialIntelligence:
 
             return monthly_income
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly income",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -639,31 +1314,31 @@ class FinancialIntelligence:
     def _calculate_monthly_expenses(
         self, expense_data: dict[str, Any]
     ) -> dict[str, float]:
-        """Calculate monthly expenses by category."""
+        """Calculate monthly expenses by category.
+
+        Bug fix: ``category_expenses`` maps each category to a single
+        ``{"monthly_amount": float}`` entry (matching what ``_allocate_budget``
+        below already expected). This used to iterate each entry as if it
+        were a list of expense records, which silently returned ``{}`` the
+        moment real category data showed up instead of crashing loudly.
+        """
         try:
             monthly_expenses = {}
 
             # Average expenses by category
-            for category, expenses in expense_data.get(
-                "category_expenses", {}
-            ).items():
-                monthly_expenses[category] = sum(
-                    expense.get("monthly_amount", 0) for expense in expenses
-                )
+            for category, data in expense_data.get("category_expenses", {}).items():
+                monthly_expenses[category] = float(data.get("monthly_amount", 0) or 0)
 
             return monthly_expenses
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly expenses",
-                error=str(e),
                 exc_info=True,
             )
             return {}
 
-    def _calculate_savings_target(
-        self, monthly_income: float, goal: str
-    ) -> float:
+    def _calculate_savings_target(self, monthly_income: float, goal: str) -> float:
         """Calculate monthly savings target based on goal."""
         try:
             if goal == "zero_based":
@@ -679,10 +1354,9 @@ class FinancialIntelligence:
             else:  # balance or default
                 return monthly_income * 0.10  # 10% of income
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating savings target",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -717,8 +1391,12 @@ class FinancialIntelligence:
                         "percentage": percentage,
                     }
 
-            # Add savings category
-            savings_percentage = (savings_target / monthly_income) * 100
+            # Add savings category. Guard against monthly_income == 0 (no
+            # financial profile yet): this used to raise ZeroDivisionError,
+            # crashing every budget request for a user with no profile set.
+            savings_percentage = (
+                (savings_target / monthly_income) * 100 if monthly_income > 0 else 0.0
+            )
             budget_allocation["savings"] = {
                 "monthly_amount": savings_target,
                 "percentage": savings_percentage,
@@ -726,10 +1404,9 @@ class FinancialIntelligence:
 
             return budget_allocation
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error allocating budget",
-                error=str(e),
                 exc_info=True,
             )
             return {}
@@ -795,10 +1472,9 @@ class FinancialIntelligence:
                     }
                 )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating budget recommendations",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -813,9 +1489,7 @@ class FinancialIntelligence:
             category = self._categorize_transaction(description, amount)
 
             # Identify transaction type
-            transaction_type = self._identify_transaction_type(
-                description, amount
-            )
+            transaction_type = self._identify_transaction_type(description, amount)
 
             # Generate insights
             insights = await self._generate_transaction_insights(
@@ -836,40 +1510,56 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error analyzing transaction",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to analyze transaction: {str(e)}")
 
-    def _categorize_transaction(
-        self, description: str, amount: float | None
-    ) -> str:
+    def _categorize_transaction(self, description: str, amount: float | None) -> str:
         """Categorize a transaction based on description and amount."""
         description_lower = description.lower()
 
         # Check for specific keywords
-        if any(keyword in description_lower for keyword in ["grocery", "food", "meal", "eat"]):
+        if any(
+            keyword in description_lower
+            for keyword in ["grocery", "food", "meal", "eat"]
+        ):
             return "food"
-        elif any(keyword in description_lower for keyword in ["transport", "car", "gas", "uber", "taxi", "ride"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["transport", "car", "gas", "uber", "taxi", "ride"]
+        ):
             return "transport"
-        elif any(keyword in description_lower for keyword in ["rent", "mortgage", "housing", "apartment"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["rent", "mortgage", "housing", "apartment"]
+        ):
             return "housing"
-        elif any(keyword in description_lower for keyword in ["movie", "cinema", "entertain", "netflix", "show"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["movie", "cinema", "entertain", "netflix", "show"]
+        ):
             return "entertainment"
-        elif any(keyword in description_lower for keyword in ["shop", "purchase", "buy", "amazon", "mall"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["shop", "purchase", "buy", "amazon", "mall"]
+        ):
             return "shopping"
-        elif any(keyword in description_lower for keyword in ["medical", "doctor", "hospital", "pharmacy", "health"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["medical", "doctor", "hospital", "pharmacy", "health"]
+        ):
             return "health"
-        elif any(keyword in description_lower for keyword in ["save", "saving", "invest", "savings"]):
+        elif any(
+            keyword in description_lower
+            for keyword in ["save", "saving", "invest", "savings"]
+        ):
             return "savings"
         elif amount and amount > 1000:
             return "large_purchase"
         else:
             return "other"
 
-    def _identify_transaction_type(
-        self, description: str, amount: float | None
-    ) -> str:
+    def _identify_transaction_type(self, description: str, amount: float | None) -> str:
         """Identify transaction type (expense, income, transfer)."""
         description_lower = description.lower()
 
@@ -930,10 +1620,9 @@ class FinancialIntelligence:
                     f"Transaction categorized as {category} {transaction_type}. Track this category for better financial awareness."
                 )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating transaction insights",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -947,7 +1636,8 @@ class FinancialIntelligence:
 
         # Increase confidence based on specific keywords
         if any(
-            keyword in description.lower() for keyword in ["grocery", "restaurant", "uber"]
+            keyword in description.lower()
+            for keyword in ["grocery", "restaurant", "uber"]
         ):
             confidence += 0.2
 
@@ -988,20 +1678,21 @@ class FinancialIntelligence:
                     profile, income_data, expense_data
                 )
             elif context == "investing":
-                advice = await self._generate_investing_advice(
-                    profile, portfolio_data
-                )
+                advice = await self._generate_investing_advice(profile, portfolio_data)
             elif context == "debt":
-                advice = await self._generate_debt_advice(profile, income_data, expense_data)
+                advice = await self._generate_debt_advice(
+                    profile, income_data, expense_data
+                )
             else:
-                advice = await self._generate_general_advice(profile, portfolio_data, income_data, expense_data)
+                advice = await self._generate_general_advice(
+                    profile, portfolio_data, income_data, expense_data
+                )
 
             return advice
 
         except Exception as e:
             logger.error(
                 "Error generating financial advice",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to generate financial advice: {str(e)}")
@@ -1028,7 +1719,9 @@ class FinancialIntelligence:
                 recommendations.append(
                     f"Your savings rate is {savings_rate:.1f}%, below the recommended minimum of 10%. Increase savings by setting up automatic transfers."
                 )
-                next_steps.append("Set up an automatic savings transfer of 10% of your income")
+                next_steps.append(
+                    "Set up an automatic savings transfer of 10% of your income"
+                )
 
             # Check for overspending categories
             expense_categories = expense_data.get("category_expenses", {})
@@ -1040,19 +1733,22 @@ class FinancialIntelligence:
                     recommendations.append(
                         f"You're spending {percentage:.1f}% of your income on {category}. Consider reducing this category."
                     )
-                    next_steps.append(f"Create a 20% budget limit for {category} expenses")
+                    next_steps.append(
+                        f"Create a 20% budget limit for {category} expenses"
+                    )
 
             # Default advice if no specific recommendations
             if not recommendations:
                 recommendations.append(
                     f"Your budget looks good with a savings rate of {savings_rate:.1f}%. Continue monitoring your expenses and consider automating your savings."
                 )
-                next_steps.append("Set up automatic savings to maintain your savings rate")
+                next_steps.append(
+                    "Set up automatic savings to maintain your savings rate"
+                )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating budgeting advice",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1079,30 +1775,33 @@ class FinancialIntelligence:
                 recommendations.append(
                     f"Your portfolio has a low diversification score of {diversification_score:.2f}. Consider diversifying across different asset classes and sectors."
                 )
-                next_steps.append("Rebalance your portfolio to achieve better diversification")
+                next_steps.append(
+                    "Rebalance your portfolio to achieve better diversification"
+                )
 
             # Get performance metrics
-            performance = self._calculate_portfolio_performance(
-                portfolio_data, "month"
-            )
+            performance = self._calculate_portfolio_performance(portfolio_data, "month")
 
             if performance.get("sharpe_ratio", 0) < 1.0:
                 recommendations.append(
                     f"Your portfolio's risk-adjusted return (Sharpe ratio) is {performance.get('sharpe_ratio', 0):.2f}, below the ideal of 1.0. Consider adjusting your asset allocation."
                 )
-                next_steps.append("Review and optimize your asset allocation for better risk-adjusted returns")
+                next_steps.append(
+                    "Review and optimize your asset allocation for better risk-adjusted returns"
+                )
 
             # Default advice
             if not recommendations:
                 recommendations.append(
                     "Your investment portfolio shows good diversification and performance. Continue with your current strategy and consider tax-loss harvesting if you have losses."
                 )
-                next_steps.append("Continue monitoring your investments and consider annual tax-loss harvesting")
+                next_steps.append(
+                    "Continue monitoring your investments and consider annual tax-loss harvesting"
+                )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating investing advice",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1126,8 +1825,7 @@ class FinancialIntelligence:
             # Get debt information from profile
             debt_info = getattr(profile, "debt_info", {})
             monthly_debt_payment = sum(
-                debt.get("monthly_payment", 0)
-                for debt in debt_info.get("debts", [])
+                debt.get("monthly_payment", 0) for debt in debt_info.get("debts", [])
             )
 
             debt_to_income = (
@@ -1140,7 +1838,9 @@ class FinancialIntelligence:
                 recommendations.append(
                     f"Your debt-to-income ratio is {debt_to_income:.1f}%, which is above the recommended 40%. Consider debt consolidation or refinancing."
                 )
-                next_steps.append("Research debt consolidation options to lower your interest rates")
+                next_steps.append(
+                    "Research debt consolidation options to lower your interest rates"
+                )
 
             # Find highest interest debt
             highest_interest_debt = max(
@@ -1153,19 +1853,22 @@ class FinancialIntelligence:
                 recommendations.append(
                     f"You have debt with {highest_interest_debt.get('interest_rate', 0):.1f}% interest rate. Consider paying this off first (avalanche method)."
                 )
-                next_steps.append("Create a debt avalanche payment plan to eliminate high-interest debt")
+                next_steps.append(
+                    "Create a debt avalanche payment plan to eliminate high-interest debt"
+                )
 
             # Default advice
             if not recommendations:
                 recommendations.append(
                     "You're managing your debt well with a reasonable debt-to-income ratio. Continue making regular payments and consider building an emergency fund."
                 )
-                next_steps.append("Build an emergency fund to avoid new debt in case of unexpected expenses")
+                next_steps.append(
+                    "Build an emergency fund to avoid new debt in case of unexpected expenses"
+                )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating debt advice",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1196,33 +1899,40 @@ class FinancialIntelligence:
                 recommendations.append(
                     f"Your overall financial health score is {health_score:.1f}/100. Consider focusing on improving your financial situation."
                 )
-                next_steps.append("Create a comprehensive financial plan to improve your overall financial health")
+                next_steps.append(
+                    "Create a comprehensive financial plan to improve your overall financial health"
+                )
 
             # Check for emergency fund
             if not getattr(profile, "has_emergency_fund", False):
                 recommendations.append(
                     "You don't have an emergency fund. Build one with 3-6 months of expenses saved."
                 )
-                next_steps.append("Start building an emergency fund by setting up automatic savings")
+                next_steps.append(
+                    "Start building an emergency fund by setting up automatic savings"
+                )
 
             # Check retirement planning
             if not getattr(profile, "has_retirement_plan", False):
                 recommendations.append(
                     "You don't have a retirement plan yet. Start contributing to a retirement account as early as possible."
                 )
-                next_steps.append("Open a retirement account and set up automatic contributions")
+                next_steps.append(
+                    "Open a retirement account and set up automatic contributions"
+                )
 
             # Default advice
             if not recommendations:
                 recommendations.append(
                     "Your financial situation looks good! Continue with your current financial habits and consider exploring investment opportunities to grow your wealth."
                 )
-                next_steps.append("Consider exploring investment options to grow your wealth further")
+                next_steps.append(
+                    "Consider exploring investment options to grow your wealth further"
+                )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating general advice",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1275,26 +1985,29 @@ class FinancialIntelligence:
                 debt.get("amount", 0) for debt in debt_info.get("debts", [])
             )
             debt_to_income = (
-                (total_debt / (monthly_income * 10)) * 100
-                if monthly_income > 0
-                else 0
+                (total_debt / (monthly_income * 10)) * 100 if monthly_income > 0 else 0
             )
             score += max(0, 100 - debt_to_income) * 0.2
 
             return score
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating financial health score",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
 
-    async def _calculate_daily_returns(
-        self, portfolio_data: dict[str, Any]
-    ) -> list[float]:
-        """Calculate daily returns from portfolio data."""
+    def _calculate_daily_returns(self, portfolio_data: dict[str, Any]) -> list[float]:
+        """Calculate daily returns from portfolio data.
+
+        Bug fix: this was declared ``async`` but does no actual awaiting,
+        and its only caller (``_calculate_portfolio_performance``, a sync
+        method) called it without ``await`` -- so ``returns`` was always a
+        coroutine object, not a list, and every downstream numpy call on it
+        raised (silently turning into a `{"error": ...}` result because the
+        surrounding except swallowed it).
+        """
         try:
             # This is a simplified calculation
             # In a real implementation, you would get actual historical price data
@@ -1310,10 +2023,9 @@ class FinancialIntelligence:
 
             return returns
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating daily returns",
-                error=str(e),
                 exc_info=True,
             )
             return []
@@ -1339,7 +2051,6 @@ class FinancialIntelligence:
         except Exception as e:
             logger.error(
                 "Error generating strategy",
-                error=str(e),
                 exc_info=True,
             )
             raise FinancialError(f"Failed to generate strategy: {str(e)}")
@@ -1350,15 +2061,11 @@ class FinancialIntelligence:
         """Generate a strategy based on goal."""
         strategies = {
             "retirement": self._generate_retirement_strategy(profile, timeframe),
-            "home_purchase": self._generate_home_purchase_strategy(
-                profile, timeframe
-            ),
+            "home_purchase": self._generate_home_purchase_strategy(profile, timeframe),
             "emergency_fund": self._generate_emergency_fund_strategy(
                 profile, timeframe
             ),
-            "debt_paydown": self._generate_debt_paydown_strategy(
-                profile, timeframe
-            ),
+            "debt_paydown": self._generate_debt_paydown_strategy(profile, timeframe),
             "wealth_building": self._generate_wealth_building_strategy(
                 profile, timeframe
             ),
@@ -1458,7 +2165,11 @@ class FinancialIntelligence:
         return {
             "goal_type": "income_generation",
             "target_monthly_income": self._calculate_income_generation_target(profile),
-            "strategies": ["dividend_investments", "rental_properties", "business_investments"],
+            "strategies": [
+                "dividend_investments",
+                "rental_properties",
+                "business_investments",
+            ],
             "initial_investment": self._calculate_initial_income_investment(profile),
         }
 
@@ -1496,10 +2207,9 @@ class FinancialIntelligence:
 
             return steps
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating execution steps",
-                error=str(e),
                 exc_info=True,
             )
             return []
@@ -1538,10 +2248,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating retirement steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1580,10 +2289,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating home purchase steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1623,10 +2331,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating emergency fund steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1666,10 +2373,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating debt paydown steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1709,10 +2415,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating wealth building steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1751,10 +2456,9 @@ class FinancialIntelligence:
                 },
             ]
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating income generation steps",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -1772,10 +2476,9 @@ class FinancialIntelligence:
 
             return target_amount
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating retirement target",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1799,10 +2502,9 @@ class FinancialIntelligence:
 
             return monthly_income * contribution_rate
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly retirement contribution",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1815,10 +2517,9 @@ class FinancialIntelligence:
 
             return retirement_age - current_age
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating retirement timeline",
-                error=str(e),
                 exc_info=True,
             )
             return 0
@@ -1841,10 +2542,9 @@ class FinancialIntelligence:
 
             return target_amount
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating home down payment target",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1868,10 +2568,9 @@ class FinancialIntelligence:
             max_reasonable_savings = monthly_income * 0.5
             return min(monthly_savings, max_reasonable_savings)
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly home savings",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1881,10 +2580,9 @@ class FinancialIntelligence:
         try:
             return getattr(profile, "home_purchase_timeline_years", 5) * 12
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating home purchase timeline",
-                error=str(e),
                 exc_info=True,
             )
             return 60
@@ -1905,10 +2603,9 @@ class FinancialIntelligence:
 
             return monthly_savings
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly emergency savings",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1923,10 +2620,9 @@ class FinancialIntelligence:
 
             return max(debts, key=lambda d: d.get("interest_rate", 0))
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error getting highest interest debt",
-                error=str(e),
                 exc_info=True,
             )
             return {}
@@ -1948,10 +2644,9 @@ class FinancialIntelligence:
 
             return total_payment
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly debt payment",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -1972,10 +2667,9 @@ class FinancialIntelligence:
 
             return int(timeline_months)
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating debt paydown timeline",
-                error=str(e),
                 exc_info=True,
             )
             return 0
@@ -1990,10 +2684,9 @@ class FinancialIntelligence:
 
             return target_amount
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating wealth building target",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -2006,10 +2699,9 @@ class FinancialIntelligence:
             # Save 20% of income for wealth building
             return monthly_income * 0.20
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly wealth contribution",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -2022,10 +2714,9 @@ class FinancialIntelligence:
             # Target: replace 50% of current income
             return monthly_income * 0.5
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating income generation target",
-                error=str(e),
                 exc_info=True,
             )
             return 0.0
@@ -2038,10 +2729,9 @@ class FinancialIntelligence:
             # Need at least $50,000 to generate meaningful passive income
             return max(50000, monthly_income * 12 * 2)
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating initial income investment",
-                error=str(e),
                 exc_info=True,
             )
             return 50000
@@ -2052,14 +2742,18 @@ class FinancialIntelligence:
         self.risk_cache.clear()
         self.pattern_cache.clear()
 
+
 _fi_singleton: Any = None
 
 
-def get_financial_intelligence_singleton(go_client: Any = None) -> FinancialIntelligence:
+def get_financial_intelligence_singleton(
+    go_client: Any = None,
+) -> FinancialIntelligence:
     """Get the process-wide FinancialIntelligence singleton."""
     global _fi_singleton
     if _fi_singleton is None:
         from miriam_agent.database.memory import get_memory_singleton
+
         _fi_singleton = FinancialIntelligence(get_memory_singleton(), go_client)
     elif go_client is not None and _fi_singleton.go_client is None:
         _fi_singleton.go_client = go_client

@@ -59,13 +59,15 @@ class PgVectorStore(VectorStore):
             )
             await conn.execute(
                 text(
-                    f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_type ON {TABLE} (content_type)"
+                    f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_type "
+                    f"ON {TABLE} (content_type)"
                 )
             )
             await conn.execute(
                 text(
                     f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_embedding "
-                    f"ON {TABLE} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+                    f"ON {TABLE} USING ivfflat (embedding vector_cosine_ops) "
+                    "WITH (lists = 100)"
                 )
             )
         self.async_session = sessionmaker(
@@ -131,9 +133,11 @@ class PgVectorStore(VectorStore):
                     await session.execute(
                         text(f"""
                             INSERT INTO {TABLE}
-                                (id, user_id, content, metadata, embedding, content_type)
+                                (id, user_id, content, metadata, embedding,
+                                 content_type)
                             VALUES
-                                (:id, :user_id, :content, :metadata::jsonb, :embedding::vector, :content_type)
+                                (:id, :user_id, :content, :metadata::jsonb,
+                                 :embedding::vector, :content_type)
                             """),
                         values,
                     )

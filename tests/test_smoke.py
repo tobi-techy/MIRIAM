@@ -71,8 +71,10 @@ def test_registry_builds():
     names = reg.list_names()
     assert "get_balance" in names
     assert "send_money" in names
+    assert "pay_bill" in names
     assert len(reg.auto_execute_names()) > 0
     assert len(reg.stage_confirm_names()) > 0
+    assert "pay_bill" in reg.stage_confirm_names()
 
 
 def test_registry_validates_required_args():
@@ -180,6 +182,50 @@ def test_agent_stages_money_action():
         assert len(result.proposed_actions) == 1
         assert result.proposed_actions[0].tool_name == "send_money"
         assert "150" in result.proposed_actions[0].display_summary
+
+    asyncio.get_event_loop().run_until_complete(_())
+
+
+def test_agent_stages_bill_payment():
+    from miriam_agent.agents.agent_loop import Agent
+    from miriam_agent.agents.llm import LLMResponse
+    from miriam_agent.tools import build_tool_registry
+
+    reg = build_tool_registry()
+    provider = MockProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {
+                            "name": "pay_bill",
+                            "arguments": json.dumps(
+                                {
+                                    "category": "airtime",
+                                    "recipient": "08012345678",
+                                    "amount_ngn": 1000,
+                                }
+                            ),
+                        },
+                    }
+                ],
+            ),
+        ]
+    )
+    agent = Agent(registry=reg, provider=provider)
+
+    async def _():
+        result = await agent.run(
+            user_id="u1", token="fake", message="buy 1000 naira airtime"
+        )
+        assert result.requires_confirmation is True
+        assert len(result.proposed_actions) == 1
+        assert result.proposed_actions[0].tool_name == "pay_bill"
+        summary = result.proposed_actions[0].display_summary
+        assert "airtime" in summary and "1000" in summary
 
     asyncio.get_event_loop().run_until_complete(_())
 
@@ -485,18 +531,18 @@ def test_concentrate_stream_roundtrip():
 
     sse = "\n".join(
         [
-            'event: response.output_text.delta',
+            "event: response.output_text.delta",
             'data: {"type": "response.output_text.delta", "delta": "Sure:"}',
             "",
-            'event: response.function_call_arguments.delta',
+            "event: response.function_call_arguments.delta",
             'data: {"type": "response.function_call_arguments.delta",'
             ' "call_id": "call_1", "delta": "{}"}',
             "",
-            'event: response.function_call_arguments.done',
+            "event: response.function_call_arguments.done",
             'data: {"type": "response.function_call_arguments.done",'
             ' "call_id": "call_1", "name": "get_balance", "arguments": "{}"}',
             "",
-            'event: response.completed',
+            "event: response.completed",
             'data: {"type": "response.completed", "response": {"usage":'
             ' {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}}}',
             "",

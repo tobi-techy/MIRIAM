@@ -27,6 +27,7 @@ from miriam_agent.api.dependencies import (
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
 from miriam_agent.integrations.supermemory_client import container_tag_for
+from miriam_agent.onboarding.service import OnboardingService
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.safety.validator import InputValidator
 from miriam_agent.tools import build_tool_registry
@@ -38,6 +39,44 @@ security = HTTPBearer()
 
 _audit_observer_installed = False
 _validator = InputValidator()
+
+# Mutation tools whose amount/recipient are worth recording in the audit
+# trail. Kept as an explicit set (rather than checking `_is_mutation` on the
+# result) so it's obvious at a glance which tools' arguments end up in a
+# durable log -- read-only tool arguments are never captured.
+_MONEY_TOOLS = {
+    "send_money",
+    "execute_investment",
+    "transfer_stash_to_spending",
+    "transfer_spending_to_stash",
+    "pay_bill",
+}
+
+
+def _money_details(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Pull the amount and counterparty out of a mutation tool's arguments.
+
+    Previously the audit observer never looked at tool arguments at all, so
+    ``AuditLog.details`` for a money movement recorded that *something* ran
+    but never *what* -- making amount-based safety checks (daily limits,
+    large-transfer patterns) impossible to implement against real data.
+    """
+    if tool_name not in _MONEY_TOOLS:
+        return {}
+    details: dict[str, Any] = {}
+    if "amount" in args:
+        details["amount"] = args.get("amount")
+    elif "amount_ngn" in args:
+        details["amount"] = args.get("amount_ngn")
+    if "to" in args:
+        details["recipient"] = args.get("to")
+    elif "recipient" in args:
+        details["recipient"] = args.get("recipient")
+    if "symbol" in args:
+        details["symbol"] = args.get("symbol")
+    if "category" in args:
+        details["category"] = args.get("category")
+    return details
 
 
 def _install_audit_observer() -> None:
@@ -64,6 +103,7 @@ def _install_audit_observer() -> None:
                     "status": result.get("status"),
                     "elapsed": result.get("elapsed"),
                     "error": result.get("error"),
+                    **_money_details(tool_name, result.get("_args") or {}),
                 },
                 risk_level=result.get("result", {}).get("_risk_level"),
             )
@@ -135,6 +175,28 @@ async def chat_with_agent(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Validation errors: {', '.join(validation_errors)}",
         )
+
+    # Ensure a local user row exists (Go backend is the identity authority).
+    await memory_store.ensure_user(user)
+
+    # Conversational onboarding: while a user has an unfinished financial
+    # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
+    # instead of the general agent. Action intents and completed interviews pass
+    # straight through. An OTP-confirmed action replay is the one case that
+    # must never be handed to onboarding: the user already reviewed and proved
+    # the action by email code, so it goes straight to the agent for execution.
+    if not approved_actions:
+        onboarding = await OnboardingService(memory_store).handle_turn(
+            user,
+            message=message,
+            is_poll_vote=bool(request.get("is_poll_vote", False)),
+            poll_title=request.get("poll_title") or "",
+            document=request.get("document"),
+        )
+        if onboarding.took_over:
+            return await _finish_onboarding_turn(
+                memory_store, supermemory_memory, user, message, onboarding
+            )
 
     registry = build_tool_registry()
     agent = Agent(
@@ -226,6 +288,7 @@ async def chat_stream(
     """Stream chat tokens via Server-Sent Events."""
     message = request.get("message", "")
     conversation_id = request.get("conversation_id")
+    approved_actions = request.get("approved_actions")
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -243,25 +306,83 @@ async def chat_stream(
             detail=f"Validation errors: {', '.join(validation_errors)}",
         )
 
-    registry = build_tool_registry()
-    agent = Agent(
-        registry=registry,
-        safety_policy=SafetyPolicy(),
-        config=AgentConfig(name="financial_agent", tools=registry.list_names()),
-    )
-    history = (
-        await memory_store.get_conversation_history(conversation_id)
-        if conversation_id
-        else []
-    )
-    user_context = await _load_user_context(memory_store, user)
-    memory_facts = await _load_memory_facts(
-        memory_store, user.id, query=message, supermemory_memory=supermemory_memory
-    )
-    financial_plan = await _load_financial_plan(token)
+    await memory_store.ensure_user(user)
+
+    # Conversational onboarding owns the turn here too, exactly as in /chat
+    # (polls only render in the iMessage bridge; the web stream carries the text
+    # and, when one is pending, the poll payload for the client to render).
+    # OTP-confirmed action replays skip onboarding just like in /chat:
+    # approved_actions were already reviewed and email-verified by the user.
+    onboarding = None
+    if not approved_actions:
+        onboarding = await OnboardingService(memory_store).handle_turn(
+            user,
+            message=message,
+            is_poll_vote=bool(request.get("is_poll_vote", False)),
+            poll_title=request.get("poll_title") or "",
+            document=request.get("document"),
+        )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
+            if onboarding is not None and onboarding.took_over:
+                conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
+                await memory_store.store_interaction(
+                    user_id=user.id,
+                    role="user",
+                    content=message,
+                    conversation_id=conv_id,
+                    metadata={"channel": "api", "onboarding": True},
+                )
+                await memory_store.store_interaction(
+                    user_id=user.id,
+                    role="assistant",
+                    content=onboarding.response,
+                    conversation_id=conv_id,
+                    metadata={"channel": "api", "onboarding": True},
+                )
+                await _ingest_to_supermemory(
+                    supermemory_memory,
+                    user.id,
+                    conversation_id=conv_id,
+                    user_message=message,
+                    assistant_message=onboarding.response,
+                )
+                if onboarding.poll:
+                    yield _sse(
+                        {
+                            "type": "onboarding",
+                            "onboarding": onboarding.to_payload(conv_id).get(
+                                "onboarding", {}
+                            ),
+                            "poll": onboarding.poll,
+                        }
+                    )
+                yield _sse({"type": "token", "content": onboarding.response})
+                yield _sse({"type": "done"})
+                return
+
+            registry = build_tool_registry()
+            agent = Agent(
+                registry=registry,
+                safety_policy=SafetyPolicy(),
+                config=AgentConfig(name="financial_agent", tools=registry.list_names()),
+            )
+            _install_audit_observer()
+            history = (
+                await memory_store.get_conversation_history(conversation_id)
+                if conversation_id
+                else []
+            )
+            user_context = await _load_user_context(memory_store, user)
+            memory_facts = await _load_memory_facts(
+                memory_store,
+                user.id,
+                query=message,
+                supermemory_memory=supermemory_memory,
+            )
+            financial_plan = await _load_financial_plan(token)
+
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
@@ -271,6 +392,7 @@ async def chat_stream(
                 user_context=user_context,
                 memory_facts=memory_facts,
                 financial_plan=financial_plan,
+                approved_actions=approved_actions,
             ):
                 evt = event["type"]
                 if evt == "token":
@@ -380,8 +502,48 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+async def _finish_onboarding_turn(
+    memory_store: MemoryStore,
+    supermemory_memory: Any,
+    user: User,
+    message: str,
+    onboarding: Any,
+) -> dict[str, Any]:
+    """Persist and return an onboarding turn (mirrors the agent-turn path)."""
+    conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
+    await memory_store.store_interaction(
+        user_id=user.id,
+        role="user",
+        content=message,
+        conversation_id=conv_id,
+        metadata={"channel": "api", "onboarding": True},
+    )
+    await memory_store.store_interaction(
+        user_id=user.id,
+        role="assistant",
+        content=onboarding.response,
+        conversation_id=conv_id,
+        metadata={"channel": "api", "onboarding": True},
+    )
+    await _ingest_to_supermemory(
+        supermemory_memory,
+        user.id,
+        conversation_id=conv_id,
+        user_message=message,
+        assistant_message=onboarding.response,
+    )
+    payload = onboarding.to_payload(conv_id)
+    payload["conversation_history"] = await memory_store.get_conversation_history(
+        conv_id
+    )
+    return payload
+
+
 async def _load_financial_plan(token: str) -> dict[str, Any] | None:
-    """Fetch the user's financial plan from the Go backend (fail-open)."""
+    """Assemble a short plan note from live Go data (fail-open).
+
+    Does not call the retired Go AI ``/api/v1/ai/financial-plan`` endpoint.
+    """
     try:
         from miriam_agent.integrations.go_client import get_go_client
 
@@ -399,6 +561,7 @@ async def _load_user_context(memory_store: MemoryStore, user: User) -> dict[str,
     context: dict[str, Any] = {
         "name": user.full_name or user.username,
         "user_id": user.id,
+        "roles": list(getattr(user, "roles", None) or []),
     }
     try:
         profile = await memory_store.get_financial_profile(user.id)
@@ -436,7 +599,7 @@ async def _load_memory_facts(
             pass  # fail open to local store
 
     facts: list[dict[str, Any]] = []
-    for kind in ("preference", "goal", "financial", "pattern"):
+    for kind in ("preference", "goal", "financial", "pattern", "onboarding"):
         try:
             entries = await memory_store.retrieve_memory(
                 user_id=user_id, memory_type=kind, limit=3

@@ -10,7 +10,6 @@ Permissions come from tool metadata in the registry to avoid drift:
 - money-movement (mutation) tools require ``execute`` (verified users)
 """
 
-
 from miriam_agent.core.exceptions import AuthorizationError
 
 # Roles granted by identity tier (verified status drives capability)

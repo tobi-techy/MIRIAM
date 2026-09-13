@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from miriam_agent.api.chat import router as chat_router
+from miriam_agent.api.proactive import router as proactive_router
 from miriam_agent.observability.logging import setup_logging
 from miriam_agent.observability.metrics import setup_metrics
 from miriam_agent.observability.tracing import setup_tracing
@@ -30,7 +31,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Miriam Financial Agent API",
-    description="Production-grade financial agent API with memory, planning, and safe money automation",
+    description=(
+        "Production-grade financial agent API with memory, planning, "
+        "and safe money automation"
+    ),
     version="0.1.0",
     lifespan=lifespan,
     docs_url="/docs" if os.getenv("ENVIRONMENT") == "development" else None,
@@ -113,3 +117,4 @@ async def metrics():
 
 # Include routers
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(proactive_router, prefix="/api/v1")

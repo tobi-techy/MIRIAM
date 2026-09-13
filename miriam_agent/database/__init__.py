@@ -1,16 +1,16 @@
 # Database module for Miriam Financial Agent
 from .models import (
-                     AuditLog,
-                     Base,
-                     Budget,
-                     Conversation,
-                     FinancialProfile,
-                     Investment,
-                     MemoryEntry,
-                     Message,
-                     ToolUsage,
-                     Transaction,
-                     User,
+    AuditLog,
+    Base,
+    Budget,
+    Conversation,
+    FinancialProfile,
+    Investment,
+    MemoryEntry,
+    Message,
+    ToolUsage,
+    Transaction,
+    User,
 )
 
 __all__ = [

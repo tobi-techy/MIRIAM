@@ -17,6 +17,14 @@ TOOL_EXECUTIONS = Counter(
 MEMORY_OPERATIONS = Counter(
     "miriam_memory_operations_total", "Memory operations", ["operation", "status"]
 )
+ONBOARDING_EVENTS = Counter(
+    "miriam_onboarding_events_total",
+    "Conversational onboarding funnel events (interview_started, "
+    "interview_finished, statement_requested, statement_provided, "
+    "plan_presented, consent_poll, adjusting, completed_automated, "
+    "completed_draft, abandoned, restarted)",
+    ["user_id", "event"],
+)
 
 
 def setup_metrics() -> None:
