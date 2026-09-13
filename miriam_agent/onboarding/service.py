@@ -128,6 +128,7 @@ class OnboardingTurn:
     conversation_id: str = field(default="")
     stage: str = ""
     completed: bool = False
+    automated: bool = False
 
     def to_payload(self, conversation_id: str) -> dict[str, Any]:
         return {
@@ -139,6 +140,7 @@ class OnboardingTurn:
             "onboarding": {
                 "stage": self.stage,
                 "completed": self.completed,
+                "automated": self.automated,
             },
         }
 
@@ -597,6 +599,7 @@ class OnboardingService:
             conversation_id=conversation_id,
             stage=STAGE_COMPLETE,
             completed=True,
+            automated=True,
         )
 
     async def _complete_draft(
@@ -616,6 +619,7 @@ class OnboardingService:
             conversation_id=conversation_id,
             stage=STAGE_COMPLETE,
             completed=True,
+            automated=False,
         )
 
     async def _abandon(
