@@ -3,7 +3,7 @@ set -eu
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-LOG_LEVEL="${LOG_LEVEL:-info}"
+LOG_LEVEL="$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')"
 
 start_uvicorn() {
     p="$1"
