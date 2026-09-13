@@ -1,14 +1,22 @@
 """Tests for the conversational financial onboarding flow.
 
+Miriam leads the onboarding as a real conversation: there is no question bank
+and no fixed vocabulary. She records free-form ``facts`` each turn (plus a
+first-class ``money_moment`` and ``goal``), a deterministic plan builder turns
+those facts into the diagnosis/steps/standing rules, and consent turns the plan
+into living rules.
+
 Covers:
-  - Question bank: core ordering, adaptive triggered follow-ups (capped),
-    deterministic branching
-  - Plan builder: diagnostics, overlays, steps, standing-rules gating
+  - Plan builder: fuzzy detection over free-form facts, diagnostics, overlays,
+    steps, standing-rules gating
   - State store: local-fallback round-trip and isolation per user
-  - Driver: LLM-led parse/validation, canonical classification, stage-safe
-    intents, taps clamping, deterministic fallback on garbage/errors
-  - Service flow (LLM-led): interview -> statement -> plan -> consent ->
-    complete, action-intent bypass, abandon, adjustments, document shortcut
+  - Driver: LLM-led parse/validation of free-form facts, stage-safe intents,
+    taps clamping, bounds, deterministic fallback on garbage/errors
+  - Service flow (LLM-led): agent-led interview -> statement -> plan -> consent
+    -> complete, action-intent bypass, abandon, adjustments, document shortcut
+  - Fallback: a broken LLM degrades to short, warm conversational lines that
+    still complete the flow
+  - Guard rails: the interview cap closes the conversation deterministically
 
 Note: tests follow the repo convention of sync wrappers around
 ``asyncio.get_event_loop().run_until_complete(...)`` so the shared session
@@ -21,6 +29,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -36,135 +45,38 @@ def _user(uid: str = "u-1"):
 
 
 # -----------------------------------------------------------------------
-# Question bank
-# -----------------------------------------------------------------------
-
-
-def test_core_questions_asked_in_order():
-    from miriam_agent.onboarding import questions as q
-
-    asked: list[str] = []
-    for core in q.CORE:
-        nxt = q.next_question({}, asked)
-        assert nxt.id == core.id, (nxt.id, core.id)
-        asked.append(nxt.id)
-
-
-def test_core_done_then_followups_by_priority():
-    from miriam_agent.onboarding import questions as q
-
-    answers = {
-        # Force every trigger on so priority order (not trigger order) decides.
-        "money_feelings": "Stressful",
-        "income_predictability": "All over the place",
-        "shortage_cause": "I spend more than I plan",
-        "liquidity_runway": "A few days",
-        "dependents": "Extended family",
-        "goal_direction": "Build wealth",
-        "involvement": "Keep it light",
-    }
-    asked = [c.id for c in q.CORE]
-    out = []
-    while True:
-        nxt = q.next_question(answers, asked, max_followups=5)
-        if nxt is None:
-            break
-        out.append(nxt.id)
-        asked.append(nxt.id)
-    assert out == [qid for qid in q.FOLLOWUP_PRIORITY]
-
-
-def test_untriggered_followups_never_asked():
-    from miriam_agent.onboarding import questions as q
-
-    # Calm money, steady income, no dependents, not wealth-building.
-    answers = {
-        "money_feelings": "Calm",
-        "income_predictability": "Steady every month",
-        "shortage_cause": "I don't run short",
-        "liquidity_runway": "Three to six months",
-        "dependents": "Just me",
-        "goal_direction": "Not sure yet",
-        "involvement": "Keep it light",
-    }
-    asked = [c.id for c in q.CORE]
-    assert q.next_question(answers, asked, max_followups=5) is None
-
-
-def test_max_followups_caps_triggers():
-    from miriam_agent.onboarding import questions as q
-
-    answers = {
-        "money_feelings": "Stressful",
-        "income_predictability": "All over the place",
-        "shortage_cause": "I spend more than I plan",
-        "liquidity_runway": "A few days",
-        "dependents": "Extended family",
-        "goal_direction": "Build wealth",
-        "involvement": "Keep it light",
-    }
-    asked = [c.id for c in q.CORE]
-    out = []
-    while True:
-        nxt = q.next_question(answers, asked, max_followups=2)
-        if nxt is None:
-            break
-        out.append(nxt.id)
-        asked.append(nxt.id)
-    assert len(out) == 2
-    assert out == [qid for qid in q.FOLLOWUP_PRIORITY][:2]
-
-
-def test_answered_filters_blank():
-    from miriam_agent.onboarding import questions as q
-
-    blank = {c.id: "" for c in q.CORE}
-    assert q.answered(blank) == {}
-    assert q.is_followup("debt_probe") is True
-    assert q.is_followup("money_feelings") is False
-
-
-# -----------------------------------------------------------------------
-# Plan builder
+# Plan builder (free-form facts → deterministic plan)
 # -----------------------------------------------------------------------
 
 
 def test_plan_stability_seeker_short_runway_no_automation():
     from miriam_agent.onboarding.plan import build_plan
 
-    answers = {
-        "money_feelings": "Stressful",
-        "income_predictability": "Steady every month",
-        "shortage_cause": "The timing, it comes in late",
-        "liquidity_runway": "Maybe a month",
-        "dependents": "Just me",
-        "goal_direction": "Stop the stress",
-        "involvement": "Keep it light",
+    facts = {
+        "cashflow": "steady paycheck but the money tends to run out a few days "
+        "before the end",
+        "runway": "maybe a month at best",
+        "income": "steady every month",
     }
-    plan = build_plan(answers)
+    plan = build_plan(facts, money_moment="paying rent is stressful")
     assert plan["diagnostic_state"] == "Stability Seeker"
     assert "goal_urgency" in plan["overlays"]
     assert plan["steps"][0]["title"] == "Protect the next month"
-    # Hands-off involvement: no automation bullets.
+    # No hands-on involvement: no automation bullets.
     assert plan["automate"] is False
     assert plan["standing_rules"] == []
-    # Tracking level still earns the weekly check-in.
+    # The weekly check-in is always part of the plan.
     assert any(s["id"] == "checkin" for s in plan["steps"])
 
 
 def test_plan_volatile_earner_automates_rules():
     from miriam_agent.onboarding.plan import build_plan
 
-    answers = {
-        "money_feelings": "Honestly, a mess",
-        "income_predictability": "All over the place",
-        "shortage_cause": "The timing, it comes in late",
-        "liquidity_runway": "Three to six months",
-        "dependents": "Just me",
-        "goal_direction": "Not sure yet",
-        "involvement": "Set it up for me",
+    facts = {
+        "income": "all over the place, commissions come late",
+        "involvement": "set it up for me",
     }
-    plan = build_plan(answers)
+    plan = build_plan(facts)
     assert plan["diagnostic_state"] == "Volatile Earner"
     assert plan["automate"] is True
     ids = {r["kind"] for r in plan["standing_rules"]}
@@ -175,29 +87,97 @@ def test_plan_volatile_earner_automates_rules():
 def test_plan_wealth_builder_and_overlays():
     from miriam_agent.onboarding.plan import build_plan
 
-    answers = {
-        "money_feelings": "Calm",
-        "income_predictability": "Steady every month",
-        "shortage_cause": "I don't run short",
-        "liquidity_runway": "Six months or more",
-        "dependents": "Extended family",
-        "goal_direction": "Build wealth",
-        "involvement": "Suggest things, I'll do it",
-        "debt_probe": "A noticeable amount",
-        "behavior_probe": "I don't track it closely",
+    facts = {
+        "income": "steady, six months of runway saved",
+        "debt": "credit card debt that's become noticeable",
+        "obligations": "send money home to family every month",
+        "spending": "don't track it closely, small things add up",
     }
-    plan = build_plan(answers)
+    plan = build_plan(facts, goal="invest and build wealth")
     assert plan["diagnostic_state"] == "Wealth Builder"
     assert {"debt_burden", "family_obligations", "spending_leakage"} <= set(
         plan["overlays"]
     )
-    # Follow-up probes produce their own steps too.
+    # Probes produce their own steps too.
     assert any(s["id"] == "debt" for s in plan["steps"])
     assert any(s["id"] == "spending_guard" for s in plan["steps"])
     assert any(s["id"] == "goal" for s in plan["steps"])
     # Document grounding flows into the summary.
-    grounded = build_plan(answers, document_summary="shared stmt.pdf")
+    grounded = build_plan(facts, "shared stmt.pdf", goal="invest and build wealth")
     assert grounded["statement_summary"] == "shared stmt.pdf"
+
+
+def test_plan_uses_first_class_money_moment_and_goal():
+    from miriam_agent.onboarding.plan import build_plan
+
+    plan = build_plan(
+        {"cashflow": "roughly steady, maybe three months saved"},
+        money_moment="running out before payday makes me anxious",
+        goal="Japan trip in 2027",
+    )
+    assert plan["evidence"][0] == "running out before payday makes me anxious"
+    goal_step = next(s for s in plan["steps"] if s["id"] == "goal")
+    assert "Japan trip in 2027" in goal_step["detail"]
+    assert plan["automate"] is False
+
+
+def test_plan_minimal_default_is_financial_beginner():
+    from miriam_agent.onboarding.plan import build_plan
+
+    plan = build_plan({"involvement": "keep it light"})
+    assert plan["diagnostic_state"] == "Financial Beginner"
+    assert plan["automate"] is False
+    assert any(s["id"] == "checkin" for s in plan["steps"])
+
+
+def test_plan_carries_a_structured_insight_per_diagnostic():
+    """spec §21: every plan carries one deterministic financial_insight object.
+    The personality layer speaks it; the backend keeps the structured read."""
+    from miriam_agent.onboarding.plan import build_plan
+
+    plans = [
+        build_plan({"cashflow": "runs out a few days before payday"}),
+        build_plan({"income": "commission comes late, all over the place"}),
+        build_plan({"income": "steady, six months saved"}, goal="invest for wealth"),
+        build_plan({"involvement": "keep it light"}),
+    ]
+    by_state = {p["diagnostic_state"]: p for p in plans}
+    assert by_state["Stability Seeker"]["insight"] == {
+        "type": "financial_insight",
+        "category": "cash_flow",
+        "title": "saving happens last",
+        "summary": "the buffer runs out before the money does, and saving comes last",
+        "severity": "high",
+        "confidence": 0.65,
+        "financial_impact": None,
+        "evidence": ["runs out a few days before payday"],
+        "recommended_action": {
+            "type": "safety_net",
+            "amount": None,
+            "timing": "income_received",
+        },
+    }
+    assert by_state["Volatile Earner"]["insight"]["category"] == "income_volatility"
+    assert by_state["Volatile Earner"]["insight"]["severity"] == "medium"
+    assert by_state["Wealth Builder"]["insight"]["category"] == "growth"
+    assert by_state["Financial Beginner"]["insight"]["severity"] == "low"
+    for p in plans:
+        ins = p["insight"]
+        assert ins["type"] == "financial_insight"
+        assert ins["title"] and ins["evidence"]
+        assert 0 <= ins["confidence"] <= 1
+        assert "timing" in ins["recommended_action"]
+
+
+def test_plan_insight_confidence_grounded_by_statement():
+    from miriam_agent.onboarding.plan import build_plan
+
+    plan = build_plan(
+        {"cashflow": "runs out a few days before payday"},
+        "balance 5000",
+    )
+    # Statement grounds the confidence up from the base 0.6 + 0.05 evidence.
+    assert plan["insight"]["confidence"] == 0.8
 
 
 # -----------------------------------------------------------------------
@@ -211,14 +191,33 @@ def test_state_store_round_trip_and_isolation():
 
     store = OnboardingStateStore(redis_url="", ttl_days=None)
     s1 = OnboardingState({"document_summary": "st.pdf"})
-    s1.answers["money_feelings"] = "Calm"
+    s1.learned["cashflow"] = "about 4000 a month, spikes with commission"
+    s1.money_moment = "the month runs out before the money does"
+    s1.money_moment_meta = {
+        "emotion": "frustrated",
+        "suspected_problem": "cash_flow",
+        "confidence": 0.72,
+    }
+    s1.goal = "new car"
+    s1.goal_meta = {"target_date": "2027", "estimated_cost": "2.5m"}
+    s1.conversation_state["user_sentiment"] = "tense"
     s1.plan_presented = True
-    s1.plan = build_plan({"involvement": "Keep it light"})
+    s1.plan = build_plan({"involvement": "keep it light"})
     _run(store.save_state("u-1", s1))
 
     s2 = _run(store.get_state("u-1"))
     assert s2 is not None
-    assert s2.answers["money_feelings"] == "Calm"
+    assert s2.learned["cashflow"] == "about 4000 a month, spikes with commission"
+    assert s2.money_moment == "the month runs out before the money does"
+    assert s2.money_moment_meta == {
+        "emotion": "frustrated",
+        "suspected_problem": "cash_flow",
+        "confidence": 0.72,
+    }
+    assert s2.goal == "new car"
+    assert s2.goal_meta == {"target_date": "2027", "estimated_cost": "2.5m"}
+    assert s2.conversation_state["user_sentiment"] == "tense"
+    assert s2.conversation_state["directness_level"] == 1
     assert s2.plan_presented is True
     assert s2.to_dict()["document_summary"] == "st.pdf"
     assert s2.plan["diagnostic_state"] == "Financial Beginner"
@@ -245,6 +244,75 @@ def test_state_store_stamps_updated_at_and_expires_local_fallback():
     )
     assert _run(store.get_state("u-1")) is None
     assert "miriam:onboarding:state:u-1" not in store._local
+
+
+def test_state_round_trip_stamps_schema_version():
+    from miriam_agent.onboarding.state import (
+        SCHEMA_VERSION,
+        OnboardingState,
+        OnboardingStateStore,
+    )
+
+    store = OnboardingStateStore(redis_url="", ttl_days=None)
+    s = OnboardingState()
+    _run(store.save_state("u-1", s))
+    assert s.schema_version == SCHEMA_VERSION
+    assert s.to_dict()["schema_version"] == SCHEMA_VERSION
+    restored = _run(store.get_state("u-1"))
+    assert restored is not None
+    assert restored.schema_version == SCHEMA_VERSION
+    assert restored.to_dict()["schema_version"] == SCHEMA_VERSION
+
+
+def test_v1_record_is_migrated_forward_on_load():
+
+    from miriam_agent.onboarding.state import SCHEMA_VERSION, OnboardingState
+
+    v1 = {
+        "stage": "interview",
+        "name": "Tola",
+        "learned": {"cashflow": "4000 a month"},
+        "document_summary": "",
+        "completed_at": "",
+        "conversation_state": {"user_sentiment": "tense"},
+    }
+    state = OnboardingState(v1)
+    assert state.schema_version == SCHEMA_VERSION
+    assert state.document_summary is None
+    assert state.completed_at is None
+    assert state.started_at > 0
+    assert state.learned["cashflow"] == "4000 a month"
+    assert state.conversation_state["user_sentiment"] == "tense"
+
+
+def test_store_rewrites_migrated_record():
+    from miriam_agent.onboarding.state import SCHEMA_VERSION, OnboardingStateStore
+
+    store = OnboardingStateStore(redis_url="", ttl_days=None)
+    v1 = {"stage": "greeting", "document_summary": "", "updated_at": time.time()}
+    store._local["miriam:onboarding:state:u-1"] = v1
+    restored = _run(store.get_state("u-1"))
+    assert restored is not None
+    assert restored.schema_version == SCHEMA_VERSION
+    migrated = store._local["miriam:onboarding:state:u-1"]
+    assert migrated["schema_version"] == SCHEMA_VERSION
+    assert migrated["document_summary"] is None
+
+
+def test_future_schema_version_loads_fail_open():
+    from miriam_agent.onboarding.state import OnboardingState
+
+    state = OnboardingState(
+        {
+            "schema_version": 99,
+            "stage": "complete",
+            "name": "Dana",
+            "some_future_field": "preserved",
+        }
+    )
+    assert state.schema_version == 99
+    assert state.name == "Dana"
+    assert state.stage == "complete"
 
 
 # -----------------------------------------------------------------------
@@ -310,14 +378,30 @@ class FakeProvider:
         return LLMResponse(content=self._responses.pop(0))
 
 
+class BrokenProvider:
+    """An LLM that is down; exercises the deterministic fallback."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+        self.calls.append(messages)
+        raise RuntimeError("llm unavailable")
+
+
 def _service(monkeypatch, provider=None):
     from miriam_agent.onboarding.service import OnboardingService
+    from miriam_agent.onboarding.trace import OnboardingTraceStore
 
     states = FakeStates()
     memory = FakeMemory()
     monkeypatch.setattr(
         "miriam_agent.onboarding.service.get_onboarding_state_store",
         lambda: states,
+    )
+    monkeypatch.setattr(
+        "miriam_agent.onboarding.service.get_onboarding_trace_store",
+        lambda: OnboardingTraceStore(use_redis=False),
     )
     prov = provider or FakeProvider()
     svc = OnboardingService(memory, provider=prov)  # type: ignore[arg-type]
@@ -333,24 +417,24 @@ def _service(monkeypatch, provider=None):
 # ------------------------------------------------------------------
 
 
-def _greet(reply, intent="interview", answers=None, taps=None, adjustment=""):
+def _greet(reply, intent="interview", facts=None, taps=None, adjustment=""):
     return json.dumps(
         {
             "reply": reply,
             "intent": intent,
-            "answers": answers or {},
+            "facts": facts or {},
             "suggested_replies": taps or [],
             "adjustment": adjustment,
         }
     )
 
 
-def _d(dim, value):
+def _d(key, value, intent="interview"):
     return json.dumps(
         {
-            "reply": f"{dim} done",
-            "intent": "interview",
-            "answers": {dim: value},
+            "reply": f"{key} done",
+            "intent": intent,
+            "facts": {key: value},
             "suggested_replies": [],
         }
     )
@@ -361,7 +445,7 @@ def _plan_present(reply="Here is your picture: Financial Beginner."):
 
 
 # ------------------------------------------------------------------
-# Service tests (LLM-led)
+# Service tests (LLM-led, agent-led conversation)
 # ------------------------------------------------------------------
 
 
@@ -374,27 +458,148 @@ def test_action_intent_bypasses_interview(monkeypatch):
     assert states.data == {}
 
 
-def test_full_interview_to_standing_rules(monkeypatch):
-    """Happy-path: answers all dims via conductor, skips statement, gets plan,
-    then consent_yes -> automated standing rules."""
-    # greet -> core dims -> request_statement -> skip -> present_plan -> consent
+def test_greeting_captures_name_then_agent_opens_money_moment(monkeypatch):
+    opener = "Nice to meet you, Tola! What's been on your mind about money lately?"
+    provider = FakeProvider([_greet(opener)])
+    service, states, memory, _ = _service(monkeypatch, provider)
+    user = _user()
+
+    turn = _run(service.handle_turn(user, message="hey"))
+    assert turn.took_over is True
+    assert "first name" in turn.response.lower()
+    assert turn.to_payload("")["name"] == ""
+    assert states.data["u-1"]["stage"] == "greeting"
+
+    turn = _run(service.handle_turn(user, message="my name is Tola"))
+    assert turn.took_over is True
+    assert turn.to_payload("")["name"] == "Tola"
+    assert states.data["u-1"].get("name") == "Tola"
+    assert states.data["u-1"].get("stage") == "interview"
+    # The first question is Miriam's own conversational opener (one question),
+    # returned verbatim -- never a canned question from a script.
+    assert turn.response == opener
+    assert turn.poll is None
+    # The conductor led it and saw what it knows (nothing yet).
+    assert "WHAT YOU KNOW SO FAR" in provider.calls[-1][-1].content
+
+
+def test_conversation_is_agent_led_not_scripted(monkeypatch):
+    provider = FakeProvider(
+        [
+            _greet("What's eating you about money lately? Be as raw as you like."),
+            _greet("Got it.", facts={"money_moment": "the month runs out first"}),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+    turn = _run(service.handle_turn(user, message="my name is Tola"))
+    assert "What's eating you" in turn.response  # her words, not a template
+
+    turn = _run(service.handle_turn(user, message="the month runs out first"))
+    assert turn.response == "Got it."
+    assert states.data["u-1"]["money_moment"] == "the month runs out first"
+    # The money moment was lifted out of the free-form facts.
+    assert "money_moment" not in states.data["u-1"]["learned"]
+
+
+def test_greeting_skip_goes_straight_to_conversation(monkeypatch):
+    provider = FakeProvider(
+        [
+            _greet("No problem. What's been on your mind about money lately?"),
+        ]
+    )
+    service, states, _, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+    turn = _run(service.handle_turn(user, message="skip"))
+    assert states.data["u-1"].get("name") == ""
+    assert states.data["u-1"].get("stage") == "interview"  # skipped the name step
+    assert turn.response.startswith("No problem.")
+
+
+def test_volunteered_name_mid_interview_captured(monkeypatch):
+    """A statement-first user never sees the greeting, so a later explicit
+    \"call me ...\" is honored mid-interview and rides on the reply payload."""
+    provider = FakeProvider(
+        [
+            _greet("Thanks for the statement! What's been going on with money?"),
+            _greet("Got it.", facts={"money_moment": "it just disappears"}),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(
+        service.handle_turn(
+            user,
+            message="stmt",
+            document={"summary": "balance 5000"},
+        )
+    )
+    turn = _run(service.handle_turn(user, message="also, call me Tobi"))
+    assert turn.took_over is True
+    assert turn.to_payload("")["name"] == "Tobi"
+    assert states.data["u-1"].get("name") == "Tobi"
+
+
+def test_bare_word_is_not_a_name(monkeypatch):
+    """A plain answer like \"Calm\" must never be captured as the user's name."""
+    provider = FakeProvider(
+        [
+            _greet("Thanks for the statement! What's been going on with money?"),
+            _greet("Got it.", facts={"money_moment": "it just disappears"}),
+        ]
+    )
+    service, states, _, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(
+        service.handle_turn(
+            user,
+            message="stmt",
+            document={"summary": "balance 5000"},
+        )
+    )
+    turn = _run(service.handle_turn(user, message="Calm"))
+    assert turn.to_payload("")["name"] == ""
+    assert states.data["u-1"].get("name") == ""
+
+
+def test_full_conversation_to_standing_rules(monkeypatch):
+    """Happy path: Miriam leads the whole interview conversationally, the facts
+    she learns are lifted, the statement is skipped, the plan is presented, then
+    consent_yes -> automated standing rules."""
     responses = [
-        _greet("Hey! How is money feeling for you these days?"),
-        _d("money_feelings", "Calm"),
-        _d("income_predictability", "Steady every month"),
-        _d("shortage_cause", "I don't run short"),
-        _d("liquidity_runway", "Three to six months"),
-        _d("dependents", "Just me"),
-        _d("goal_direction", "Not sure yet"),
-        # last core: involvement -> request the statement
+        # name captured -> her conversational money-moment opener
+        _greet("Great to meet you, Tola! What's been on your mind about money?"),
+        # money moment lands
         _greet(
-            "Got it. Send me a statement, or say skip.",
-            intent="request_statement",
-            answers={"involvement": "Keep it light"},
+            "So the month ends before the money does. When income lands, does it "
+            "come steady or in lumps?",
+            facts={
+                "money_moment": "the month is over before the money is",
+                "cashflow": "pretty irregular",
+            },
         ),
-        # skip statement
-        _greet("No worries, let's go with what you told me.", intent="present_plan"),
-        _plan_present(),
+        # follow the thread
+        _greet(
+            "And if nothing came in next month - how long could you float?",
+            facts={
+                "income": "comes in late, all over the place",
+                "involvement": "set it up for me",
+            },
+        ),
+        # enough context -> ask for the statement
+        _greet(
+            "A statement would make this real. Send one over, or just say skip.",
+            intent="request_statement",
+            facts={"runway": "maybe a month at best"},
+        ),
+        # skip the statement
+        _greet("No worries, we'll go with what you told me.", intent="present_plan"),
+        # plan presented by the engine-presenter
+        _plan_present(
+            "Here's your picture: Stability Seeker. First we build the floor."
+        ),
         # consent
         _greet("Done.", intent="consent_yes"),
     ]
@@ -403,40 +608,45 @@ def test_full_interview_to_standing_rules(monkeypatch):
 
     turn = _run(service.handle_turn(user, message="hey"))
     assert turn.took_over is True
-
-    answer_values = (
-        "Calm",
-        "Steady every month",
-        "I don't run short",
-        "Three to six months",
-        "Just me",
-        "Not sure yet",
+    turn = _run(service.handle_turn(user, message="Tola"))
+    assert turn.took_over is True
+    assert turn.response == (
+        "Great to meet you, Tola! What's been on your mind about money?"
     )
-    for value in answer_values:
-        turn = _run(service.handle_turn(user, message=value))
-        assert turn.took_over is True
-    assert states.data["u-1"].get("stage") == "interview"
 
-    turn = _run(service.handle_turn(user, message="Keep it light"))
+    turn = _run(service.handle_turn(user, message="the month ends before"))
+    assert turn.poll is None
+    turn = _run(service.handle_turn(user, message="chunks and late"))
+    turn = _run(service.handle_turn(user, message="maybe a month"))
     assert states.data["u-1"].get("stage") == "awaiting_statement"
+    assert states.data["u-1"].get("money_moment") == (
+        "the month is over before the money is"
+    )
 
     turn = _run(service.handle_turn(user, message="Skip for now"))
     assert turn.poll is None
     assert states.data["u-1"].get("stage") == "plan_consent"
 
+    plan = states.data["u-1"]["plan"]
+    assert plan["diagnostic_state"] == "Stability Seeker"
+    assert plan["automate"] is True
+    kinds = {r["kind"] for r in plan["standing_rules"]}
+    assert {"buffer", "income_rhythm"} <= kinds
+
     turn = _run(service.handle_turn(user, message="ok, set it up"))
     assert turn.completed is True
-    kinds = {e["type"] for e in memory.entries}
-    assert "financial" in kinds and "onboarding" in kinds
+    assert turn.automated is True
+    entry_kinds = {e["type"] for e in memory.entries}
+    assert {"financial", "goal", "pattern", "onboarding"} <= entry_kinds
 
 
-def test_statement_as_first_message_starts_interview(monkeypatch):
+def test_statement_as_first_message_starts_conversation(monkeypatch):
     user = _user()
     provider = FakeProvider(
         [
             _greet(
                 "Thanks for the statement - I'll build your plan on your real "
-                "numbers. How is money feeling?"
+                "numbers. What's been on your mind about money lately?"
             ),
         ]
     )
@@ -444,176 +654,29 @@ def test_statement_as_first_message_starts_interview(monkeypatch):
     turn = _run(
         service.handle_turn(
             user,
-            message="[bank statement]",
-            document={"name": "stmt.pdf", "summary": "average balance 4200"},
+            message="stmt",
+            document={"summary": "balance 5000"},
         )
     )
     assert turn.took_over is True
-    assert states.data["u-1"].get("document_summary") == "average balance 4200"
+    assert states.data["u-1"].get("document_summary") == "balance 5000"
     assert states.data["u-1"].get("stage") == "interview"
-    assert turn.took_over is True
-    assert "Thanks for the statement" in turn.response
+    assert turn.poll is None  # LLM replies, no deterministic poll
+    assert "statement" in turn.response.lower()
 
 
-def test_document_mid_interview_builds_plan(monkeypatch):
+def test_statement_mid_interview_builds_plan(monkeypatch):
     user = _user()
     provider = FakeProvider(
         [
-            _greet("How is money feeling?"),
-            _greet(
-                "Got it.",
-                intent="request_statement",
-                answers={"money_feelings": "Calm"},
-            ),
-            # document arrives while in awaiting_statement -> present_plan
-            _plan_present(),
+            _greet("Ready when you are."),
+            _plan_present("Here's your picture: Financial Beginner."),
         ]
     )
     service, states, memory, _ = _service(monkeypatch, provider)
     _run(service.handle_turn(user, message="hey"))
-    _run(service.handle_turn(user, message="Calm"))
-    assert states.data["u-1"].get("stage") == "awaiting_statement"
-
-    turn = _run(
-        service.handle_turn(
-            user,
-            message="[bank statement]",
-            document={"summary": "avg bal 3000"},
-        )
-    )
-    assert turn.poll is None
-    assert states.data["u-1"].get("stage") == "plan_consent"
-    assert "3000" in (states.data["u-1"].get("document_summary") or "")
-
-
-def test_abandon_during_interview(monkeypatch):
-    provider = FakeProvider(
-        [
-            _greet("Hey!"),
-            _greet("No stress.", intent="abandon"),
-        ]
-    )
-    service, states, _, _ = _service(monkeypatch, provider)
-    user = _user()
-    _run(service.handle_turn(user, message="hey"))
-    turn = _run(service.handle_turn(user, message="skip"))
-    assert turn.completed is True
-    assert states.data["u-1"]["stage"] == "complete"
-
-
-def test_redo_after_complete_restarts_interview(monkeypatch):
-    provider = FakeProvider(
-        [
-            _greet("Hey!"),
-            _greet("No stress.", intent="abandon"),
-            # redo triggers a fresh conductor call
-            _greet("Welcome back! How is money feeling?"),
-        ]
-    )
-    service, states, _, _ = _service(monkeypatch, provider)
-    user = _user()
-    _run(service.handle_turn(user, message="hey"))
-    _run(service.handle_turn(user, message="skip"))
-    assert states.data["u-1"]["stage"] == "complete"
-
-    turn = _run(service.handle_turn(user, message="what's my balance"))
-    assert turn.took_over is False
-
-    turn = _run(service.handle_turn(user, message="let's redo it"))
-    assert turn.took_over is True
-    assert turn.completed is False
+    _run(service.handle_turn(user, message="Tola"))  # name -> conductor opener
     assert states.data["u-1"].get("stage") == "interview"
-    assert states.data["u-1"].get("answers") == {}
-
-
-def test_adjustment_flow(monkeypatch):
-    """plan_consent -> adjust (clarify) -> adjustment note -> re-present -> consent."""
-    all_dims = {
-        "money_feelings": "Calm",
-        "income_predictability": "Steady",
-        "shortage_cause": "I don't run short",
-        "liquidity_runway": "Six months",
-        "dependents": "Just me",
-        "goal_direction": "Not sure",
-        "involvement": "Keep it light",
-    }
-    provider = FakeProvider(
-        [
-            _greet("Hey!"),
-            _greet("Got it.", intent="request_statement", answers=all_dims),
-            _greet("No worries.", intent="present_plan"),
-            _plan_present(),
-            # user asks to adjust -> vague, so we clarify
-            _greet("Sure.", intent="adjust"),
-            # user states the change -> fold in and re-present
-            _greet(
-                "Done.",
-                intent="adjust",
-                answers={},
-                adjustment="bigger emergency buffer",
-            ),
-            _plan_present("Reworked plan: Financial Beginner."),
-            # consent
-            _greet("Sounds good.", intent="consent_yes"),
-        ]
-    )
-    service, states, memory, provider = _service(monkeypatch, provider)
-    user = _user()
-    _run(service.handle_turn(user, message="hey"))
-    _run(service.handle_turn(user, message="I'm easy on the details"))
-    _run(service.handle_turn(user, message="Skip for now"))
-    assert states.data["u-1"].get("stage") == "plan_consent"
-
-    turn = _run(service.handle_turn(user, message="Let's adjust it"))
-    assert turn.took_over is True
-    assert "change" in turn.response.lower() or "rework" in turn.response.lower()
-
-    turn = _run(service.handle_turn(user, message="More buffer"))
-    assert turn.took_over is True
-    assert states.data["u-1"].get("stage") == "plan_consent"
-    assert "bigger emergency buffer" in states.data["u-1"].get("adjustments")
-
-    turn = _run(service.handle_turn(user, message="looks good"))
-    assert turn.completed is True
-    assert any(e["type"] == "onboarding" for e in memory.entries)
-
-
-def test_llm_failure_uses_deterministic_fallback(monkeypatch):
-    """When provider raises, the deterministic fallback kicks in."""
-
-    class _BoomProvider:
-        async def complete(self, *a, **kw):
-            raise RuntimeError("model offline")
-
-    service, states, _, _ = _service(monkeypatch, _BoomProvider())
-    user = _user()
-    turn = _run(service.handle_turn(user, message="hey"))
-    assert turn.took_over is True
-    assert turn.poll is not None  # deterministic first question poll
-    assert states.data["u-1"].get("stage") == "interview"
-
-
-def test_garbage_json_uses_fallback(monkeypatch):
-    service, states, _, _ = _service(monkeypatch, FakeProvider(["not json at all"]))
-    user = _user()
-    turn = _run(service.handle_turn(user, message="hey"))
-    assert turn.took_over is True
-    assert turn.poll is not None
-
-
-def test_first_message_statement_starts_interview_no_plan(monkeypatch):
-    """A statement as the first message should save the scan AND start the
-    interview (not immediately build a thin plan)."""
-    provider = FakeProvider(
-        [
-            _greet(
-                "Thanks for the statement - I'll use those real numbers. "
-                "How is money feeling?"
-            ),
-        ]
-    )
-    service, states, _, _ = _service(monkeypatch, provider)
-    user = _user()
     turn = _run(
         service.handle_turn(
             user,
@@ -622,9 +685,341 @@ def test_first_message_statement_starts_interview_no_plan(monkeypatch):
         )
     )
     assert states.data["u-1"].get("document_summary") == "balance 5000"
+    assert states.data["u-1"].get("stage") == "plan_consent"
+    assert states.data["u-1"]["plan"]["statement_summary"] == "balance 5000"
+    assert turn.poll is None
+
+
+def test_plan_consent_document_updates_plan(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("What's on your mind about money?"),
+            _greet("Got it", intent="request_statement"),
+            _greet("ok", intent="present_plan"),
+            _plan_present("Here's your picture."),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    _run(service.handle_turn(user, message="i run out by the 20th"))
+    _run(service.handle_turn(user, message="Skip for now"))
+    assert states.data["u-1"].get("stage") == "plan_consent"
+
+    turn = _run(
+        service.handle_turn(
+            user,
+            message="stmt",
+            document={"summary": "balance 5000"},
+        )
+    )
+    assert states.data["u-1"]["plan"]["statement_summary"] == "balance 5000"
+    assert "real numbers" in turn.response.lower()
+
+
+def test_adjustment_loop_reworks_and_consents(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("here's your picture", intent="present_plan"),
+            _plan_present("Here is your plan."),
+            _greet(
+                "Sure, I'll fold that in.", intent="adjust", adjustment="bigger buffer"
+            ),
+            _plan_present("Here is the reworked plan."),
+            _greet("Done.", intent="consent_yes"),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    assert states.data["u-1"].get("stage") == "plan_consent"
+
+    turn = _run(service.handle_turn(user, message="make the buffer bigger"))
+    assert states.data["u-1"].get("adjustments") == ["bigger buffer"]
+    assert states.data["u-1"].get("stage") == "plan_consent"
+
+    turn = _run(service.handle_turn(user, message="looks good"))
+    assert turn.completed is True
+    assert turn.automated is True
+
+
+def test_vague_adjust_asks_one_clarifying_question(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("ok", intent="present_plan"),
+            _plan_present("Here is your plan."),
+            _greet("And what should we change?", intent="adjust"),
+            _greet("I'll fold that in.", intent="adjust", adjustment="bigger buffer"),
+            _plan_present("Here is the reworked plan."),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+
+    turn = _run(service.handle_turn(user, message="change something"))
+    assert states.data["u-1"].get("stage") == "awaiting_adjustment"
+    assert "change" in turn.response.lower()
+
+    turn = _run(service.handle_turn(user, message="bigger buffer"))
+    assert states.data["u-1"].get("adjustments") == ["bigger buffer"]
+    assert states.data["u-1"].get("stage") == "plan_consent"
+
+
+def test_abandon(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("my money feels fine"),
+            _greet("No stress.", intent="abandon"),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    turn = _run(service.handle_turn(user, message="stop this"))
+    assert turn.took_over is True
+    assert turn.completed is True
+    assert states.data["u-1"].get("stage") == "complete"
+
+
+def test_redo_restarts_finished_interview(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("my money feels fine"),
+            _greet("No stress.", intent="abandon"),
+            _greet("Welcome back."),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    _run(service.handle_turn(user, message="stop this"))
+    assert states.data["u-1"].get("stage") == "complete"
+    turn = _run(service.handle_turn(user, message="let's start over"))
+    assert turn.took_over is True
     assert states.data["u-1"].get("stage") == "interview"
-    assert turn.poll is None  # LLM replies, no deterministic poll
-    assert "statement" in turn.response.lower()
+
+
+def test_structured_meta_lifted_from_facts(monkeypatch):
+    """spec §6/§7/§22/§29: the agent's reserved meta keys are lifted off the
+    free-form facts onto structured state (money-moment read, goal read,
+    sentiment, internal money script)."""
+    provider = FakeProvider(
+        [
+            _greet(
+                "Got it.",
+                facts={
+                    "money_moment": "running out before payday",
+                    "money_moment_emotion": "frustrated",
+                    "money_moment_suspected_problem": "cash_flow",
+                    "money_moment_confidence": "0.72",
+                    "goal": "buy a car",
+                    "goal_target_date": "2027",
+                    "goal_estimated_cost": "2.5m",
+                    "sentiment": "tense",
+                    "money_script": "avoidance",
+                },
+            ),
+        ]
+    )
+    service, states, memory, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+    turn = _run(service.handle_turn(user, message="my name is Tola"))
+    assert turn.took_over is True
+
+    state = states.data["u-1"]
+    assert state["money_moment"] == "running out before payday"
+    assert state["money_moment_meta"] == {
+        "emotion": "frustrated",
+        "suspected_problem": "cash_flow",
+        "confidence": 0.72,
+    }
+    assert state["goal"] == "buy a car"
+    assert state["goal_meta"] == {"target_date": "2027", "estimated_cost": "2.5m"}
+    assert state["conversation_state"]["user_sentiment"] == "tense"
+    assert state["conversation_state"]["money_script"] == "avoidance"
+    # Structured keys are consumed off the free-form fact set.
+    learned = state["learned"]
+    assert learned == {}  # every fact this turn was lifted onto structured fields
+    for k in (
+        "money_moment_emotion",
+        "money_moment_suspected_problem",
+        "money_moment_confidence",
+        "goal_target_date",
+        "goal_estimated_cost",
+        "sentiment",
+        "money_script",
+    ):
+        assert k not in learned
+    # The script is remembered under a stable, internal label.
+    assert any(
+        e["metadata"].get("question_id") == "money_script" for e in memory.entries
+    )
+
+
+def test_conversation_state_escalates_and_directness_levels(monkeypatch):
+    """spec §29/§12: the conversation read recomputes each turn. Early turns are
+    tentative (directness 1-2); once the plan lands, the problem/insight are
+    named, the relationship is established, and severity pushes directness up."""
+    from miriam_agent.config.settings import get_settings
+
+    settings = get_settings()
+    original = settings.ONBOARDING_MAX_QUESTIONS
+    monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", 30)
+    try:
+        responses = [
+            _greet(
+                "What's up?",
+                facts={
+                    "money_moment": "paycheck to paycheck",
+                    "cashflow": "runs out fast",
+                },
+            ),
+            _greet("Hmm", facts={"debt": "cards are maxed"}),
+            _greet("Let's get real.", intent="request_statement"),
+            _greet("ok", intent="present_plan"),
+            _plan_present("Here's your plan."),
+        ]
+        service, states, _, _ = _service(monkeypatch, FakeProvider(responses))
+        user = _user()
+        _run(service.handle_turn(user, message="hey"))
+        _run(service.handle_turn(user, message="Tola"))
+        cs = states.data["u-1"]["conversation_state"]
+        # Money moment lifted; interview stage read exists and starts measured.
+        assert cs["current_topic"] == "cash_flow"
+        assert cs["current_problem"]
+        assert cs["relationship_stage"] in ("new", "getting_to_know")
+        assert 1 <= cs["directness_level"] <= 2
+        assert cs["confidence"] is not None
+
+        _run(service.handle_turn(user, message="it's tight"))
+        _run(service.handle_turn(user, message="really tight"))
+        _run(service.handle_turn(user, message="Skip for now"))
+
+        state = states.data["u-1"]
+        assert state["stage"] == "plan_consent"
+        cs = state["conversation_state"]
+        assert cs["relationship_stage"] == "established"
+        assert cs["last_insight"] == "saving happens last"
+        assert cs["current_topic"] == "cash_flow"
+        assert cs["pending_action"]
+        # Short runway + debt => severity high, directness peaks for the blunt
+        # naming of the problem.
+        assert cs["directness_level"] >= 3
+        assert state["plan"]["insight"]["severity"] == "high"
+    finally:
+        monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", original)
+
+
+def _aha_flow_provider():
+    return FakeProvider(
+        [
+            _greet("ready?"),
+            _greet("ok", intent="request_statement"),
+            _greet("ok", intent="present_plan"),
+            _plan_present("Here you go."),
+        ]
+    )
+
+
+def test_aha_generated_event_on_plan_present(monkeypatch):
+    """spec §27: success is measured as a real insight, not a completed form;
+    the deterministic plan reveal emits the aha event."""
+    from miriam_agent.observability import metrics as metrics_mod
+
+    events: list[dict] = []
+
+    class FakeCounter:
+        def labels(self, **kw):
+            self.last = kw
+            return self
+
+        def inc(self):
+            events.append(self.last)
+
+    monkeypatch.setattr(metrics_mod, "ONBOARDING_EVENTS", FakeCounter())
+    service, states, _, _ = _service(monkeypatch, _aha_flow_provider())
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    _run(service.handle_turn(user, message="money is tight"))
+    _run(service.handle_turn(user, message="Skip for now"))
+    assert states.data["u-1"]["stage"] == "plan_consent"
+    recorded = [e["event"] for e in events]
+    assert "aha_generated" in recorded
+    assert "plan_presented" in recorded
+
+
+# -----------------------------------------------------------------------
+# Fallback (LLM down or garbage): short, warm, still completes the flow
+# -----------------------------------------------------------------------
+
+
+def test_fallback_llm_down_completes_flow(monkeypatch):
+    user = _user()
+    service, states, memory, prov = _service(monkeypatch, BrokenProvider())
+
+    turn = _run(service.handle_turn(user, message="hey"))
+    assert turn.took_over is True and "first name" in turn.response.lower()
+
+    # Name captured deterministically, greeting handoff is still warm.
+    turn = _run(service.handle_turn(user, message="Tola"))
+    assert turn.took_over is True
+    assert turn.response.startswith("Nice to meet you, Tola")
+    assert "money lately" in turn.response.lower()
+    assert states.data["u-1"].get("stage") == "interview"
+
+    # Reply consumed into the money moment, next question asked once.
+    turn = _run(service.handle_turn(user, message="I'm drowning in rent"))
+    assert states.data["u-1"].get("money_moment") == "I'm drowning in rent"
+    assert "working toward" in turn.response.lower()
+
+    turn = _run(service.handle_turn(user, message="I just want to breathe"))
+    assert states.data["u-1"].get("goal") == "I just want to breathe"
+    assert states.data["u-1"].get("stage") == "awaiting_statement"
+
+    # Never loops on the same question: a second "no" goes straight to plan.
+    turn = _run(service.handle_turn(user, message="Skip for now"))
+    assert states.data["u-1"].get("stage") == "plan_consent"
+    assert states.data["u-1"]["plan"]["diagnostic_state"] == "Financial Beginner"
+
+    turn = _run(service.handle_turn(user, message="Yes, set it up"))
+    assert turn.completed is True
+    assert turn.automated is True
+    assert memory.entries
+
+
+def test_interview_cap_closes_conversation(monkeypatch):
+    from miriam_agent.config.settings import get_settings
+
+    settings = get_settings()
+    original = settings.ONBOARDING_MAX_QUESTIONS
+    monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", 3)
+    try:
+        user = _user()
+        provider = FakeProvider()  # default replies stay on "interview"
+        service, states, _, _ = _service(monkeypatch, provider)
+        _run(service.handle_turn(user, message="hey"))
+        _run(service.handle_turn(user, message="Tola"))
+        _run(service.handle_turn(user, message="m1"))
+        _run(service.handle_turn(user, message="m2"))
+        turn = _run(service.handle_turn(user, message="m3"))
+        assert states.data["u-1"].get("stage") == "plan_consent"
+        assert states.data["u-1"].get("plan_presented") is True
+        assert turn.poll is None
+        # The moving-on hint was visible to the agent during the last turn it got.
+        last_conductor = next(
+            m[-1].content for m in provider.calls[-2:] if m[0].role == "system"
+        )
+        assert "MOVING ON:" in last_conductor or "interview_turns" in last_conductor
+    finally:
+        monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", original)
 
 
 # -----------------------------------------------------------------------
@@ -632,18 +1027,18 @@ def test_first_message_statement_starts_interview_no_plan(monkeypatch):
 # -----------------------------------------------------------------------
 
 
-def test_driver_parse_fenced_json_and_canonicalize():
+def test_driver_parse_fenced_json_and_facts():
     from miriam_agent.onboarding import driver
 
     text = (
-        '```json\n{"reply": "How is money feeling?", "intent": "interview",'
-        ' "answers": {"money_feelings": "stressful"},'
+        '```json\n{"reply": "What has been bothering you about money lately?", '
+        '"intent": "interview", "facts": {"money_moment": "it is tight"},'
         ' "suggested_replies": ["Calm"]}\n```'
     )
     out = driver._parse_driver_output(text, "interview")
     assert out is not None
-    assert out.reply == "How is money feeling?"
-    assert out.answers == {"money_feelings": "Stressful"}
+    assert out.reply == "What has been bothering you about money lately?"
+    assert out.facts == {"money_moment": "it is tight"}
     assert out.suggested == ["Calm"]
 
 
@@ -664,21 +1059,43 @@ def test_driver_unknown_intent_falls_back_to_stage_default():
     assert out.intent == "request_statement"
 
 
-def test_driver_drops_unknown_dims_and_clamps_taps():
+def test_driver_cleans_facts_and_clamps_taps():
     from miriam_agent.onboarding import driver
 
     payload = {
         "reply": "q",
         "intent": "interview",
-        "answers": {"nope_dim": "x", "goal_direction": "Buy a house"},
+        "facts": {
+            "cashflow": "irregular",  # free-form keys are fine
+            "goal": "Buy a house",
+            "": "no key",  # blank key dropped
+            "   ": "no key either",
+            "x": "",  # blank value dropped
+        },
         "suggested_replies": ["a" * 100, "b", "c", "d", "e"],
     }
     out = driver._parse_driver_output(json.dumps(payload), "interview")
-    assert set(out.answers) == {"goal_direction"}
-    assert out.answers["goal_direction"] == "Buy a house"
+    assert set(out.facts) == {"cashflow", "goal"}
+    assert out.facts["goal"] == "Buy a house"
     assert len(out.suggested) == 4
     assert len(out.suggested[0]) <= driver.MAX_TAP_LENGTH
-    assert out.suggested[0].endswith("…")
+    assert out.suggested[0].endswith("\u2026")
+
+
+def test_driver_fact_bounds():
+    from miriam_agent.onboarding import driver
+
+    long_value = "y" * (driver.MAX_FACT_VALUE_LENGTH + 50)
+    many = {"long": long_value}
+    for i in range(30):
+        many[f"k{i}"] = f"v{i}"
+    out = driver._parse_driver_output(
+        json.dumps({"reply": "q", "facts": many}), "interview"
+    )
+    assert out is not None
+    assert len(out.facts) <= driver.MAX_FACTS_PER_TURN
+    assert len(out.facts["long"]) <= driver.MAX_FACT_VALUE_LENGTH
+    assert out.facts["long"].endswith("\u2026")
 
 
 def test_driver_garbage_and_empty_reply_none():
@@ -701,22 +1118,12 @@ def test_driver_reply_clamped_with_taps():
         "interview",
     )
     assert len(out.reply) <= driver.MAX_REPLY_WITH_TAPS
-    assert out.reply.endswith("…")
+    assert out.reply.endswith("\u2026")
     out2 = driver._parse_driver_output(json.dumps({"reply": long}), "interview")
     assert out2.reply == long
 
 
-def test_canonicalize():
-    from miriam_agent.onboarding import questions as q
-
-    assert q.canonicalize("money_feelings", "stressful") == "Stressful"
-    assert q.canonicalize("money_feelings", "stress") == "Stressful"
-    assert q.canonicalize("money_feelings", "unknown vibes") == "unknown vibes"
-    assert q.canonicalize("goal_direction", "Buy a house") == "Buy a house"
-    assert q.canonicalize("not_a_dim", "x") == "x"
-
-
-def test_conductor_turn_sends_stage_and_facts():
+def test_conductor_turn_sends_stage_and_knows():
     from miriam_agent.agents.llm import LLMResponse
     from miriam_agent.onboarding import driver
     from miriam_agent.onboarding.state import OnboardingState
@@ -730,6 +1137,7 @@ def test_conductor_turn_sends_stage_and_facts():
 
     state = OnboardingState()
     state.stage = "awaiting_statement"
+    state.learned["cashflow"] = "about 4000 a month"
     provider = Capture()
     out = _run(
         driver.conductor_turn(
@@ -739,7 +1147,10 @@ def test_conductor_turn_sends_stage_and_facts():
     assert out is not None and out.intent == "request_statement"
     user_block = provider.messages[-1].content
     assert "awaiting_statement" in user_block
-    assert "DIMENSIONS STILL TO COVER" in user_block
+    assert "WHAT YOU KNOW SO FAR" in user_block
+    assert "about 4000 a month" in user_block
+    # No dimension checklist is fed to the model anymore.
+    assert "DIMENSIONS STILL TO COVER" not in user_block
 
 
 def test_present_plan_turn_returns_reply():

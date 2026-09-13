@@ -21,8 +21,8 @@ ONBOARDING_EVENTS = Counter(
     "miriam_onboarding_events_total",
     "Conversational onboarding funnel events (interview_started, "
     "interview_finished, statement_requested, statement_provided, "
-    "plan_presented, consent_poll, adjusting, completed_automated, "
-    "completed_draft, abandoned, restarted)",
+    "plan_presented, aha_generated, consent_poll, adjusting, "
+    "completed_automated, completed_draft, abandoned, restarted)",
     ["user_id", "event"],
 )
 

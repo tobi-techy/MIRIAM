@@ -1,46 +1,76 @@
 """The onboarding turn driver: one function per inbound message.
 
-Flow (LLM-led, deterministic tail):
+Miriam leads a real conversation, not a form:
 
-    first message        -> Miriam (the LLM) greets and starts the interview,
-                            or bypasses for clear money-action intents
-    interview turns      -> Miriam converses, classifying answers into the
-                            canonical 7-dimension vocabulary
+    first message        -> Miriam (the LLM) greets, learns their name, and
+                            opens with the Money Moment question
+    interview turns      -> Miriam talks with them, one question at a time,
+                            recording short free-form "facts"; there is no
+                            question bank and no fixed vocabulary
     interview done       -> Miriam asks for a bank statement (optional), then
-                            the deterministic plan builder runs on the answers
+                            the deterministic plan builder runs on the facts
     plan present         -> Miriam presents the engine's plan in her voice
     consent              -> deterministic consent mapping (yes -> standing
                             rules, no -> draft, adjust -> rework)
     complete             -> persist plan + standing rules as memory facts
 
-The LLM decides WHAT to say and classifies answers; every state transition and
+The LLM decides WHAT to say and what she learns; every state transition and
 every money rule is deterministic. Polls stay as optional tap suggestions (the
-LLM attaches ``suggested_replies``), and free text is always accepted. If the
-LLM is unreachable or returns garbage, the flow degrades to the deterministic
-interview (``questions.next_question``) so signup never stalls.
+LLM attaches ``suggested_replies``), and free text is always accepted. A guard
+rail caps the interview so it can never drag. If the LLM is unreachable or
+returns garbage, the flow degrades to short, warm fallback lines that keep the
+conversation moving instead of stalling it.
+
+The shape of the state also carries the personality spec's structured layers:
+a money-moment read and a goal read (emotion/problem, target/cost/priority),
+mandatory money-script awareness (internal only), a deterministic
+conversation_state (spec §29: topic, standing problem, pending action,
+relationship stage, directness level) that escalates directness with
+relationship depth + severity (spec §12), and an ``aha_generated`` metric when
+the plan (with its financial_insight, spec §21) first lands (spec §27).
+
+All state transitions live in one explicit machine (``_TRANSITIONS``): the
+model only reports an intent, and the table -- never the LLM -- decides where
+that moves the conversation (spec §30). The plan, the meta reads and the
+conversation state are typed pydantic contracts validated at every write
+boundary.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from miriam_agent.agents.llm import LLMProvider, get_llm_provider
 from miriam_agent.config.settings import get_settings
 from miriam_agent.onboarding import driver
 from miriam_agent.onboarding import plan as plan_builder
-from miriam_agent.onboarding import questions as q
+from miriam_agent.onboarding.contracts import (
+    ConversationState,
+    GoalMeta,
+    MoneyMomentMeta,
+    Plan,
+)
+from miriam_agent.onboarding.quality import EvalMeta, evaluate_reply
 from miriam_agent.onboarding.state import (
     STAGE_AWAITING_ADJUSTMENT,
     STAGE_AWAITING_STATEMENT,
     STAGE_COMPLETE,
+    STAGE_GREETING,
     STAGE_INTERVIEW,
     STAGE_PLAN_CONSENT,
     OnboardingState,
     get_onboarding_state_store,
+)
+from miriam_agent.onboarding.trace import (
+    TraceRecord,
+    get_onboarding_trace_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,8 +123,117 @@ _REENTER = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit name introductions are safe to honor mid-interview ("call me Tobi");
+# a bare "Tobi" is already a legitimate answer, so we never guess names from
+# free text without one of these markers.
+_VOLUNTEERED_NAME = re.compile(
+    r"(?:\bmy name\s+(?:is|'s)\b|\bcall me\b|\bpeople call me\b|\bi am\b|\bi'm\b)",
+    re.IGNORECASE,
+)
+
+# Free-form fact keys the agent reserves for the two first-class fields. When a
+# fact carries one of these, the service lifts it onto the state's dedicated
+# field so the plan and the prompt always see the money moment and the goal.
+_MONEY_MOMENT_KEYS = frozenset(
+    {"money_moment", "money_moment_description", "the_money_moment", "whats_bothering"}
+)
+_GOAL_KEYS = frozenset(
+    {
+        "goal",
+        "concrete_goal",
+        "the_goal",
+        "rich_life",
+        "desired_life",
+        "money_goal",
+        "goal_detail",
+    }
+)
+
+# spec §6/§7: reserved keys that carry the structured reads of the money moment
+# and the goal. Each is lifted off the free-form facts onto the structured
+# fields (emotion/suspected problem/confidence, target date/cost/priority).
+_MONEY_MOMENT_META_KEYS = {
+    "money_moment_emotion": "emotion",
+    "money_moment_suspected_problem": "suspected_problem",
+    "money_moment_confidence": "confidence",
+}
+_GOAL_META_KEYS = {
+    "goal_target_date": "target_date",
+    "goal_estimated_cost": "estimated_cost",
+    "goal_priority": "priority",
+    "goal_funding_status": "funding_status",
+}
+
+# spec §22/§29: quiet conversation-state signals the agent may report. They are
+# lifted into conversation_state (the money script is remembered, never shown).
+_SENTIMENT_KEYS = frozenset({"sentiment", "user_sentiment"})
+_MONEY_SCRIPT_KEYS = frozenset({"money_script", "script"})
+
+# Structured values are short labels, never long prose.
+_META_VALUE_MAX = 64
+
 _REWORK_ASK = "Sure. What should we change? Tell me in a sentence and I'll rework it."
 _TELL_ME_ASK = "Tell me what to change in a sentence and I'll rework it."
+
+
+@dataclass(frozen=True)
+class _Transition:
+    """One legal (stage, intent) edge in the onboarding state machine."""
+
+    to: str
+    action: str
+
+
+# Explicit state machine (spec §30): the model only reports an intent; this
+# table -- never the LLM -- decides where that moves the conversation. Each
+# intent above is one edge from the stage it is legal in.
+_ACT_STAY = "stay"
+_ACT_PRESENT_PLAN = "present_plan"
+_ACT_REQUEST_STATEMENT = "request_statement"
+_ACT_COMPLETE_AUTOMATED = "complete_automated"
+_ACT_COMPLETE_DRAFT = "complete_draft"
+_ACT_ABANDON = "abandon"
+_ACT_ADJUST = "adjust"
+
+_TRANSITIONS: dict[tuple[str, str], _Transition] = {
+    (STAGE_INTERVIEW, "interview"): _Transition(STAGE_INTERVIEW, _ACT_STAY),
+    (STAGE_INTERVIEW, "request_statement"): _Transition(
+        STAGE_AWAITING_STATEMENT, _ACT_REQUEST_STATEMENT
+    ),
+    (STAGE_INTERVIEW, "present_plan"): _Transition(
+        STAGE_PLAN_CONSENT, _ACT_PRESENT_PLAN
+    ),
+    (STAGE_INTERVIEW, "abandon"): _Transition(STAGE_COMPLETE, _ACT_ABANDON),
+    (STAGE_AWAITING_STATEMENT, "request_statement"): _Transition(
+        STAGE_AWAITING_STATEMENT, _ACT_REQUEST_STATEMENT
+    ),
+    (STAGE_AWAITING_STATEMENT, "present_plan"): _Transition(
+        STAGE_PLAN_CONSENT, _ACT_PRESENT_PLAN
+    ),
+    (STAGE_AWAITING_STATEMENT, "abandon"): _Transition(STAGE_COMPLETE, _ACT_ABANDON),
+    (STAGE_PLAN_CONSENT, "consent_yes"): _Transition(
+        STAGE_COMPLETE, _ACT_COMPLETE_AUTOMATED
+    ),
+    (STAGE_PLAN_CONSENT, "consent_no"): _Transition(
+        STAGE_COMPLETE, _ACT_COMPLETE_DRAFT
+    ),
+    (STAGE_PLAN_CONSENT, "adjust"): _Transition(STAGE_AWAITING_ADJUSTMENT, _ACT_ADJUST),
+    (STAGE_PLAN_CONSENT, "abandon"): _Transition(STAGE_COMPLETE, _ACT_ABANDON),
+    (STAGE_PLAN_CONSENT, "interview"): _Transition(STAGE_PLAN_CONSENT, _ACT_STAY),
+    (STAGE_AWAITING_ADJUSTMENT, "adjust"): _Transition(
+        STAGE_AWAITING_ADJUSTMENT, _ACT_ADJUST
+    ),
+    (STAGE_AWAITING_ADJUSTMENT, "done_adjusting"): _Transition(
+        STAGE_PLAN_CONSENT, _ACT_PRESENT_PLAN
+    ),
+    (STAGE_AWAITING_ADJUSTMENT, "abandon"): _Transition(STAGE_COMPLETE, _ACT_ABANDON),
+    (STAGE_AWAITING_ADJUSTMENT, "interview"): _Transition(
+        STAGE_AWAITING_ADJUSTMENT, _ACT_STAY
+    ),
+}
+
+# Any (stage, intent) the table does not enumerate: stay in place and reply.
+_DEFAULT_TRANSITION = _Transition("", _ACT_STAY)
 
 
 @dataclass
@@ -129,6 +268,7 @@ class OnboardingTurn:
     stage: str = ""
     completed: bool = False
     automated: bool = False
+    name: str = ""
 
     def to_payload(self, conversation_id: str) -> dict[str, Any]:
         return {
@@ -142,6 +282,7 @@ class OnboardingTurn:
                 "completed": self.completed,
                 "automated": self.automated,
             },
+            "name": self.name or "",
         }
 
 
@@ -166,16 +307,18 @@ def _lower(text: str) -> str:
 
 
 class OnboardingService:
-    """Advance the onboarding interview for one user, one message at a time."""
+    """Advance the onboarding conversation for one user, one message at a time."""
 
     def __init__(
         self,
         memory_store: Any,
         state_store: Any | None = None,
         provider: LLMProvider | None = None,
+        trace_store: Any | None = None,
     ) -> None:
         self._memory = memory_store
         self._state_store = state_store or get_onboarding_state_store()
+        self._trace = trace_store or get_onboarding_trace_store()
         self._settings = get_settings()
         self._provider = provider
 
@@ -203,6 +346,7 @@ class OnboardingService:
             # (completion is not a locked door; giving up never is either).
             if not is_poll_vote and not doc_summary and _REENTER.search(text):
                 state = OnboardingState()
+                state.stage = STAGE_INTERVIEW  # skip the greeting on a redo
                 await self._state_store.clear(user.id)
                 self._emit(user.id, "restarted")
                 return await self._conductor_turn(user.id, state, conversation_id, text)
@@ -214,6 +358,7 @@ class OnboardingService:
             # interview: save the scan, and Miriam acknowledges it on the way in.
             if state is None:
                 state = OnboardingState()
+                state.stage = STAGE_INTERVIEW  # a statement is an answer, not a hello
                 state.document_summary = doc_summary
                 await self._state_store.save_state(user.id, state)
                 self._emit(user.id, "statement_provided")
@@ -241,7 +386,14 @@ class OnboardingService:
                 return await self._present_plan(user.id, state, conversation_id)
             if state.stage == STAGE_PLAN_CONSENT:
                 state.document_summary = doc_summary
-                state.plan = plan_builder.build_plan(state.answers, doc_summary)
+                state.plan = self._validated_plan(
+                    plan_builder.build_plan(
+                        state.learned,
+                        doc_summary,
+                        goal=state.goal,
+                        money_moment=state.money_moment,
+                    )
+                )
                 await self._state_store.save_state(user.id, state)
                 return self._turn(
                     "Thanks - I've updated the plan with your real numbers. "
@@ -254,13 +406,36 @@ class OnboardingService:
             if not is_poll_vote and _ACTION_INTENT.search(text):
                 return OnboardingTurn(conversation_id=conversation_id)
             state = OnboardingState()
-            return await self._conductor_turn(user.id, state, conversation_id, text)
+            state.stage = STAGE_GREETING
+            await self._state_store.save_state(user.id, state)
+            self._emit(user.id, "greeting")
+            return self._greeting_turn()
 
-        # Never let the interview drag: cover the cores or the cap closes it.
+        # Greeting exchange first: learn their name before any question. More
+        # person than form, same as the guest brain's opening arc. "Skip" (or
+        # an action intent) politely skips the name so it never blocks.
+        if state.stage == STAGE_GREETING:
+            if not is_poll_vote and (
+                _ACTION_INTENT.search(text) or self._SKIP_GREETING.search(text)
+            ):
+                state.stage = STAGE_INTERVIEW
+                await self._state_store.save_state(user.id, state)
+                self._emit(user.id, "interview_started")
+                return await self._conductor_turn(
+                    user.id,
+                    state,
+                    conversation_id,
+                    text,
+                    event="the user skipped giving a name; start the interview "
+                    "without one",
+                )
+            return await self._name_turn(user.id, state, conversation_id, text)
+
+        # Never let the interview drag: the agent carries it, but the cap closes
+        # it deterministically.
         if (
             state.stage == STAGE_INTERVIEW
-            and self._ready_for_plan(state)
-            and len(state.asked) >= self._settings.ONBOARDING_MAX_QUESTIONS
+            and state.interview_turns >= self._settings.ONBOARDING_MAX_QUESTIONS
         ):
             self._emit(user.id, "interview_finished")
             return await self._present_plan(user.id, state, conversation_id)
@@ -289,8 +464,186 @@ class OnboardingService:
             logger.warning("onboarding history read failed (continuing blind)")
             return []
 
-    def _ready_for_plan(self, state: OnboardingState) -> bool:
-        return set(q.CORE_BY_ID) <= set(q.answered(state.answers))
+    def _moving_on_hint(self, state: OnboardingState) -> str:
+        """Gently nudge the agent to hand off once the interview has run a few
+        turns; the hard cap still closes it no matter what."""
+        cap = self._settings.ONBOARDING_MAX_QUESTIONS
+        if state.stage != STAGE_INTERVIEW or state.interview_turns < max(cap - 2, 0):
+            return ""
+        return (
+            f"You have had {state.interview_turns} turns now. If you have enough "
+            'to build a real plan, move on: intent "present_plan" (or '
+            '"request_statement" for their real numbers) instead of exploring '
+            "further."
+        )
+
+    # -- spec §29/§12: the living conversation state -------------------------
+
+    def _problem_read(self, state: OnboardingState) -> tuple[str, str]:
+        """A deterministic read of the standing problem from what the agent has
+        learned, until the plan (and its insight) exists."""
+        txt = plan_builder._text(state.learned, state.goal, state.money_moment)
+        if plan_builder._short_runway(txt):
+            return "cash_flow", "the buffer runs out before the month does"
+        if plan_builder._income_unpredictable(txt) or plan_builder._leans_on_credit(
+            txt
+        ):
+            return "income_volatility", "income arrives unevenly but spending is steady"
+        if plan_builder._debt_heavy(txt):
+            return "debt", "debt is eating the margin"
+        if plan_builder._spending_leak(txt):
+            return "spending", "spending leaks past the plan"
+        if state.money_moment:
+            return "cash_flow", "money runs out before the plan does"
+        return "money", "map the day-to-day money flow first"
+
+    def _directness_level(self, state: OnboardingState) -> int:
+        """spec §12: directness follows relationship depth + pattern confidence
+        + severity -- never the model's arbitrary tone. Clamped 1..4."""
+        if state.stage in (
+            STAGE_AWAITING_STATEMENT,
+            STAGE_PLAN_CONSENT,
+            STAGE_AWAITING_ADJUSTMENT,
+            STAGE_COMPLETE,
+        ):
+            level = 3
+        elif state.stage == STAGE_INTERVIEW and state.interview_turns >= 4:
+            level = 2
+        else:
+            level = 1
+        plan = state.plan or {}
+        if plan.get("insight", {}).get("severity") == "high":
+            level += 1
+        return min(level, 4)
+
+    def _update_conversation_state(self, state: OnboardingState) -> None:
+        """Recompute the living read (spec §29) for the next turn: what the
+        conversation is about, the standing problem, the pending action, the
+        relationship stage and the directness level. Purely deterministic."""
+        cs = state.conversation_state
+        plan = state.plan or {}
+        if plan and plan.get("insight"):
+            cs["current_topic"] = plan["insight"].get("category", "")
+            cs["current_problem"] = plan["insight"].get("title", "")
+            cs["last_insight"] = plan["insight"].get("title", "")
+            cs["pending_action"] = (
+                "; ".join(s["title"] for s in plan.get("steps", [])[:3]) or ""
+            )
+        else:
+            topic, problem = self._problem_read(state)
+            cs["current_topic"] = topic
+            cs["current_problem"] = problem
+            if state.stage == STAGE_AWAITING_STATEMENT:
+                cs["pending_action"] = "real numbers via a bank statement"
+            elif not cs.get("pending_action"):
+                cs["pending_action"] = ""
+        if state.goal:
+            cs["user_goal"] = state.goal
+        if state.stage == STAGE_GREETING:
+            cs["relationship_stage"] = "new"
+        elif state.stage == STAGE_INTERVIEW:
+            cs["relationship_stage"] = "getting_to_know"
+        else:
+            cs["relationship_stage"] = "established"
+        cs["directness_level"] = self._directness_level(state)
+        if plan and plan.get("insight"):
+            cs["confidence"] = plan["insight"].get("confidence", cs.get("confidence"))
+        else:
+            n = len(state.learned) + bool(state.money_moment) + bool(state.goal)
+            cs["confidence"] = round(
+                min(0.45 + 0.05 * n + (0.15 if state.document_summary else 0), 0.95),
+                2,
+            )
+        # Typed at the write boundary: what persists is always the validated
+        # conversation state dump (extra keys from a corrupted store fail loud).
+        try:
+            state.conversation_state = ConversationState.model_validate(cs).model_dump()
+        except ValidationError as exc:
+            logger.warning("conversation_state failed contract validation: %s", exc)
+
+    # -- greeting (name first, before any question) ---------------------------
+
+    _NAME_PREFIX = re.compile(
+        r"^(?:my name is|i am|i'm|call me|it's|it is|this is)\s+", re.IGNORECASE
+    )
+
+    _SKIP_GREETING = re.compile(
+        r"(?:(?:\bskip\b|\blater\b|\bnever\s*mind\b|\bjust start\b|\bget going\b|"
+        r"\blet'?s go\b|no thanks))",
+        re.IGNORECASE,
+    )
+
+    def _greeting_turn(self) -> OnboardingTurn:
+        return OnboardingTurn(
+            took_over=True,
+            response=(
+                "Hey, I'm Miriam! Before we dive in - what should I call you? "
+                "Just your first name works."
+            ),
+            stage=STAGE_GREETING,
+        )
+
+    async def _name_turn(
+        self, user_id: str, state: OnboardingState, conversation_id: str, text: str
+    ) -> OnboardingTurn:
+        name = self._extract_name(text)
+        if not name:
+            return self._turn(
+                "No stress - just tell me your first name and we'll get going.",
+                stage=STAGE_GREETING,
+            )
+        state.name = name
+        state.stage = STAGE_INTERVIEW
+        await self._remember(user_id, "name", "identity", name, is_a_vote=False)
+        await self._state_store.save_state(user_id, state)
+        self._emit(user_id, "interview_started")
+        # The conductor takes it from here: Miriam welcomes them by name and
+        # opens with the Money Moment question in her own words.
+        return await self._conductor_turn(
+            user_id,
+            state,
+            conversation_id,
+            text,
+            event=f"the user told Miriam their name is {name}; welcome them and "
+            "open the conversation",
+        )
+
+    @classmethod
+    def _extract_name(cls, text: str) -> str:
+        """Pull a first name out of a greeting reply. Defensive: names are prose,
+        and a miss must never block the interview."""
+        t = cls._NAME_PREFIX.sub("", (text or "").strip())
+        if not t or not t[0].isalpha():
+            return ""
+        words = [w for w in t.split() if any(ch.isalpha() for ch in w)]
+        if not words:
+            return ""
+        words = [w.strip(" ,.'\"`") for w in words]
+        if len(words) > 2:
+            words = words[:2]
+        name = " ".join(words)
+        if len(name) < 2 or len(name) > 40:
+            return ""
+        return name.title()
+
+    def _volunteered_name(self, state: OnboardingState, text: str) -> str:
+        """Honor an explicit name introduction mid-interview ("my name is Tobi",
+        "call me Tobi", "I'm Tobi") without guessing. Bare words are answers,
+        not names - so a marker has to be present, and the tail after it has to
+        look like a name and nothing else."""
+        if (state.name or "").strip():
+            return state.name
+        t = (text or "").strip()
+        if not t or not t[0].isalpha():
+            return ""
+        m = _VOLUNTEERED_NAME.search(t)
+        if not m:
+            return ""
+        rest = t[m.end() :].strip()
+        # "I'm easy on the details" is a reply; "I'm Tobiloba" is a name.
+        if not rest or len(rest.split()) > 3:
+            return ""
+        return self._extract_name(rest)
 
     async def _conductor_turn(
         self,
@@ -302,6 +655,7 @@ class OnboardingService:
         is_poll_vote: bool = False,
         event: str = "",
     ) -> OnboardingTurn:
+        self._update_conversation_state(state)
         history = await self._history(conversation_id)
         try:
             outcome = await driver.conductor_turn(
@@ -311,7 +665,7 @@ class OnboardingService:
                 user_text=text,
                 is_poll_vote=is_poll_vote,
                 event=event,
-                ready_for_plan=self._ready_for_plan(state),
+                moving_on_hint=self._moving_on_hint(state),
             )
         except Exception:
             logger.exception("onboarding LLM turn failed for user %s", user_id)
@@ -327,6 +681,99 @@ class OnboardingService:
             is_poll_vote=is_poll_vote,
         )
 
+    def _dimension_for(self, key: str) -> str:
+        """Map a free-form fact label to a broad memory dimension (for the
+        memory store only; the plan builder reads the raw text)."""
+        k = key.casefold()
+        if "goal" in k or "rich" in k or "life" in k:
+            return "goal"
+        if "moment" in k or "bother" in k or "worry" in k:
+            return "liquidity"
+        if "income" in k or "cash" in k or "earn" in k:
+            return "cashflow"
+        if "oblig" in k or "family" in k or "dependent" in k or "support" in k:
+            return "obligations"
+        if "debt" in k or "loan" in k or "credit" in k or "owe" in k:
+            return "debt"
+        if "spend" in k or "leak" in k or "behavior" in k or "discipline" in k:
+            return "behavior"
+        if "runway" in k or "short" in k or "buffer" in k or "savings" in k:
+            return "liquidity"
+        if "hand" in k or "auto" in k or "involv" in k:
+            return "behavior"
+        return "onboarding"
+
+    def _lift_first_class(self, state: OnboardingState) -> None:
+        """Promote the money moment and the goal out of the free-form fact set
+        onto their first-class fields (only when they are not set yet, so the
+        first articulation wins and later refinements keep refining it)."""
+        for key in list(state.learned):
+            if key.casefold() in _MONEY_MOMENT_KEYS and not state.money_moment:
+                state.money_moment = state.learned.pop(key)
+            elif key.casefold() in _GOAL_KEYS and not state.goal:
+                state.goal = state.learned.pop(key)
+
+    @staticmethod
+    def _meta_float(value: str) -> Any:
+        """The money-moment confidence is the one numeric structured value;
+        anything unparseable is kept as a capped string."""
+        try:
+            return float(value[:_META_VALUE_MAX])
+        except (TypeError, ValueError):
+            return value[:_META_VALUE_MAX]
+
+    @staticmethod
+    def _meta_string(value: str) -> str:
+        return value[:_META_VALUE_MAX]
+
+    def _lift_meta(self, state: OnboardingState) -> None:
+        """spec §6/§7/§22/§29: lift the reserved meta fact keys onto the
+        structured fields (money-moment read, goal read, sentiment, money
+        script) and off the free-form fact set, so they never pollute the plan
+        text. The agent's first read wins."""
+        for key in list(state.learned):
+            k = key.casefold()
+            if k == "money_moment_confidence":
+                state.money_moment_meta["confidence"] = self._meta_float(
+                    state.learned.pop(key)
+                )
+            elif k in _MONEY_MOMENT_META_KEYS:
+                state.money_moment_meta[_MONEY_MOMENT_META_KEYS[k]] = self._meta_string(
+                    state.learned.pop(key)
+                )
+            elif k in _GOAL_META_KEYS:
+                state.goal_meta[_GOAL_META_KEYS[k]] = self._meta_string(
+                    state.learned.pop(key)
+                )
+            elif k in _SENTIMENT_KEYS and not state.conversation_state.get(
+                "user_sentiment"
+            ):
+                state.conversation_state["user_sentiment"] = self._meta_string(
+                    state.learned.pop(key)
+                )
+            elif k in _MONEY_SCRIPT_KEYS:
+                state.conversation_state["money_script"] = self._meta_string(
+                    state.learned.pop(key)
+                )
+        self._validate_meta(state)
+
+    @staticmethod
+    def _validate_meta(state: OnboardingState) -> None:
+        """Typed at the write boundary: the structured reads persist as the
+        validated meta dumps, defaults dropped so empty reads stay {}."""
+        try:
+            state.money_moment_meta = MoneyMomentMeta.model_validate(
+                state.money_moment_meta
+            ).model_dump(exclude_none=True, exclude_defaults=True)
+        except ValidationError as exc:
+            logger.warning("money_moment_meta failed contract validation: %s", exc)
+        try:
+            state.goal_meta = GoalMeta.model_validate(state.goal_meta).model_dump(
+                exclude_none=True, exclude_defaults=True
+            )
+        except ValidationError as exc:
+            logger.warning("goal_meta failed contract validation: %s", exc)
+
     async def _apply_outcome(
         self,
         user_id: str,
@@ -337,75 +784,134 @@ class OnboardingService:
         *,
         is_poll_vote: bool = False,
     ) -> OnboardingTurn:
-        # Persist any new answers first: words become the source of truth.
-        for dim, value in outcome.answers.items():
-            previous = state.answers.get(dim)
-            state.answers[dim] = value
-            state.raw[dim] = text
-            if dim not in state.asked:
-                state.asked.append(dim)
-            if dim in q.FOLLOWUP_BY_ID and dim not in state.follow_ups:
-                state.follow_ups.append(dim)
-            if previous != value:
-                question = q.CORE_BY_ID.get(dim) or q.FOLLOWUP_BY_ID.get(dim)
-                dimension = question.dimension if question else dim
-                await self._remember(
-                    user_id, dim, dimension, value, is_a_vote=is_poll_vote
-                )
+        # Persist any new facts first: words become the source of truth. The
+        # money script gets a stable memory label (it is internal, never shown).
+        for key, value in outcome.facts.items():
+            if state.learned.get(key) == value:
+                continue
+            state.learned[key] = value
+            is_script = key.casefold() in _MONEY_SCRIPT_KEYS
+            await self._remember(
+                user_id,
+                "money_script" if is_script else key,
+                "behavior" if is_script else self._dimension_for(key),
+                value,
+                is_a_vote=is_poll_vote,
+            )
+        self._lift_first_class(state)
+        self._lift_meta(state)
 
-        stage = state.stage
-        intent = outcome.intent
+        # An explicit name intro surfaced mid-interview rides on the reply so
+        # the deterministic executor records it (never re-asking downstream).
+        name = self._volunteered_name(state, text)
+        if name and not state.name:
+            state.name = name
+            await self._remember(user_id, "name", "identity", name, is_a_vote=False)
+            await self._state_store.save_state(user_id, state)
 
-        if intent == "abandon":
+        # The explicit state machine decides the move; the handlers only
+        # implement the action. Fail-open: any (stage, intent) without an edge
+        # stays in place and replies.
+        source_stage = state.stage
+        transition = self._resolve_transition(source_stage, outcome.intent)
+        if transition.action != _ACT_STAY:
+            state.stage = transition.to
+
+        # Append every LLM-led turn to the trace (drift tooling pairs it with
+        # the prompt version hash). Grounded against the user's own words.
+        violations = self._spec_violations(
+            state,
+            outcome,
+            grounded_extra=text,
+            present=False,
+        )
+        await self._trace_turn(
+            user_id,
+            state,
+            outcome,
+            mode="conductor",
+            stage=source_stage,
+            prompt_version=driver.prompt_version("conductor"),
+            grounded_extra=text,
+            violations=violations,
+        )
+        return await self._dispatch(
+            user_id,
+            state,
+            conversation_id,
+            text,
+            outcome,
+            transition,
+            is_poll_vote=is_poll_vote,
+            source_stage=source_stage,
+            name=name,
+        )
+
+    @staticmethod
+    def _resolve_transition(stage: str, intent: str) -> _Transition:
+        return _TRANSITIONS.get((stage, intent), _DEFAULT_TRANSITION)
+
+    async def _dispatch(
+        self,
+        user_id: str,
+        state: OnboardingState,
+        conversation_id: str,
+        text: str,
+        outcome: driver.DriverOutcome,
+        transition: _Transition,
+        *,
+        is_poll_vote: bool,
+        source_stage: str,
+        name: str,
+    ) -> OnboardingTurn:
+        del is_poll_vote
+        if transition.action == _ACT_ABANDON:
             await self._abandon(user_id, state, conversation_id)
             return self._abandon_turn(
                 "No stress, I'll drop it here. "
                 "Whenever you're ready, just say the word."
             )
-
-        if intent == "consent_yes" and stage == STAGE_PLAN_CONSENT:
+        if transition.action == _ACT_COMPLETE_AUTOMATED:
             return await self._complete_automated(user_id, state, conversation_id)
-        if intent == "consent_no" and stage == STAGE_PLAN_CONSENT:
+        if transition.action == _ACT_COMPLETE_DRAFT:
             return await self._complete_draft(user_id, state, conversation_id)
-
-        if intent == "request_statement" and stage in (
-            STAGE_INTERVIEW,
-            STAGE_AWAITING_STATEMENT,
-        ):
-            if stage == STAGE_INTERVIEW:
+        if transition.action == _ACT_REQUEST_STATEMENT:
+            if source_stage == STAGE_INTERVIEW:
                 self._emit(user_id, "interview_finished")
-            state.stage = STAGE_AWAITING_STATEMENT
             self._emit(user_id, "statement_requested")
+            self._update_conversation_state(state)
             await self._state_store.save_state(user_id, state)
             return self._turn_with_suggestions(outcome, conversation_id, state.stage)
-
-        if intent == "present_plan" and stage in (
-            STAGE_INTERVIEW,
-            STAGE_AWAITING_STATEMENT,
-        ):
-            if stage == STAGE_INTERVIEW:
+        if transition.action == _ACT_PRESENT_PLAN:
+            if source_stage == STAGE_INTERVIEW:
                 self._emit(user_id, "interview_finished")
             return await self._present_plan(user_id, state, conversation_id)
-
-        if intent == "adjust":
+        if transition.action == _ACT_ADJUST:
             return await self._apply_adjustment(
-                user_id, state, conversation_id, outcome, text
+                user_id,
+                state,
+                conversation_id,
+                outcome,
+                text,
+                source_stage=source_stage,
             )
-
-        if intent == "done_adjusting" and stage == STAGE_AWAITING_ADJUSTMENT:
-            return await self._present_plan(user_id, state, conversation_id)
-
-        # Everything else: stay in the stage, reply (optionally with taps).
-        # Persist regardless of whether a dimension was answered, so a fresh
-        # interview state survives even on a bare conversational reply.
+        # _ACT_STAY (including the table's default): reply in this stage. The
+        # interview cap nudges the agent to hand off; it keeps ticking.
+        if source_stage == STAGE_INTERVIEW and outcome.intent == "interview":
+            state.interview_turns += 1
+        self._update_conversation_state(state)
         await self._state_store.save_state(user_id, state)
-        return self._turn_with_suggestions(outcome, conversation_id, stage)
+        return self._turn_with_suggestions(
+            outcome, conversation_id, state.stage, name=name
+        )
 
     def _turn_with_suggestions(
         self,
         outcome: driver.DriverOutcome,
         conversation_id: str,
         stage: str,
+        *,
+        name: str = "",
     ) -> OnboardingTurn:
         poll = None
         if outcome.suggested:
@@ -416,6 +922,7 @@ class OnboardingService:
             poll=poll,
             conversation_id=conversation_id,
             stage=stage,
+            name=name,
         )
 
     async def _apply_adjustment(
@@ -425,13 +932,17 @@ class OnboardingService:
         conversation_id: str,
         outcome: driver.DriverOutcome,
         text: str,
+        *,
+        source_stage: str,
     ) -> OnboardingTurn:
         del text  # the model transcribes the change into outcome.adjustment
         note = (outcome.adjustment or "").strip()
         if not note:
             # The model signaled "adjust" but no concrete change came through:
-            # ask for one (or, if already clarifying, keep asking).
-            if state.stage == STAGE_AWAITING_ADJUSTMENT:
+            # ask for one (or, if already clarifying, keep asking). The
+            # source stage tells the two apart -- the state machine already
+            # advanced the stage, so we can't read intent from state.stage.
+            if source_stage == STAGE_AWAITING_ADJUSTMENT:
                 return self._turn(_TELL_ME_ASK, stage=state.stage)
             state.stage = STAGE_AWAITING_ADJUSTMENT
             await self._state_store.save_state(user_id, state)
@@ -448,16 +959,122 @@ class OnboardingService:
         # Fold the change in and re-present the reworked plan for consent.
         return await self._present_plan(user_id, state, conversation_id)
 
+    @staticmethod
+    def _grounding_text(state: OnboardingState, extra: str = "") -> str:
+        """The texts every number in a reply may legally appear in: the user's
+        own words (money moment, goal, statement summary, learned facts,
+        adjustments) plus any extra context (the current message, or the
+        deterministic plan). A figure in a reply that matches none of these is
+        an invented number."""
+        parts: list[str] = []
+        if state.money_moment:
+            parts.append(state.money_moment)
+        if state.goal:
+            parts.append(state.goal)
+        if state.document_summary:
+            parts.append(state.document_summary)
+        for value in state.learned.values():
+            parts.append(value)
+        if state.adjustments:
+            parts.extend(state.adjustments)
+        if extra:
+            parts.append(extra)
+        return " ".join(parts)
+
+    def _spec_violations(
+        self,
+        state: OnboardingState,
+        outcome: driver.DriverOutcome,
+        *,
+        grounded_extra: str,
+        present: bool,
+    ) -> list[str]:
+        """Lint one LLM reply against the spec, grounding numbers in the
+        user's own words (or the deterministic plan for presentations)."""
+        ground = self._grounding_text(state, extra=grounded_extra)
+        return evaluate_reply(
+            outcome.reply,
+            EvalMeta(
+                intent=outcome.intent,
+                has_taps=bool(outcome.suggested),
+                present=present,
+                grounded=ground,
+            ),
+        )
+
+    async def _trace_turn(
+        self,
+        user_id: str,
+        state: OnboardingState,
+        outcome: driver.DriverOutcome,
+        *,
+        mode: str,
+        stage: str,
+        prompt_version: str,
+        grounded_extra: str,
+        violations: list[str],
+        clamped: bool = False,
+    ) -> None:
+        """Append one LLM-led turn to the trace and log any drift. Always
+        fail-open: observability must never break the conversation."""
+        if violations:
+            logger.warning(
+                "onboarding reply drifted (stage=%s, intent=%s, rules=%s): %r",
+                stage,
+                outcome.intent,
+                ",".join(violations),
+                outcome.reply,
+            )
+        try:
+            await self._trace.append(
+                TraceRecord(
+                    user_id=user_id,
+                    mode=mode,
+                    stage=stage,
+                    intent=outcome.intent,
+                    reply=outcome.reply,
+                    prompt_version=prompt_version,
+                    violations=list(violations),
+                    clamped=clamped,
+                    facts=dict(outcome.facts),
+                    taps=list(outcome.suggested),
+                    adjustment=outcome.adjustment,
+                    grounded=grounded_extra,
+                )
+            )
+        except Exception:
+            logger.debug("onboarding trace append failed (non-blocking)")
+
+    @classmethod
+    def _validated_plan(cls, plan: dict[str, Any]) -> dict[str, Any]:
+        """Contract-gate the deterministic engine's output at the write
+        boundary: what persists is always the typed :class:`Plan` dump. If the
+        builder ever drifts from the contract, log it and keep the raw dict so
+        the flow still completes (fail-open)."""
+        try:
+            return Plan.model_validate(plan).model_dump()
+        except ValidationError as exc:
+            logger.warning("deterministic plan failed contract validation: %s", exc)
+            return plan
+
     async def _present_plan(
         self,
         user_id: str,
         state: OnboardingState,
         conversation_id: str,
     ) -> OnboardingTurn:
-        plan = plan_builder.build_plan(state.answers, state.document_summary)
+        plan = self._validated_plan(
+            plan_builder.build_plan(
+                state.learned,
+                state.document_summary,
+                goal=state.goal,
+                money_moment=state.money_moment,
+            )
+        )
         state.plan = plan
         state.stage = STAGE_PLAN_CONSENT
         state.plan_presented = True
+        self._update_conversation_state(state)
         await self._remember(
             user_id,
             "plan",
@@ -471,6 +1088,9 @@ class OnboardingService:
         )
         await self._state_store.save_state(user_id, state)
         self._emit(user_id, "plan_presented")
+        # spec §27: success is a real insight, not a completed form. The plan
+        # reveal (with its deterministic financial_insight) is that "aha".
+        self._emit(user_id, "aha_generated")
 
         history = await self._history(conversation_id)
         try:
@@ -485,6 +1105,32 @@ class OnboardingService:
             logger.exception("onboarding plan-present LLM call failed for %s", user_id)
             outcome = None
         if outcome is not None:
+            # Adversarial clamp (spec §30, never invent numbers): the plan
+            # presentation is the money-critical surface, so a reply that
+            # reports a figure not in the deterministic plan is never shown;
+            # the deterministic presentation only repeats plan numbers. The
+            # turn is traced either way, with the prompt version that produced
+            # the drift.
+            ground = json.dumps(plan)
+            violations = self._spec_violations(
+                state,
+                outcome,
+                grounded_extra=ground,
+                present=True,
+            )
+            await self._trace_turn(
+                user_id,
+                state,
+                outcome,
+                mode="present",
+                stage=state.stage,
+                prompt_version=driver.prompt_version("present"),
+                grounded_extra=ground,
+                violations=violations,
+                clamped="R10" in violations,
+            )
+            if "R10" in violations:
+                return self._plan_turn(user_id, state, conversation_id)
             return self._turn(outcome.reply, stage=state.stage)
         return self._plan_turn(user_id, state, conversation_id)
 
@@ -497,26 +1143,80 @@ class OnboardingService:
         conversation_id: str,
         text: str,
     ) -> OnboardingTurn:
+        # Same name-capture contract as the LLM-led turn, so the fallback path
+        # never loses a name the user volunteered.
+        name = self._volunteered_name(state, text)
+        if name and not state.name:
+            state.name = name
+            await self._remember(user_id, "name", "identity", name, is_a_vote=False)
+            await self._state_store.save_state(user_id, state)
+        self._update_conversation_state(state)
         try:
             if state.stage == STAGE_INTERVIEW:
-                nxt = q.next_question(
-                    state.answers,
-                    state.asked,
-                    max_followups=self._settings.ONBOARDING_MAX_FOLLOWUPS,
+                # No question bank: fall back to a short, warm open question that
+                # still moves the conversation -- then gather the statement so
+                # the numbers stay real even without the agent online. Each
+                # fallback turn consumes the inbound reply into the next open
+                # field, so it never asks the same thing twice.
+                state.interview_turns += 1
+                just_named = bool(state.name) and (
+                    self._extract_name(text).casefold() == state.name.casefold()
                 )
-                if nxt is None:
-                    if self._ready_for_plan(state):
-                        return await self._present_plan(user_id, state, conversation_id)
-                    state.stage = STAGE_AWAITING_STATEMENT
+                if just_named:
                     await self._state_store.save_state(user_id, state)
-                    self._emit(user_id, "interview_finished")
-                    return self._statement_ask(user_id, state, conversation_id)
-                state.asked.append(nxt.id)
-                if q.is_followup(nxt.id):
-                    state.follow_ups.append(nxt.id)
-                state.stage = STAGE_INTERVIEW
+                    return self._turn(
+                        f"Nice to meet you, {state.name}! What's been on your "
+                        "mind about money lately?",
+                        stage=state.stage,
+                    )
+                if not state.money_moment:
+                    reply = (text or "").strip()
+                    if reply:
+                        state.money_moment = reply[:400]
+                        await self._remember(
+                            user_id,
+                            "money_moment",
+                            "liquidity",
+                            state.money_moment,
+                            is_a_vote=False,
+                        )
+                        await self._state_store.save_state(user_id, state)
+                        return self._turn(
+                            "And what would having that sorted out actually "
+                            "look like for you - what are you working toward?",
+                            stage=state.stage,
+                        )
+                    await self._state_store.save_state(user_id, state)
+                    return self._turn(
+                        "Sorry, give me one sec - my connection's being weird. "
+                        "What's been on your mind about money lately, in your "
+                        "own words?",
+                        stage=state.stage,
+                    )
+                if not state.goal:
+                    reply = (text or "").strip()
+                    if reply:
+                        state.goal = reply[:400]
+                        await self._remember(
+                            user_id, "goal", "goal", state.goal, is_a_vote=False
+                        )
+                        state.stage = STAGE_AWAITING_STATEMENT
+                        await self._state_store.save_state(user_id, state)
+                        self._emit(user_id, "interview_finished")
+                        return self._statement_ask(user_id, state, conversation_id)
+                    await self._state_store.save_state(user_id, state)
+                    return self._turn(
+                        "And what would having that sorted out actually look "
+                        "like for you - what are you working toward?",
+                        stage=state.stage,
+                    )
+                state.goal = self._fold_reply(text, state.goal)
+                await self._remember(
+                    user_id, "goal", "goal", state.goal, is_a_vote=False
+                )
+                state.stage = STAGE_AWAITING_STATEMENT
                 await self._state_store.save_state(user_id, state)
-                return self._question_turn(state, nxt, conversation_id)
+                return self._statement_ask(user_id, state, conversation_id)
 
             if state.stage == STAGE_AWAITING_STATEMENT:
                 option = _match_option(text, STATEMENT_POLL.options)
@@ -573,6 +1273,19 @@ class OnboardingService:
         except Exception:
             logger.exception("onboarding fallback turn failed for user %s", user_id)
         return OnboardingTurn(conversation_id=conversation_id)
+
+    @staticmethod
+    def _fold_reply(reply: str, current: str) -> str:
+        """Append a fallback answer to an existing note without losing either.
+        The agent labels facts when online; offline we simply keep their words."""
+        reply = (reply or "").strip()
+        if not reply:
+            return current
+        if not current:
+            return reply[:400]
+        if reply.casefold() in current.casefold():
+            return current
+        return f"{current} — {reply}"[:400]
 
     # -- completion ----------------------------------------------------------
 
@@ -633,17 +1346,6 @@ class OnboardingService:
 
     # -- reply builders -------------------------------------------------------
 
-    def _question_turn(
-        self, state: OnboardingState, question: q.Question, conversation_id: str
-    ) -> OnboardingTurn:
-        return OnboardingTurn(
-            took_over=True,
-            response=question.prompt,
-            poll={"title": question.prompt, "options": list(question.options)},
-            conversation_id=conversation_id,
-            stage=state.stage,
-        )
-
     def _statement_ask(
         self, user_id: str, state: OnboardingState, conversation_id: str
     ) -> OnboardingTurn:
@@ -662,6 +1364,7 @@ class OnboardingService:
     def _plan_turn(
         self, user_id: str, state: OnboardingState, conversation_id: str
     ) -> OnboardingTurn:
+        del user_id
         plan = state.plan or {}
         label = plan.get("diagnostic_state", "your picture")
         text = f"Here's your picture: {label}."

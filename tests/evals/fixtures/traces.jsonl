@@ -1,0 +1,7 @@
+{"reply": "What's been on your mind about money lately - I want the real stuff, not the polite version.", "intent": "interview"}
+{"reply": "So the month runs out before the money does, and that's been going on a while. When income lands, does it come steady or in lumps?", "intent": "interview"}
+{"reply": "A real statement would make this sharper. Send one over - a PDF works - or just say skip, and we go with what you've told me.", "intent": "request_statement"}
+{"reply": "Here's your picture: the buffer runs out before the month does. Two moves first - lock the next month away the moment income lands, then split the lumpy income into smaller pieces. Shall I set this up so it runs quietly in the background for you?", "intent": "present_plan", "present": true}
+{"reply": "Done - this is now how I work for you. One slice of every income goes to the buffer before anything else gets its turn. You stay the one who decides.", "intent": "consent_yes"}
+{"reply": "Nervous or excited?", "intent": "interview", "has_taps": true}
+{"reply": "I'm going to be blunt - the bills going out on time while the money still disappears is the whole story. We've seen this happen more than once now.", "intent": "interview"}
