@@ -53,7 +53,31 @@ async def get_current_user(
     user.email = payload.get("email", "")
     user.full_name = payload.get("full_name", "Unknown User")
     user.is_active = True
+    user.roles = _roles_from_payload(payload)
     return user
+
+
+def _roles_from_payload(payload: dict[str, Any]) -> list[str]:
+    """Extract role claims from a Go-issued JWT.
+
+    Go tokens use a single ``role`` string claim. We also accept a
+    ``roles`` list claim for forward compatibility, and promote the
+    token's ``verified`` flag into the ``verified`` role so money
+    actions are permitted for KYC-verified users without a separate
+    profile fetch.
+    """
+    roles: list[str] = []
+    raw_roles = payload.get("roles")
+    if isinstance(raw_roles, list):
+        roles = [r for r in raw_roles if isinstance(r, str)]
+    elif isinstance(raw_roles, str):
+        roles = [raw_roles]
+    raw_role = payload.get("role")
+    if isinstance(raw_role, str) and raw_role not in roles:
+        roles.append(raw_role)
+    if payload.get("verified") is True and "verified" not in roles:
+        roles.append("verified")
+    return roles or ["user"]
 
 
 async def get_bearer_token(

@@ -48,6 +48,27 @@ class MemoryStore:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
+    async def ensure_user(self, user: Any) -> None:
+        """Upsert a user row so conversations can reference it.
+
+        The Go backend is the identity authority; this inserts (or no-ops on
+        existing) the user row mirroring the JWT claims used for agent context.
+        """
+        from miriam_agent.database.models import User
+
+        async with self.async_session() as session:
+            existing = await session.get(User, user.id)
+            if existing is not None:
+                return
+            row = User(
+                id=user.id,
+                username=getattr(user, "username", "unknown") or "unknown",
+                email=getattr(user, "email", "") or "",
+                full_name=getattr(user, "full_name", user.id) or user.id,
+            )
+            session.add(row)
+            await session.commit()
+
     async def store_interaction(
         self,
         user_id: str,
@@ -64,18 +85,20 @@ class MemoryStore:
                     conversation = await session.get(Conversation, conversation_id)
                     if conversation is None:
                         # conversation_id provided but doesn't exist - create it
+                        title = f"Conversation {datetime.utcnow():%Y-%m-%d %H:%M}"
                         conversation = Conversation(
                             user_id=user_id,
-                            title=f"Conversation {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                            title=title,
                             id=conversation_id,
                         )
                         session.add(conversation)
                         await session.flush()
                 else:
                     # Create new conversation
+                    title = f"Conversation {datetime.utcnow():%Y-%m-%d %H:%M}"
                     conversation = Conversation(
                         user_id=user_id,
-                        title=f"Conversation {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                        title=title,
                     )
                     session.add(conversation)
                     await session.flush()

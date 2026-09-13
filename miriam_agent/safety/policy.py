@@ -3,6 +3,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class SafetyPolicy:
     """Safety and policy enforcement for Miriam Financial Agent."""
 
@@ -16,12 +17,23 @@ class SafetyPolicy:
         self.whitelisted_addresses = set()
 
     def _load_money_movement_limits(self) -> dict[str, Any]:
-        """Load money movement limits from configuration."""
+        """Load money movement limits from the single source of truth.
+
+        Bug fix: this used to hardcode its own numbers, completely
+        disconnected from ``config/settings.py``'s ``MAX_DAILY_TRANSFER`` /
+        ``MAX_TRANSACTION_AMOUNT`` -- someone could change the configured
+        limit and this class would silently keep enforcing the old one.
+        High-risk limits keep the original 10% ratio (1000/10000,
+        500/5000) but now scale with the configured base limits.
+        """
+        from miriam_agent.config.settings import get_settings
+
+        settings = get_settings()
         return {
-            "daily_limit": 10000.0,
-            "transaction_limit": 5000.0,
-            "high_risk_daily_limit": 1000.0,
-            "high_risk_transaction_limit": 500.0,
+            "daily_limit": settings.MAX_DAILY_TRANSFER,
+            "transaction_limit": settings.MAX_TRANSACTION_AMOUNT,
+            "high_risk_daily_limit": settings.MAX_DAILY_TRANSFER * 0.1,
+            "high_risk_transaction_limit": settings.MAX_TRANSACTION_AMOUNT * 0.1,
             "blocked_categories": ["scam", "fraud", "illegal"],
         }
 
@@ -77,8 +89,7 @@ class SafetyPolicy:
             if not await self._is_action_allowed(tool_name):
                 logger.warning(
                     "Action not in allowlist",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
@@ -101,9 +112,11 @@ class SafetyPolicy:
             if requires_approval:
                 logger.info(
                     "Action requires approval",
-                    tool_name=tool_name,
-                    user_id=user_id,
-                    risk_level=risk_level,
+                    extra={
+                        "tool": tool_name,
+                        "user_id": user_id,
+                        "risk_level": risk_level,
+                    },
                 )
                 # In a real implementation, we would wait for user approval here
                 # For now, we'll log the approval requirement
@@ -117,8 +130,7 @@ class SafetyPolicy:
             ):
                 logger.error(
                     "Action is blocked",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
@@ -127,31 +139,48 @@ class SafetyPolicy:
         except Exception as e:
             logger.error(
                 "Error validating action",
-                tool_name=tool_name,
-                user_id=user_id,
-                error=str(e),
+                extra={"tool": tool_name, "user_id": user_id, "error": str(e)},
                 exc_info=True,
             )
             return False
 
     async def _is_action_allowed(self, tool_name: str) -> bool:
-        """Check if action is in the allowlist."""
-        # Define allowed actions
-        allowed_actions = {
-            "analyze_portfolio",
-            "generate_budget_plan",
-            "analyze_transaction",
-            "get_financial_advice",
-            "get_balance",
-            "get_transaction_history",
-            "transfer_funds",
-            "withdraw_funds",
-            "deposit_funds",
-            "execute_strategy",
-            "get_payment_status",
+        """Check if action is allowed.
+
+        The allowlist is derived from the live tool registry so it can never
+        drift from what the server actually exposes. Read-only tools are
+        allowed. Money-movement tools are allowed only when they are one of the
+        real delegation tools wired to the Go REST money path -- anything else
+        is denied (the agent's own staging loop already gates when they run).
+        """
+        # Money tools that delegate to Go's ledger and are gated by staged
+        # confirmation + idempotency + RBAC. Kept as a curated set so a stray
+        # mutation tool can never bypass policy just by being registered.
+        money_tools = {
+            "send_money",
+            "execute_investment",
+            "transfer_stash_to_spending",
+            "transfer_spending_to_stash",
+            "create_automation",
+            "update_automation",
+            "delete_automation",
+            "create_scheduled_investment",
+            "pause_scheduled_investment",
+            "resume_scheduled_investment",
+            "pay_bill",
         }
 
-        return tool_name in allowed_actions
+        try:
+            from miriam_agent.tools import ensure_registered
+
+            tool = ensure_registered().get(tool_name)
+        except Exception:
+            tool = None
+        if tool is None:
+            return False
+        if tool.is_mutation or tool.requires_approval:
+            return tool_name in money_tools
+        return bool(tool.allow_auto_execute)
 
     async def _check_safety_rules(
         self,
@@ -168,17 +197,15 @@ class SafetyPolicy:
             ):
                 logger.warning(
                     "Suspicious pattern detected",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
             # Check limits
-            if await self._check_limits(arguments, user_id, financial_profile):
+            if not await self._check_limits(arguments, user_id, financial_profile):
                 logger.warning(
                     "Limit exceeded",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
@@ -186,8 +213,7 @@ class SafetyPolicy:
             if await self._check_blocked_categories(arguments):
                 logger.warning(
                     "Blocked category detected",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
@@ -195,8 +221,7 @@ class SafetyPolicy:
             if await self._check_time_based_restrictions(arguments, user_id):
                 logger.warning(
                     "Time-based restriction violated",
-                    tool_name=tool_name,
-                    user_id=user_id,
+                    extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
 
@@ -205,8 +230,7 @@ class SafetyPolicy:
         except Exception as e:
             logger.error(
                 "Error checking safety rules",
-                tool_name=tool_name,
-                error=str(e),
+                extra={"tool": tool_name, "error": str(e)},
                 exc_info=True,
             )
             return False
@@ -224,17 +248,14 @@ class SafetyPolicy:
 
             # Check each pattern
             for pattern in self.suspicious_patterns:
-                if await self._check_pattern(
-                    pattern, arguments, recent_activities
-                ):
+                if await self._check_pattern(pattern, arguments, recent_activities):
                     return True
 
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error detecting suspicious patterns",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -249,22 +270,22 @@ class SafetyPolicy:
         pattern_type = pattern["pattern"]
 
         if pattern_type == "multiple_large_transfers_short_time":
-            return self._check_multiple_large_transfers(
+            return await self._check_multiple_large_transfers(
                 pattern, arguments, recent_activities
             )
 
         elif pattern_type == "new_beneficiary_unusual_amount":
-            return self._check_new_beneficiary_unusual_amount(
+            return await self._check_new_beneficiary_unusual_amount(
                 pattern, arguments, recent_activities
             )
 
         elif pattern_type == "immediate_large_transfer":
-            return self._check_immediate_large_transfer(
+            return await self._check_immediate_large_transfer(
                 pattern, arguments, recent_activities
             )
 
         elif pattern_type == "multiple_round_number_transfers":
-            return self._check_multiple_round_number_transfers(
+            return await self._check_multiple_round_number_transfers(
                 pattern, arguments, recent_activities
             )
 
@@ -291,10 +312,9 @@ class SafetyPolicy:
             # Check if there are enough transfers in the timeframe
             return len(recent_transfers) >= threshold
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking multiple large transfers",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -328,10 +348,9 @@ class SafetyPolicy:
 
             return len(previous_transfers) == 0
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking new beneficiary unusual amount",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -362,10 +381,9 @@ class SafetyPolicy:
 
             return len(recent_transfers) > 0
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking immediate large transfer",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -390,10 +408,9 @@ class SafetyPolicy:
 
             return len(round_number_transfers) >= threshold
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking multiple round number transfers",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -408,9 +425,18 @@ class SafetyPolicy:
         user_id: str,
         financial_profile: Any,
     ) -> bool:
-        """Check if action exceeds limits."""
+        """Check if action exceeds limits.
+
+        Bug fix: daily-limit checking used to be a no-op ("would require
+        checking user's daily total" -- and then never did). It now sums
+        the user's real money-movement activity over the last 24 hours
+        (from the audit log) and blocks if this action would push them
+        over the configured daily cap.
+        """
         try:
-            amount = arguments.get("amount", 0)
+            # Bill payments carry their face value as amount_ngn (amount stays
+            # empty), so read both so per-transaction/daily caps apply to them.
+            amount = arguments.get("amount", 0) or arguments.get("amount_ngn", 0)
 
             # Get user's risk level
             risk_level = await self._get_user_risk_level(user_id)
@@ -420,29 +446,41 @@ class SafetyPolicy:
                 transaction_limit = self.money_movement_limits[
                     "high_risk_transaction_limit"
                 ]
+                daily_limit = self.money_movement_limits["high_risk_daily_limit"]
             else:
                 transaction_limit = self.money_movement_limits["transaction_limit"]
+                daily_limit = self.money_movement_limits["daily_limit"]
 
             # Check transaction limit
             if amount > transaction_limit:
                 return False
 
-            # Check daily limit (simplified - would need actual daily tracking)
-            # This would require checking user's daily total
+            # Check daily limit against real last-24h activity.
+            recent_activities = await self._get_recent_activities(user_id)
+            today_total = sum(a.get("amount", 0) for a in recent_activities)
+            if today_total + amount > daily_limit:
+                logger.warning(
+                    "Daily transfer limit would be exceeded",
+                    extra={
+                        "user_id": user_id,
+                        "today_total": today_total,
+                        "amount": amount,
+                        "daily_limit": daily_limit,
+                    },
+                )
+                return False
 
             return True
 
         except Exception as e:
             logger.error(
                 "Error checking limits",
-                error=str(e),
+                extra={"error": str(e)},
                 exc_info=True,
             )
             return False
 
-    async def _check_blocked_categories(
-        self, arguments: dict[str, Any]
-    ) -> bool:
+    async def _check_blocked_categories(self, arguments: dict[str, Any]) -> bool:
         """Check if action is in blocked categories."""
         try:
             # Get description or category from arguments
@@ -458,10 +496,9 @@ class SafetyPolicy:
 
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking blocked categories",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -476,10 +513,9 @@ class SafetyPolicy:
             # For now, we'll return False (no restrictions)
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking time-based restrictions",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -523,10 +559,9 @@ class SafetyPolicy:
             else:
                 return "low"
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error assessing action risk",
-                error=str(e),
                 exc_info=True,
             )
             return "low"
@@ -557,9 +592,7 @@ class SafetyPolicy:
                 return True
 
             # Check if auto-approval is possible
-            if amount <= self.approval_workflow.get(
-                "auto_approve_below_threshold", 0
-            ):
+            if amount <= self.approval_workflow.get("auto_approve_below_threshold", 0):
                 return False
 
             # Default to requiring approval for money movement
@@ -573,10 +606,9 @@ class SafetyPolicy:
 
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking if approval required",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -609,10 +641,9 @@ class SafetyPolicy:
 
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking if action is blocked",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -636,20 +667,18 @@ class SafetyPolicy:
         return tool_risks.get(tool_name, 0.5)
 
     async def _get_user_risk_level(self, user_id: str) -> str:
-        """Get user's risk level."""
-        try:
-            # Get user profile
-            # This would require database access
-            # For now, return default
-            return "medium"
+        """Get user's fraud-risk tier (not to be confused with investment
+        risk tolerance, a different concept stored on the financial profile).
 
-        except Exception as e:
-            logger.error(
-                "Error getting user risk level",
-                error=str(e),
-                exc_info=True,
-            )
-            return "medium"
+        Placeholder: always returns "medium" until a real fraud-risk model
+        exists. Deliberately left this way rather than faking a scoring
+        model here -- a fabricated risk score would be worse than an
+        honest constant, since it would look precise without being
+        grounded in anything. Real recent-activity checks (see
+        ``_get_recent_activities``/``_check_limits``) provide the actual
+        signal today; per-user risk tiering is a follow-up.
+        """
+        return "medium"
 
     def _risk_level_to_score(self, risk_level: str) -> float:
         """Convert risk level to score."""
@@ -662,21 +691,77 @@ class SafetyPolicy:
 
         return risk_scores.get(risk_level, 0.5)
 
+    # Tool names that represent real money movement, used to filter the
+    # audit log down to activity relevant for fraud/limit checks.
+    _MONEY_ACTIONS = frozenset(
+        {
+            "send_money",
+            "execute_investment",
+            "transfer_stash_to_spending",
+            "transfer_spending_to_stash",
+            "pay_bill",
+        }
+    )
+
     async def _get_recent_activities(
         self, user_id: str, timeframe_hours: int = 24
     ) -> list[dict[str, Any]]:
-        """Get user's recent activities."""
+        """Get the user's real recent money-movement activity.
+
+        Bug fix: this used to always return ``[]``, which meant every
+        pattern check below (multiple large transfers, new beneficiary,
+        round-number transfers) and the daily-limit check could never
+        fire, no matter what the user actually did. Now reads the audit
+        log (populated by ``api/chat.py``'s audit observer, which records
+        amount/recipient for every money-movement tool call).
+
+        Fail-open: any DB error here means pattern/limit checks skip this
+        round rather than blocking a user because of an infrastructure
+        problem -- consistent with how the rest of the app treats a
+        degraded dependency (Go backend down, Supermemory down, etc).
+        """
         try:
-            # This would query the database for recent user activities
-            # For now, return empty list
-            return []
+            from datetime import datetime, timedelta
+
+            from miriam_agent.safety.audit import get_audit_system_singleton
+
+            audit = await get_audit_system_singleton()
+            logs = await audit.get_user_audit_logs(user_id, limit=200)
+            cutoff = datetime.utcnow() - timedelta(hours=timeframe_hours)
+
+            activities: list[dict[str, Any]] = []
+            for log in logs:
+                if log.get("action") not in self._MONEY_ACTIONS:
+                    continue
+                details = log.get("details") or {}
+                if details.get("status") != "success":
+                    continue
+                amount = details.get("amount")
+                if amount is None:
+                    continue
+                created_raw = log.get("created_at")
+                try:
+                    created = (
+                        datetime.fromisoformat(created_raw)
+                        if isinstance(created_raw, str)
+                        else created_raw
+                    )
+                except ValueError:
+                    continue
+                if created is None or created < cutoff:
+                    continue
+                activities.append(
+                    {
+                        "type": "transfer",
+                        "amount": float(amount),
+                        "beneficiary": details.get("recipient")
+                        or details.get("symbol"),
+                    }
+                )
+            return activities
 
         except Exception as e:
-            logger.error(
-                "Error getting recent activities",
-                error=str(e),
-                exc_info=True,
-            )
+            logger.warning("Recent-activity lookup failed, failing open: %s", e)
             return []
 
     async def _is_user_suspicious(self, user_id: str) -> bool:
@@ -686,17 +771,14 @@ class SafetyPolicy:
             recent_activities = await self._get_recent_activities(user_id)
 
             for pattern in self.suspicious_patterns:
-                if await self._check_pattern(
-                    pattern, {}, recent_activities
-                ):
+                if await self._check_pattern(pattern, {}, recent_activities):
                     return True
 
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking if user is suspicious",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -708,10 +790,9 @@ class SafetyPolicy:
             # For now, return False
             return False
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking failed attempts",
-                error=str(e),
                 exc_info=True,
             )
             return False
@@ -729,15 +810,16 @@ class SafetyPolicy:
             # Audit-log the approval
             logger.info(
                 "Action requires approval logged",
-                user_id=user_id,
-                action=tool_name,
-                risk_level=risk_level,
+                extra={
+                    "user_id": user_id,
+                    "action": tool_name,
+                    "risk_level": risk_level,
+                },
             )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error logging approval requirement",
-                error=str(e),
                 exc_info=True,
             )
 
@@ -745,11 +827,11 @@ class SafetyPolicy:
         """Add an address to blocked list."""
         try:
             self.blocked_addresses.add(address)
-            logger.info("Address blocked", address=address)
+            logger.info("Address blocked", extra={"address": address})
         except Exception as e:
             logger.error(
                 "Error blocking address",
-                error=str(e),
+                extra={"error": str(e)},
                 exc_info=True,
             )
 
@@ -757,11 +839,11 @@ class SafetyPolicy:
         """Remove an address from blocked list."""
         try:
             self.blocked_addresses.discard(address)
-            logger.info("Address unblocked", address=address)
+            logger.info("Address unblocked", extra={"address": address})
         except Exception as e:
             logger.error(
                 "Error unblocking address",
-                error=str(e),
+                extra={"error": str(e)},
                 exc_info=True,
             )
 
@@ -769,11 +851,11 @@ class SafetyPolicy:
         """Add an address to whitelisted list."""
         try:
             self.whitelisted_addresses.add(address)
-            logger.info("Address whitelisted", address=address)
+            logger.info("Address whitelisted", extra={"address": address})
         except Exception as e:
             logger.error(
                 "Error whitelisting address",
-                error=str(e),
+                extra={"error": str(e)},
                 exc_info=True,
             )
 

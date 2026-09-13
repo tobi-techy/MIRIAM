@@ -165,7 +165,8 @@ class OpenAIProvider(LLMProvider):
         api_key = api_key or settings.OPENAI_API_KEY
         if not api_key:
             raise ConfigurationError(
-                "OPENAI_API_KEY is not set. Configure it in .env to enable LLM features."
+                "OPENAI_API_KEY is not set. Configure it in .env to enable "
+                "LLM features."
             )
         self.client = AsyncOpenAI(api_key=api_key)
         self._cost_per_1k = {

@@ -1,7 +1,7 @@
 import logging
 import re
 import time
-from collections import defaultdict, deque
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 class InputValidator:
     """Input validation and sanitization for Miriam Financial Agent."""
 
-    # Action -> (max_requests, window_seconds). In-memory sliding window.
+    # Action -> (max_requests, window_seconds). Backed by Redis (see
+    # validate_rate_limit) so the window survives restarts and is shared
+    # across every app instance, not just the process that happened to
+    # handle the request.
     RATE_LIMITS: dict[str, tuple[int, int]] = {
         "chat": (60, 60),  # 60 chat requests / min / user
         "transaction": (10, 60),  # max 10 money actions / min / user
@@ -27,8 +30,7 @@ class InputValidator:
         self.patterns = self._load_validation_patterns()
         self.blocked_keywords = self._load_blocked_keywords()
         self.allowed_characters = self._load_allowed_characters()
-        self._rate_buckets: dict[str, deque[float]] = defaultdict(deque)
-        self._rate_lock = __import__("threading").Lock()
+        self._redis: Any = None
 
     def _get_encryption_key(self) -> str:
         """Get encryption key from environment or generate one."""
@@ -53,11 +55,17 @@ class InputValidator:
             "crypto_address": r"^(0x)?[a-fA-F0-9]{40}$",
             "date": r"^\d{4}-\d{2}-\d{2}$",
             "time": r"^\d{2}:\d{2}(:\d{2})?$",
-            "uuid": r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "uuid": (
+                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            ),
             "symbol": r"^[A-Z]{1,5}$",
             "description": r"^[a-zA-Z0-9\s\-.,!?@#$%&*():;]{1,200}$",
             "username": r"^[a-zA-Z0-9_]{3,30}$",
-            "password": r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$",
+            "password": (
+                r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])"
+                r"[A-Za-z\d@$!%*?&]{8,}$"
+            ),
             "json_string": r"^{.*}$",
         }
 
@@ -127,7 +135,6 @@ class InputValidator:
         except Exception as e:
             logger.error(
                 "Error validating user input",
-                error=str(e),
                 exc_info=True,
             )
             return False, [f"Input validation error: {str(e)}"]
@@ -352,7 +359,8 @@ class InputValidator:
 
         if not re.match(self.patterns["username"], value):
             errors.append(
-                "Username must be 3-30 characters and contain only letters, numbers, and underscores"
+                "Username must be 3-30 characters and contain only "
+                "letters, numbers, and underscores"
             )
 
         return errors
@@ -363,7 +371,8 @@ class InputValidator:
 
         if not re.match(self.patterns["password"], value):
             errors.append(
-                "Password must be at least 8 characters and contain uppercase, lowercase, number, and special character"
+                "Password must be at least 8 characters and contain "
+                "uppercase, lowercase, number, and special character"
             )
 
         return errors
@@ -418,10 +427,9 @@ class InputValidator:
 
             return sanitized_data
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error sanitizing input",
-                error=str(e),
                 exc_info=True,
             )
             return input_data
@@ -432,6 +440,17 @@ class InputValidator:
             # Remove or escape potentially dangerous characters
             sanitized = value
 
+            # Bug fix: script-tag/javascript-URI stripping must run BEFORE
+            # HTML-escaping, not after. This used to escape `<script>` to
+            # `&lt;script&gt;` first, so the regex below (which looks for a
+            # literal `<script>`) could never match anything -- the check
+            # ran on every request and silently did nothing.
+            sanitized = re.sub(
+                r"<script[^>]*>.*?</script>", "", sanitized, flags=re.IGNORECASE
+            )
+            sanitized = re.sub(r"javascript:", "", sanitized, flags=re.IGNORECASE)
+            sanitized = re.sub(r"vbscript:", "", sanitized, flags=re.IGNORECASE)
+
             # Escape HTML special characters
             sanitized = sanitized.replace("&", "&amp;")
             sanitized = sanitized.replace("<", "&lt;")
@@ -439,63 +458,16 @@ class InputValidator:
             sanitized = sanitized.replace('"', "&quot;")
             sanitized = sanitized.replace("'", "&#x27;")
 
-            # Remove script tags and JavaScript
-            sanitized = re.sub(
-                r"<script[^>]*>.*?</script>", "", sanitized, flags=re.IGNORECASE
-            )
-            sanitized = re.sub(r"javascript:", "", sanitized, flags=re.IGNORECASE)
-            sanitized = re.sub(r"vbscript:", "", sanitized, flags=re.IGNORECASE)
-
-            # Remove SQL injection patterns
-            sql_patterns = [
-                r"select\s",
-                r"insert\s",
-                r"update\s",
-                r"delete\s",
-                r"drop\s",
-                r"union\s",
-                r"exec\s",
-                r"script\s",
-                r"vba\s",
-                r"macro\s",
-                r"command\s",
-                r"shell\s",
-                r"powershell\s",
-                r"bash\s",
-                r"rm\s",
-                r"del\s",
-                r"format\s",
-                r"dd\s",
-                r"mv\s",
-                r"cp\s",
-                r"sudo\s",
-                r"su\s",
-                r"whoami\s",
-                r"id\s",
-                r"uname\s",
-                r"system\s",
-                r"eval\s",
-                r"import\s",
-                r"export\s",
-                r"env\s",
-                r"set\s",
-                r"clear\s",
-                r"ls\s",
-                r"cat\s",
-                r"grep\s",
-                r"find\s",
-                r"ps\s",
-                r"kill\s",
-                r"netstat\s",
-                r"ssh\s",
-                r"ftp\s",
-                r"telnet\s",
-                r"http\s",
-                r"https\s",
-            ]
-
-            for pattern in sql_patterns:
-                sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+            # NOTE: this used to also strip a long list of "SQL/shell
+            # keywords" (select, rm, cat, find, http, ...) from every
+            # string field. It's removed: the app never builds raw SQL or
+            # shell commands from user input (SQLAlchemy's ORM parameterizes
+            # everything, and nothing here execs a shell), so that pass
+            # blocked zero real attacks while corrupting completely honest
+            # text -- e.g. "cat food budget" or "find me a good ETF" would
+            # come out mangled. Prompt-injection phrases are still caught
+            # by `_check_blocked_keywords` above, which is where the actual
+            # security value is.
 
             # Apply context-specific sanitization
             if context == "transaction":
@@ -503,10 +475,9 @@ class InputValidator:
 
             return sanitized.strip()
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error sanitizing string",
-                error=str(e),
                 exc_info=True,
             )
             return value
@@ -566,10 +537,9 @@ class InputValidator:
         try:
             encrypted_data = self.fernet.encrypt(data.encode())
             return encrypted_data.decode()
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error encrypting sensitive data",
-                error=str(e),
                 exc_info=True,
             )
             raise SecurityError("Failed to encrypt sensitive data")
@@ -579,10 +549,9 @@ class InputValidator:
         try:
             decrypted_data = self.fernet.decrypt(encrypted_data.encode())
             return decrypted_data.decode()
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error decrypting sensitive data",
-                error=str(e),
                 exc_info=True,
             )
             raise SecurityError("Failed to decrypt sensitive data")
@@ -633,37 +602,56 @@ class InputValidator:
 
         return len(errors) == 0, errors
 
+    def _get_redis(self) -> Any:
+        """Lazily create the process-wide async Redis client.
+
+        A separate method (rather than inlining ``redis.asyncio.from_url``
+        into ``validate_rate_limit``) so tests can substitute a fake client
+        without needing a real Redis server.
+        """
+        if self._redis is None:
+            import redis.asyncio as aioredis
+
+            from miriam_agent.config.settings import get_settings
+
+            self._redis = aioredis.from_url(
+                get_settings().REDIS_URL, decode_responses=True
+            )
+        return self._redis
+
     async def validate_rate_limit(self, user_id: str, action: str) -> bool:
         """Validate rate limiting for user actions.
 
-        In-memory sliding window, keyed by ``user_id:action``. Returns True
-        when the request is within the limit, False when throttled.
+        Redis-backed sliding window (a sorted set of request timestamps per
+        ``user_id:action``). Bug fix: this used to be an in-memory
+        ``deque``, which forgot every user's activity on restart and never
+        saw requests handled by a different process/replica -- a user could
+        dodge the limit just by hitting a different app instance. Returns
+        True when the request is within the limit, False when throttled.
+
+        Fails open: if Redis is unreachable, the request is allowed rather
+        than blocking every user because of an infrastructure hiccup
+        (consistent with how the rest of the app treats a degraded
+        dependency).
         """
+        limit, window = self.RATE_LIMITS.get(action, (60, 60))
+        key = f"ratelimit:{user_id}:{action}"
+        now = time.time()
         try:
-            limit, window = self.RATE_LIMITS.get(action, (60, 60))
-            key = f"{user_id}:{action}"
-            now = time.monotonic()
-
-            with self._rate_lock:
-                bucket = self._rate_buckets[key]
-                # Drop timestamps outside the sliding window (O(n) prune; the
-                # buckets are bounded by the max request count so this stays cheap).
-                while bucket and now - bucket[0] >= window:
-                    bucket.popleft()
-
-                if len(bucket) >= limit:
-                    return False
-
-                bucket.append(now)
-                return True
+            r = self._get_redis()
+            # Drop entries outside the window, then count what's left.
+            await r.zremrangebyscore(key, 0, now - window)
+            count = await r.zcard(key)
+            if count >= limit:
+                return False
+            # Unique member per request (not just `now`) so two requests in
+            # the same millisecond don't collide and silently undercount.
+            await r.zadd(key, {str(uuid.uuid4()): now})
+            await r.expire(key, window)
+            return True
 
         except Exception as e:
-            logger.error(
-                "Error validating rate limit",
-                error=str(e),
-                exc_info=True,
-            )
-            # Fail open: exhausted/erroring rate limiting must not block users.
+            logger.warning("Rate limit check failed, failing open: %s", e)
             return True
 
     async def check_for_malware_urls(self, url: str) -> tuple[bool, list[str]]:
@@ -673,10 +661,9 @@ class InputValidator:
             # For now, return False (no malware detection)
             return False, []
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error checking for malware URLs",
-                error=str(e),
                 exc_info=True,
             )
             return True, ["URL security check failed"]
@@ -705,10 +692,9 @@ class InputValidator:
 
             return len(violations) == 0, violations
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error validating content filtering",
-                error=str(e),
                 exc_info=True,
             )
             return True, ["Content filtering check failed"]

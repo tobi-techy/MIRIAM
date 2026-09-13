@@ -204,13 +204,27 @@ class Agent:
                     elif signature in approved_lookup or self._matches_pending(
                         name, args
                     ):
-                        result = await self._safe_execute(
-                            name, args, ctx, user_id, user_context
-                        )
-                        executed_results[signature] = result
-                        llm_extra.append(
-                            self._tool_message(call.get("id"), name, result)
-                        )
+                        try:
+                            result = await self._safe_execute(
+                                name, args, ctx, user_id, user_context
+                            )
+                            executed_results[signature] = result
+                            llm_extra.append(
+                                self._tool_message(call.get("id"), name, result)
+                            )
+                        except Exception as exc:
+                            # An approved money action failed to execute (e.g. the
+                            # Go backend was unreachable). Never 500: record the
+                            # error as a tool result so the LLM can tell the user
+                            # plainly, and do NOT mark it executed so a retry can
+                            # attempt it again.
+                            llm_extra.append(
+                                self._tool_message(
+                                    call.get("id"),
+                                    name,
+                                    {"error": f"{name} failed to execute: {exc}"},
+                                )
+                            )
                         tool_calls_made.append({"name": name, "arguments": args})
                     else:
                         proposed.append(
@@ -229,9 +243,7 @@ class Agent:
                     result = await self._safe_execute(
                         name, args, ctx, user_id, user_context
                     )
-                    llm_extra.append(
-                        self._tool_message(call.get("id"), name, result)
-                    )
+                    llm_extra.append(self._tool_message(call.get("id"), name, result))
                 except Exception as e:
                     llm_extra.append(
                         self._tool_message(call.get("id"), name, {"error": str(e)})
@@ -357,9 +369,7 @@ class Agent:
                     continue
                 try:
                     result = await self._safe_execute(name, args, ctx, user_id, None)
-                    llm_extra.append(
-                        self._tool_message(call.get("id"), name, result)
-                    )
+                    llm_extra.append(self._tool_message(call.get("id"), name, result))
                     yield {
                         "type": "tool_result",
                         "tool": name,
@@ -381,7 +391,10 @@ class Agent:
                 # Pause streaming so the user can confirm.
                 yield {
                     "type": "confirmation_required",
-                    "message": "I need your go-ahead before moving money. Review the proposed actions.",
+                    "message": (
+                        "I need your go-ahead before moving money. "
+                        "Review the proposed actions."
+                    ),
                 }
                 return
 
@@ -428,11 +441,21 @@ class Agent:
 
         roles = set((user_context or {}).get("roles") or ["guest"])
         require_tool_access(roles, name)
-        await self.safety_policy.validate_action(
+        allowed = await self.safety_policy.validate_action(
             tool_name=name,
             arguments=args,
             user_id=user_id,
+            financial_profile=user_context,
         )
+        if not allowed:
+            logger.info(
+                "Tool denied by safety policy",
+                extra={"tool": name, "user_id": user_id},
+            )
+            return {
+                "error": f"'{name}' was blocked by safety checks. Nothing ran.",
+                "_blocked": True,
+            }
         exec_ctx = dict(ctx)
         # Deterministic per-(user, tool, args) idempotency key so a retried
         # money action cannot double-execute on the Go side.
@@ -452,8 +475,9 @@ class Agent:
         """Deterministic idempotency key for a mutation (user-scoped)."""
         import hashlib
 
+        normalized_args = json.dumps(self._normalize(args), sort_keys=True)
         digest = hashlib.sha256(
-            f"{user_id}:{tool_name}:{json.dumps(self._normalize(args), sort_keys=True)}".encode()
+            f"{user_id}:{tool_name}:{normalized_args}".encode()
         ).hexdigest()[:32]
         return f"miriam:{tool_name}:{digest}"
 
@@ -512,7 +536,13 @@ class Agent:
             )
             return f"Move {args.get('amount')} ({direction})"
         if tool.name == "execute_investment":
-            return f"{args.get('side', 'buy').upper()} {args.get('amount')} of {args.get('symbol')}"
+            side = args.get("side", "buy").upper()
+            return f"{side} {args.get('amount')} of {args.get('symbol')}"
+        if tool.name == "pay_bill":
+            return (
+                f"Pay {args.get('amount_ngn')} NGN of {args.get('category')} "
+                f"for {args.get('recipient')}"
+            )
         return f"{tool.name} with {json.dumps(args)}"
 
     def _confirmation_result(

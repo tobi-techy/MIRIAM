@@ -15,7 +15,7 @@ The registry serves three consumers:
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from miriam_agent.core.exceptions import (
@@ -25,7 +25,7 @@ from miriam_agent.core.exceptions import (
 )
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -245,6 +245,7 @@ class ToolRegistry:
                     "error": str(e),
                     "elapsed": elapsed,
                     "_context": context or {},
+                    "_args": args or {},
                 },
             )
             raise ToolExecutionError(f"Tool '{name}' failed: {e}")
@@ -262,6 +263,11 @@ class ToolRegistry:
                 "elapsed": elapsed,
                 "result": result,
                 "_context": context or {},
+                # The validated call arguments (e.g. amount, recipient).
+                # Needed so the audit observer can record what actually
+                # moved, not just that some tool ran -- previously the
+                # audit log had no way to know an amount even existed.
+                "_args": validated,
             },
         )
         return result

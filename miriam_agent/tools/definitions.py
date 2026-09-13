@@ -40,7 +40,9 @@ async def _get_balance(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
 
 registry.register(
     name="get_balance",
-    description="Get the user's current balances across spend and stash (yield) wallets.",
+    description=(
+        "Get the user's current balances across spend and stash (yield) wallets."
+    ),
     args_schema={"type": "object", "properties": {}},
     category="overview",
     risk_level=RiskLevel.LOW,
@@ -115,12 +117,15 @@ async def _analyze_portfolio(
     from miriam_agent.financial.intelligence import get_financial_intelligence_singleton
 
     fi = get_financial_intelligence_singleton(get_go_client())
-    return await fi.analyze_portfolio(ctx["user_id"])
+    return await fi.analyze_portfolio(ctx["user_id"], token=ctx.get("token"))
 
 
 registry.register(
     name="analyze_portfolio",
-    description="Analyze the user's investment portfolio: returns, risk, diversification, and recommendations.",
+    description=(
+        "Analyze the user's investment portfolio: returns, risk, "
+        "diversification, and recommendations."
+    ),
     args_schema={"type": "object", "properties": {}},
     category="overview",
     risk_level=RiskLevel.LOW,
@@ -137,7 +142,11 @@ async def _get_financial_plan(
 
 registry.register(
     name="get_financial_plan",
-    description="Get the user's current personalized financial plan.",
+    description=(
+        "Summarize the user's current financial position from live balances, "
+        "spending, and upcoming obligations. A dedicated financial-plan "
+        "computation is not available yet."
+    ),
     args_schema={"type": "object", "properties": {}},
     category="planning",
     risk_level=RiskLevel.LOW,
@@ -163,7 +172,10 @@ async def _send_money(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
 
 registry.register(
     name="send_money",
-    description="Send money to a recipient via Rail tag, email, or phone. Requires confirmation.",
+    description=(
+        "Send money to a recipient via Rail tag, email, or phone. "
+        "Requires confirmation."
+    ),
     args_schema={
         "type": "object",
         "properties": {
@@ -196,7 +208,9 @@ async def _transfer_stash_to_spending(
 
 registry.register(
     name="transfer_stash_to_spending",
-    description="Move money from the yield stash to the spend wallet. Requires confirmation.",
+    description=(
+        "Move money from the yield stash to the spend wallet. Requires confirmation."
+    ),
     args_schema={
         "type": "object",
         "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
@@ -222,7 +236,9 @@ async def _transfer_spending_to_stash(
 
 registry.register(
     name="transfer_spending_to_stash",
-    description="Move money from the spend wallet to the yield stash. Requires confirmation.",
+    description=(
+        "Move money from the spend wallet to the yield stash. Requires confirmation."
+    ),
     args_schema={
         "type": "object",
         "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
@@ -288,7 +304,7 @@ async def _budget_advice(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
 
     fi = get_financial_intelligence_singleton(get_go_client())
     return await fi.generate_budget_plan(
-        ctx["user_id"], goal=args.get("goal", "balance")
+        ctx["user_id"], token=ctx.get("token"), goal=args.get("goal", "balance")
     )
 
 
@@ -300,7 +316,10 @@ registry.register(
         "properties": {
             "goal": {
                 **_SCHEMA_STRING,
-                "description": "Budgeting goal: balance, emergency_fund, retirement, goal_based, debt_paydown, zero_based",
+                "description": (
+                    "Budgeting goal: balance, emergency_fund, retirement, "
+                    "goal_based, debt_paydown, zero_based"
+                ),
             }
         },
     },
@@ -345,7 +364,10 @@ async def _search_memory(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
 
 registry.register(
     name="search_memory",
-    description="Search the user's long-term financial memories, preferences, and past conversations.",
+    description=(
+        "Search the user's long-term financial memories, preferences, "
+        "and past conversations."
+    ),
     args_schema={
         "type": "object",
         "properties": {
@@ -357,6 +379,724 @@ registry.register(
     category="memory",
     risk_level=RiskLevel.LOW,
     handler=_search_memory,
+)
+
+
+# ---------------------------------------------------------------------------
+# Lookups, automations, obligations, schedules
+# ---------------------------------------------------------------------------
+
+
+async def _lookup_recipient(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.lookup_recipient(ctx["token"], args["identifier"])
+
+
+registry.register(
+    name="lookup_recipient",
+    description=(
+        "Look up whether a Rail tag, email, or phone can receive money. "
+        "Call before send_money when the user names someone. Does not move money."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "identifier": {
+                **_SCHEMA_STRING,
+                "description": "Rail tag (@name), email, or phone",
+            }
+        },
+        "required": ["identifier"],
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_lookup_recipient,
+)
+
+
+async def _list_automations(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    automations = await client.list_automations(ctx["token"])
+    return {"automations": automations, "count": len(automations)}
+
+
+registry.register(
+    name="list_automations",
+    description="List the user's automations and scheduled money rules.",
+    args_schema={"type": "object", "properties": {}},
+    category="automation",
+    risk_level=RiskLevel.LOW,
+    handler=_list_automations,
+)
+
+
+_WEEKDAYS = {
+    "sun": 0,
+    "sunday": 0,
+    "mon": 1,
+    "monday": 1,
+    "tue": 2,
+    "tues": 2,
+    "tuesday": 2,
+    "wed": 3,
+    "wednesday": 3,
+    "thu": 4,
+    "thur": 4,
+    "thurs": 4,
+    "thursday": 4,
+    "fri": 5,
+    "friday": 5,
+    "sat": 6,
+    "saturday": 6,
+}
+
+
+def _automation_payload(args: dict[str, Any]) -> dict[str, Any]:
+    """Map chat-friendly args onto Go's CreateAutomationRequest."""
+    trigger_type = args.get("trigger_type") or "schedule"
+    action_type = args.get("action_type")
+    dest = str(args.get("to") or "").lower()
+    if not action_type:
+        if dest in {"stash", "yield"}:
+            action_type = "transfer_to_stash"
+        elif dest in {"spend", "spending"}:
+            action_type = "transfer_to_spend"
+        else:
+            action_type = "transfer_to_stash"
+
+    trigger_config = args.get("trigger_config")
+    if not isinstance(trigger_config, dict):
+        trigger_config = {"hour": 9, "weekdays": [5]}
+        schedule = str(args.get("schedule") or "").lower()
+        for name, num in _WEEKDAYS.items():
+            if name in schedule:
+                trigger_config["weekdays"] = [num]
+                break
+        if "month" in schedule:
+            trigger_config = {"cron": "0 9 1 * *"}
+
+    action_config = dict(args.get("action_config") or {})
+    if args.get("amount") is not None:
+        try:
+            action_config.setdefault("amount", float(args["amount"]))
+        except (TypeError, ValueError):
+            action_config.setdefault("amount", args["amount"])
+    if args.get("from"):
+        action_config.setdefault("from_wallet", args["from"])
+    if args.get("to"):
+        action_config.setdefault("to_wallet", args["to"])
+
+    payload: dict[str, Any] = {
+        "name": args["name"],
+        "trigger_type": trigger_type,
+        "trigger_config": trigger_config,
+        "action_type": action_type,
+        "action_config": action_config,
+    }
+    if args.get("description"):
+        payload["description"] = args["description"]
+    return payload
+
+
+async def _create_automation(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.create_automation(
+        ctx["token"],
+        _automation_payload(args),
+        idempotency_key=ctx.get("idempotency_key"),
+    )
+
+
+registry.register(
+    name="create_automation",
+    description=(
+        "Create a lasting automation (e.g. every Friday move $50 spend to stash). "
+        "Requires confirmation. Future runs happen without another chat."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "name": {**_SCHEMA_STRING, "description": "Automation name"},
+            "schedule": {
+                **_SCHEMA_STRING,
+                "description": "Human schedule, e.g. 'every Friday'",
+            },
+            "amount": {**_SCHEMA_NUMBER, "description": "Amount for transfers"},
+            "from": {**_SCHEMA_STRING, "description": "Source wallet: spend or stash"},
+            "to": {**_SCHEMA_STRING, "description": "Destination: spend or stash"},
+            "trigger_type": {
+                **_SCHEMA_STRING,
+                "description": "schedule | balance_threshold | obligation_due | ...",
+            },
+            "action_type": {
+                **_SCHEMA_STRING,
+                "description": "transfer_to_stash | transfer_to_spend | notify | ...",
+            },
+            "description": {**_SCHEMA_STRING, "description": "Optional description"},
+        },
+        "required": ["name"],
+    },
+    category="automation",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_create_automation,
+)
+
+
+async def _update_automation(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    payload: dict[str, Any] = {}
+    if "is_active" in args:
+        payload["is_active"] = args["is_active"]
+    if args.get("name"):
+        payload["name"] = args["name"]
+    return await client.update_automation(ctx["token"], args["id"], payload)
+
+
+registry.register(
+    name="update_automation",
+    description="Pause, resume, or rename an automation. Requires confirmation.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "id": {**_SCHEMA_STRING, "description": "Automation id"},
+            "is_active": {**_SCHEMA_BOOL, "description": "false pauses, true resumes"},
+            "name": {**_SCHEMA_STRING, "description": "New name"},
+        },
+        "required": ["id"],
+    },
+    category="automation",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_update_automation,
+)
+
+
+async def _delete_automation(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.delete_automation(ctx["token"], args["id"])
+
+
+registry.register(
+    name="delete_automation",
+    description="Delete an automation permanently. Requires confirmation.",
+    args_schema={
+        "type": "object",
+        "properties": {"id": {**_SCHEMA_STRING, "description": "Automation id"}},
+        "required": ["id"],
+    },
+    category="automation",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_delete_automation,
+)
+
+
+async def _list_obligations(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    obligations = await client.get_upcoming_bills(ctx["token"])
+    return {"obligations": obligations, "count": len(obligations)}
+
+
+registry.register(
+    name="list_obligations",
+    description="List the user's bills, debts, and other financial obligations.",
+    args_schema={"type": "object", "properties": {}},
+    category="planning",
+    risk_level=RiskLevel.LOW,
+    handler=_list_obligations,
+)
+
+
+async def _create_obligation(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    payload = {
+        "type": args.get("type", "bill"),
+        "name": args["name"],
+        "amount": str(args["amount"]),
+        "currency": args.get("currency", "USD"),
+        "cadence": args.get("cadence", "monthly"),
+    }
+    if args.get("due_day") is not None:
+        payload["due_day"] = args["due_day"]
+    if args.get("counterparty"):
+        payload["counterparty"] = args["counterparty"]
+    return await client.create_obligation(ctx["token"], payload)
+
+
+registry.register(
+    name="create_obligation",
+    description="Add a bill, debt, or other obligation Miriam should track.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "name": {**_SCHEMA_STRING, "description": "Obligation name"},
+            "amount": {**_SCHEMA_NUMBER, "description": "Amount due"},
+            "type": {**_SCHEMA_STRING, "description": "bill, debt, subscription, ..."},
+            "cadence": {**_SCHEMA_STRING, "description": "monthly, weekly, once, ..."},
+            "currency": {**_SCHEMA_STRING, "description": "USD, NGN, ..."},
+            "due_day": {**_SCHEMA_INT, "description": "Day of month due"},
+            "counterparty": {**_SCHEMA_STRING, "description": "Who it is paid to"},
+        },
+        "required": ["name", "amount"],
+    },
+    category="planning",
+    risk_level=RiskLevel.LOW,
+    handler=_create_obligation,
+)
+
+
+async def _mark_obligation_paid(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.update_obligation(ctx["token"], args["id"], {"status": "paid"})
+
+
+registry.register(
+    name="mark_obligation_paid",
+    description="Mark an obligation as paid.",
+    args_schema={
+        "type": "object",
+        "properties": {"id": {**_SCHEMA_STRING, "description": "Obligation id"}},
+        "required": ["id"],
+    },
+    category="planning",
+    risk_level=RiskLevel.LOW,
+    handler=_mark_obligation_paid,
+)
+
+
+async def _list_scheduled_investments(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.list_scheduled_investments(ctx["token"])
+    return {"scheduled_investments": items, "count": len(items)}
+
+
+registry.register(
+    name="list_scheduled_investments",
+    description="List recurring investment schedules.",
+    args_schema={"type": "object", "properties": {}},
+    category="investment",
+    risk_level=RiskLevel.LOW,
+    handler=_list_scheduled_investments,
+)
+
+
+async def _create_scheduled_investment(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    payload = {
+        "symbol": args["symbol"],
+        "amount": str(args["amount"]),
+        "frequency": args.get("frequency", "weekly"),
+    }
+    if args.get("name"):
+        payload["name"] = args["name"]
+    if args.get("day_of_week") is not None:
+        payload["day_of_week"] = args["day_of_week"]
+    if args.get("day_of_month") is not None:
+        payload["day_of_month"] = args["day_of_month"]
+    return await client.create_scheduled_investment(ctx["token"], payload)
+
+
+registry.register(
+    name="create_scheduled_investment",
+    description="Create a recurring investment. Requires confirmation.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "symbol": {**_SCHEMA_STRING, "description": "Ticker, e.g. VOO"},
+            "amount": {**_SCHEMA_NUMBER, "description": "Dollar amount each run"},
+            "frequency": {**_SCHEMA_STRING, "description": "daily, weekly, monthly"},
+            "name": {**_SCHEMA_STRING, "description": "Optional label"},
+            "day_of_week": {**_SCHEMA_INT, "description": "0=Sun .. 6=Sat"},
+            "day_of_month": {**_SCHEMA_INT, "description": "1-28 for monthly"},
+        },
+        "required": ["symbol", "amount"],
+    },
+    category="investment",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_create_scheduled_investment,
+)
+
+
+async def _pause_scheduled_investment(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.pause_scheduled_investment(ctx["token"], args["id"])
+
+
+registry.register(
+    name="pause_scheduled_investment",
+    description="Pause a recurring investment. Requires confirmation.",
+    args_schema={
+        "type": "object",
+        "properties": {"id": {**_SCHEMA_STRING, "description": "Schedule id"}},
+        "required": ["id"],
+    },
+    category="investment",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_pause_scheduled_investment,
+)
+
+
+async def _resume_scheduled_investment(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.resume_scheduled_investment(ctx["token"], args["id"])
+
+
+registry.register(
+    name="resume_scheduled_investment",
+    description="Resume a paused recurring investment. Requires confirmation.",
+    args_schema={
+        "type": "object",
+        "properties": {"id": {**_SCHEMA_STRING, "description": "Schedule id"}},
+        "required": ["id"],
+    },
+    category="investment",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_resume_scheduled_investment,
+)
+
+
+async def _list_bill_beneficiaries(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.list_bill_beneficiaries(
+        ctx["token"], category=args.get("category")
+    )
+    return {"beneficiaries": items, "count": len(items)}
+
+
+registry.register(
+    name="list_bill_beneficiaries",
+    description="List saved bill-payment beneficiaries (airtime, electricity, etc.).",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "category": {**_SCHEMA_STRING, "description": "Optional category filter"}
+        },
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_list_bill_beneficiaries,
+)
+
+
+async def _save_bill_beneficiary(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    payload = {
+        "category": args["category"],
+        "recipient": args["recipient"],
+    }
+    if args.get("name"):
+        payload["name"] = args["name"]
+    return await client.save_bill_beneficiary(ctx["token"], payload)
+
+
+registry.register(
+    name="save_bill_beneficiary",
+    description="Save a bill-payment beneficiary so future payments are one step.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "category": {
+                **_SCHEMA_STRING,
+                "description": "airtime, data, electricity, cable, ...",
+            },
+            "recipient": {
+                **_SCHEMA_STRING,
+                "description": "Phone, meter, or smartcard",
+            },
+            "name": {**_SCHEMA_STRING, "description": "Optional display name"},
+        },
+        "required": ["category", "recipient"],
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_save_bill_beneficiary,
+)
+
+
+async def _list_bill_providers(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.list_bill_providers(
+        ctx["token"], args["category"], network_id=args.get("network_id")
+    )
+    return {"providers": items, "count": len(items)}
+
+
+registry.register(
+    name="list_bill_providers",
+    description=(
+        "List bill-payment providers/plans for a category "
+        "(electricity, cable, data, ...)."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "category": {
+                **_SCHEMA_STRING,
+                "description": "electricity, cable, data, ...",
+            },
+            "network_id": {
+                **_SCHEMA_STRING,
+                "description": "Network ID (01..04) to filter data plans",
+            },
+        },
+        "required": ["category"],
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_list_bill_providers,
+)
+
+
+async def _list_data_plans(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.get_data_plans(ctx["token"], network_id=args.get("network_id"))
+    return {"plans": items, "count": len(items)}
+
+
+registry.register(
+    name="list_data_plans",
+    description="List mobile data plans, optionally for a specific network.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "network_id": {**_SCHEMA_STRING, "description": "Network ID (01..04)"}
+        },
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_list_data_plans,
+)
+
+
+async def _list_cable_packages(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.get_cable_packages(ctx["token"])
+    return {"packages": items, "count": len(items)}
+
+
+registry.register(
+    name="list_cable_packages",
+    description="List cable TV bouquets and packages.",
+    args_schema={"type": "object", "properties": {}},
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_list_cable_packages,
+)
+
+
+async def _detect_network(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.detect_network(ctx["token"], args["phone"])
+
+
+registry.register(
+    name="detect_network",
+    description="Detect a phone number's mobile network (for airtime or data).",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "phone": {**_SCHEMA_STRING, "description": "Phone number to check"}
+        },
+        "required": ["phone"],
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_detect_network,
+)
+
+
+async def _validate_meter(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.validate_meter(ctx["token"], args["meter_no"], args["elect_id"])
+
+
+registry.register(
+    name="validate_meter",
+    description="Validate an electricity meter number and return the account name.",
+    args_schema={
+        "type": "object",
+        "properties": {
+            "meter_no": {**_SCHEMA_STRING, "description": "Meter number"},
+            "elect_id": {**_SCHEMA_STRING, "description": "Electricity disco ID"},
+        },
+        "required": ["meter_no", "elect_id"],
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_validate_meter,
+)
+
+
+async def _get_bill_payment_history(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    items = await client.get_bill_payment_history(ctx["token"])
+    return {"history": items, "count": len(items)}
+
+
+registry.register(
+    name="get_bill_payment_history",
+    description="List the user's recent bill-payment receipts.",
+    args_schema={"type": "object", "properties": {}},
+    category="history",
+    risk_level=RiskLevel.LOW,
+    handler=_get_bill_payment_history,
+)
+
+
+async def _pay_bill(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    client = get_go_client()
+    payload: dict[str, Any] = {
+        "category": args["category"],
+        "recipient": args["recipient"],
+        "amount_ngn": args["amount_ngn"],
+    }
+    for key in ("network_id", "prod_id", "elect_id", "recipient_name"):
+        if args.get(key):
+            payload[key] = args[key]
+    return await client.pay_bill(
+        ctx["token"], payload, idempotency_key=ctx.get("idempotency_key")
+    )
+
+
+registry.register(
+    name="pay_bill",
+    description=(
+        "Pay a bill (airtime, data, electricity, cable) for the user. "
+        "Requires confirmation."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": ["airtime", "data", "electricity", "cable"],
+                "description": "Bill category",
+            },
+            "recipient": {
+                **_SCHEMA_STRING,
+                "description": "Phone, meter, or smartcard number to pay for",
+            },
+            "amount_ngn": {
+                **_SCHEMA_NUMBER,
+                "description": "Face value in NGN",
+            },
+            "network_id": {
+                **_SCHEMA_STRING,
+                "description": (
+                    "Network ID (01..04) for airtime/data; auto-detected if omitted"
+                ),
+            },
+            "prod_id": {
+                **_SCHEMA_STRING,
+                "description": "Plan/provider ID from a bill provider lookup",
+            },
+            "elect_id": {
+                **_SCHEMA_STRING,
+                "description": "Electricity disco ID from a provider lookup",
+            },
+            "recipient_name": {
+                **_SCHEMA_STRING,
+                "description": "Validated meter/account holder name, if known",
+            },
+        },
+        "required": ["category", "recipient", "amount_ngn"],
+    },
+    category="action",
+    risk_level=RiskLevel.HIGH,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
+    handler=_pay_bill,
+)
+
+
+async def _get_cash_flow_forecast(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.get_cash_flow_forecast(ctx["token"])
+
+
+registry.register(
+    name="get_cash_flow_forecast",
+    description=(
+        "Summarize near-term cash flow from live balances, spending, and "
+        "obligations. A dedicated forecast engine is not available yet."
+    ),
+    args_schema={"type": "object", "properties": {}},
+    category="planning",
+    risk_level=RiskLevel.LOW,
+    handler=_get_cash_flow_forecast,
+)
+
+
+async def _get_financial_health(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    client = get_go_client()
+    return await client.get_financial_health(ctx["token"])
+
+
+registry.register(
+    name="get_financial_health",
+    description=(
+        "Summarize financial health from live balances, spending, obligations, "
+        "and positions. A dedicated health-score engine is not available yet."
+    ),
+    args_schema={"type": "object", "properties": {}},
+    category="planning",
+    risk_level=RiskLevel.LOW,
+    handler=_get_financial_health,
 )
 
 

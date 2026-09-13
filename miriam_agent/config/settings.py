@@ -87,6 +87,34 @@ class Settings(BaseSettings):
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
     AUTO_APPROVE_THRESHOLD: float = Field(default=100.0)
 
+    # Proactive analyst (24/7 money watch + private outreach). The Go reacher
+    # worker (RAIL_BACKEND) calls POST /api/v1/proactive/analyze to ask whether
+    # there is something worth telling the user right now; Go owns quiet hours,
+    # the daily cap, and iMessage delivery. These settings tune the analyst.
+    PROACTIVE_ENABLED: bool = Field(default=True)
+    PROACTIVE_MIN_INTERVAL_HOURS: float = Field(default=12.0)
+    PROACTIVE_MAX_TOKENS: int = Field(default=700)
+    PROACTIVE_TEMPERATURE: float = Field(default=0.4)
+
+    # Conversational onboarding: the LLM-led financial interview the Python
+    # brain runs before the general agent. Miriam (the LLM) carries the whole
+    # conversation -- questions, statement request, plan presentation, consent --
+    # while a deterministic plan builder turns her extracted answers into the
+    # diagnosis, steps and standing rules. Go-rendered polls remain as optional
+    # tap suggestions alongside free text. Disabling it routes every message to
+    # the general agent as before.
+    ONBOARDING_ENABLED: bool = Field(default=True)
+    ONBOARDING_MAX_FOLLOWUPS: int = Field(default=3)
+    # LLM tuning for the onboarding conductor (warm answers, not analytic).
+    ONBOARDING_TEMPERATURE: float = Field(default=0.6)
+    ONBOARDING_MAX_TOKENS: int = Field(default=800)
+    # Hard cap on dimensions covered per interview, so the conversation always
+    # reaches the plan no matter how chatty the model gets.
+    ONBOARDING_MAX_QUESTIONS: int = Field(default=12)
+    # How long an interview may sit idle before it resets (sliding on each
+    # turn). Days.
+    ONBOARDING_STATE_TTL_DAYS: int = Field(default=30)
+
     # Observability
     LOG_LEVEL: str = Field(default="INFO")
     OTEL_ENDPOINT: str | None = Field(default=None)
