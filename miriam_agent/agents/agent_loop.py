@@ -26,6 +26,7 @@ from miriam_agent.agents.system_prompt import build_system_prompt
 from miriam_agent.agents.tools import Tool, ToolRegistry
 from miriam_agent.integrations.go_client import GoBackendClient
 from miriam_agent.safety.policy import SafetyPolicy
+from miriam_agent.utils.text import bubble_sets, lift_reaction
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ class AgentRunResult:
     proposed_actions: list[ProposedAction] = field(default_factory=list)
     requires_confirmation: bool = False
     cards: list[dict[str, Any]] = field(default_factory=list)
+    # Chatty-turn affordances the Go executor relays as native gestures: up to
+    # two short wrapper bubbles behind the main reply, and one tapback reaction
+    # on the user's message. Empty when the reply stayed one message.
+    messages: list[str] = field(default_factory=list)
+    reaction: str = ""
 
 
 class Agent:
@@ -67,6 +73,19 @@ class Agent:
         self.safety_policy = safety_policy or SafetyPolicy()
         self.go_client = go_client
         self.config = config or AgentConfig(name="financial_agent")
+
+    def _decorate(self, result: AgentRunResult) -> AgentRunResult:
+        """Project the chatty-turn affordances onto a finished result: split a
+        wall-of-text reply into short bubbles and lift any whitelisted tapback.
+        Confirmation requests stay bare -- a money decision must never be buried
+        under bubbly wrappers."""
+        if result.requires_confirmation:
+            return result
+        main, extras = bubble_sets(result.response)
+        result.response = main
+        result.messages = extras
+        result.reaction = lift_reaction(result.response)
+        return result
 
     # ------------------------------------------------------------------
     # Public entry points
@@ -148,12 +167,14 @@ class Agent:
 
             # No tools wanted -> final answer.
             if not response.tool_calls:
-                return AgentRunResult(
-                    response=response.content,
-                    conversation_id=conv_id,
-                    tool_calls=tool_calls_made,
-                    proposed_actions=proposed,
-                    requires_confirmation=bool(proposed),
+                return self._decorate(
+                    AgentRunResult(
+                        response=response.content,
+                        conversation_id=conv_id,
+                        tool_calls=tool_calls_made,
+                        proposed_actions=proposed,
+                        requires_confirmation=bool(proposed),
+                    )
                 )
 
             # Record the assistant's tool_calls message so the next round is a
@@ -261,17 +282,23 @@ class Agent:
 
         # Tool loop exhausted without a final answer.
         if proposed:
-            return self._confirmation_result(
-                response="I've prepared the actions below for your approval.",
-                conv_id=conv_id,
-                proposed=proposed,
-                tool_calls=tool_calls_made,
-                confirmed=confirmed_executions,
+            return self._decorate(
+                self._confirmation_result(
+                    response="I've prepared the actions below for your approval.",
+                    conv_id=conv_id,
+                    proposed=proposed,
+                    tool_calls=tool_calls_made,
+                    confirmed=confirmed_executions,
+                )
             )
-        return AgentRunResult(
-            response="I've gathered what you need. Ask me to go further and I will.",
-            conversation_id=conv_id,
-            tool_calls=tool_calls_made,
+        return self._decorate(
+            AgentRunResult(
+                response=(
+                    "I've gathered what you need. Ask me to go further " "and I will."
+                ),
+                conversation_id=conv_id,
+                tool_calls=tool_calls_made,
+            )
         )
 
     async def stream_run(

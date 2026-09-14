@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     # How long an interview may sit idle before it resets (sliding on each
     # turn). Days.
     ONBOARDING_STATE_TTL_DAYS: int = Field(default=30)
+    # When set, the plan reveal also shares a rich link to the user's plan page
+    # (kind=plan) alongside the presentation. The Go executor only delivers
+    # shares whose host is allowlisted via MIRIAM_SHARE_ALLOWED_HOSTS; leaving
+    # this empty means no plan share is ever emitted.
+    ONBOARDING_SHARE_BASE_URL: str = Field(default="")
 
     # Observability
     LOG_LEVEL: str = Field(default="INFO")

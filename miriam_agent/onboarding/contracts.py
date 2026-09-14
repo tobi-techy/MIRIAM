@@ -68,6 +68,7 @@ class ConductorOutcome(BaseModel):
     facts: dict[str, str] = Field(default_factory=dict)
     intent: str = "interview"
     adjustment: str = ""
+    reaction: str = ""
 
 
 class PresentPlanOutcome(BaseModel):
@@ -76,6 +77,7 @@ class PresentPlanOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reply: str = Field(min_length=1)
+    reaction: str = ""
 
 
 class MoneyMomentMeta(BaseModel):
@@ -245,6 +247,14 @@ def conductor_tool() -> dict[str, Any]:
                 "type": "string",
                 "description": "What to change when intent is adjust; otherwise empty.",
             },
+            "reaction": {
+                "type": "string",
+                "description": (
+                    "Optional tapback on the user's message. Only the six "
+                    "universal tapbacks are allowed: ❤️ 👍 👎 😂 ‼️ ❓ "
+                    "(or empty for none)."
+                ),
+            },
         },
         ["reply", "intent"],
     )
@@ -261,6 +271,14 @@ def present_plan_tool() -> dict[str, Any]:
                 "description": (
                     "Her presentation of the plan, ending with the one "
                     "consent question."
+                ),
+            },
+            "reaction": {
+                "type": "string",
+                "description": (
+                    "Optional tapback on the user's message. Only the six "
+                    "universal tapbacks are allowed: ❤️ 👍 👎 😂 ‼️ ❓ "
+                    "(or empty for none)."
                 ),
             },
         },

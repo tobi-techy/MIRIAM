@@ -72,6 +72,7 @@ from miriam_agent.onboarding.trace import (
     TraceRecord,
     get_onboarding_trace_store,
 )
+from miriam_agent.utils.text import bubble_sets, clean_text, lift_reaction
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,12 @@ class OnboardingTurn:
     completed: bool = False
     automated: bool = False
     name: str = ""
+    # Chatty-turn affordances relayed to the Go executor as native gestures:
+    # short wrapper bubbles behind the main reply, one tapback reaction on the
+    # user's message, and an optional rich-link share.
+    messages: list[str] = field(default_factory=list)
+    reaction: str = ""
+    share: dict[str, Any] | None = None
 
     def to_payload(self, conversation_id: str) -> dict[str, Any]:
         return {
@@ -345,6 +352,9 @@ class OnboardingTurn:
                 "automated": self.automated,
             },
             "name": self.name or "",
+            "messages": list(self.messages),
+            "reaction": self.reaction,
+            "share": self.share,
         }
 
 
@@ -1031,16 +1041,20 @@ class OnboardingService:
         *,
         name: str = "",
     ) -> OnboardingTurn:
+        reply = clean_text(outcome.reply or "").strip()
+        main, extras = bubble_sets(reply)
         poll = None
         if outcome.suggested:
-            poll = {"title": outcome.reply, "options": list(outcome.suggested)}
+            poll = {"title": main, "options": list(outcome.suggested)}
         return OnboardingTurn(
             took_over=True,
-            response=outcome.reply,
+            response=main,
             poll=poll,
             conversation_id=conversation_id,
             stage=stage,
             name=name,
+            messages=extras,
+            reaction=outcome.reaction or lift_reaction(reply),
         )
 
     async def _apply_adjustment(
@@ -1226,6 +1240,7 @@ class OnboardingService:
         except Exception:
             logger.exception("onboarding plan-present LLM call failed for %s", user_id)
             outcome = None
+        share = self._plan_share(user_id)
         if outcome is not None:
             # Adversarial clamp (spec §30, never invent numbers): the plan
             # presentation is the money-critical surface, so a reply that
@@ -1252,9 +1267,14 @@ class OnboardingService:
                 clamped="R10" in violations,
             )
             if "R10" in violations:
-                return self._plan_turn(user_id, state, conversation_id)
-            return self._turn(outcome.reply, stage=state.stage)
-        return self._plan_turn(user_id, state, conversation_id)
+                return self._plan_turn(user_id, state, conversation_id, share=share)
+            return self._turn(
+                outcome.reply,
+                stage=state.stage,
+                reaction=outcome.reaction,
+                share=share,
+            )
+        return self._plan_turn(user_id, state, conversation_id, share=share)
 
     # -- deterministic fallback (LLM down / garbage) -------------------------
 
@@ -1468,6 +1488,20 @@ class OnboardingService:
 
     # -- reply builders -------------------------------------------------------
 
+    def _plan_share(self, user_id: str) -> dict[str, Any] | None:
+        """A rich link to the user's plan page, when the deployment configures
+        the share base URL. The Go executor only delivers shares whose host is
+        allowlisted via MIRIAM_SHARE_ALLOWED_HOSTS, so a misconfigured base
+        URL degrades to no share instead of leaking a link."""
+        base = (get_settings().ONBOARDING_SHARE_BASE_URL or "").rstrip("/")
+        if not base:
+            return None
+        return {
+            "kind": "plan",
+            "title": "Your plan",
+            "url": f"{base}/{user_id}",
+        }
+
     def _statement_ask(
         self, user_id: str, state: OnboardingState, conversation_id: str
     ) -> OnboardingTurn:
@@ -1484,7 +1518,12 @@ class OnboardingService:
         )
 
     def _plan_turn(
-        self, user_id: str, state: OnboardingState, conversation_id: str
+        self,
+        user_id: str,
+        state: OnboardingState,
+        conversation_id: str,
+        *,
+        share: dict[str, Any] | None = None,
     ) -> OnboardingTurn:
         del user_id
         plan = state.plan or {}
@@ -1498,11 +1537,16 @@ class OnboardingService:
             for i, title in enumerate(steps, 1):
                 text += f"{i}. {title}\n"
         text += "\nShould I set this up so it runs without being asked?"
+        clean = clean_text(text)
+        main, extras = bubble_sets(clean)
         return OnboardingTurn(
             took_over=True,
-            response=text,
+            response=main,
             conversation_id=conversation_id,
             stage=state.stage,
+            messages=extras,
+            reaction=lift_reaction(clean),
+            share=share,
         )
 
     def _consent_poll_turn(
@@ -1517,8 +1561,24 @@ class OnboardingService:
             stage=state.stage,
         )
 
-    def _turn(self, response: str, *, stage: str) -> OnboardingTurn:
-        return OnboardingTurn(took_over=True, response=response, stage=stage)
+    def _turn(
+        self,
+        response: str,
+        *,
+        stage: str,
+        reaction: str = "",
+        share: dict[str, Any] | None = None,
+    ) -> OnboardingTurn:
+        clean = clean_text(response or "").strip()
+        main, extras = bubble_sets(clean)
+        return OnboardingTurn(
+            took_over=True,
+            response=main,
+            stage=stage,
+            messages=extras,
+            reaction=reaction or lift_reaction(clean),
+            share=share,
+        )
 
     def _abandon_turn(self, response: str) -> OnboardingTurn:
         return OnboardingTurn(

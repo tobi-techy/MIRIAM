@@ -1165,6 +1165,39 @@ def test_driver_reply_clamped_with_taps():
     assert out2.reply == long
 
 
+def test_driver_reaction_validated_against_whitelist():
+    from miriam_agent.onboarding import driver
+
+    out = driver._parse_driver_output(
+        json.dumps({"reply": "nice", "reaction": "👍"}), "interview"
+    )
+    assert out.reaction == "👍"
+    out = driver._parse_driver_output(
+        json.dumps({"reply": "nice", "reaction": " 👍 "}), "interview"
+    )
+    assert out.reaction == "👍"
+    # A non-tapback emoji never rides through as a reaction.
+    out = driver._parse_driver_output(
+        json.dumps({"reply": "nice", "reaction": "🎉"}), "interview"
+    )
+    assert out.reaction == ""
+    out = driver._parse_driver_output(json.dumps({"reply": "nice"}), "interview")
+    assert out.reaction == ""
+
+
+def test_present_plan_reaction_validated():
+    from miriam_agent.onboarding import driver
+
+    out = driver._parse_present_text(
+        json.dumps({"reply": "here is your plan", "reaction": "❤️"})
+    )
+    assert out.reaction == "❤️"
+    out = driver._parse_present_text(
+        json.dumps({"reply": "here is your plan", "reaction": "✨"})
+    )
+    assert out.reaction == ""
+
+
 def test_conductor_turn_sends_stage_and_knows():
     from miriam_agent.agents.llm import LLMResponse
     from miriam_agent.onboarding import driver
@@ -1220,6 +1253,115 @@ def test_present_plan_turn_returns_reply():
         )
     )
     assert out is not None and "Financial Beginner" in out.reply
+
+
+def test_turn_carries_reaction_messages_and_share(monkeypatch):
+
+    service, states, _, _ = _service(monkeypatch)
+    share = {"kind": "plan", "title": "Your plan", "url": "https://plans.example/u-1"}
+    turn = service._turn(
+        "Here is your picture: Financial Beginner.",
+        stage="plan_consent",
+        reaction="❤️",
+        share=share,
+    )
+    payload = turn.to_payload("c-1")
+    assert payload["reaction"] == "❤️"
+    assert payload["share"] == share
+    assert payload["messages"] == []
+
+
+def test_turn_enriches_long_reply_into_bubbles(monkeypatch):
+    service, states, _, _ = _service(monkeypatch)
+    s1 = (
+        "First we protect the next month, because that is the hardest stretch "
+        "and the floor keeps everything else above water."
+    )
+    s2 = "Then we smooth your income so a late check stops wrecking the week."
+    s3 = "And if nothing lands, the buffer covers you while we fix the rhythm."
+    reply = " ".join([s1, s2, s3])
+    assert len(reply) >= 140
+    turn = service._turn(reply, stage="plan_consent")
+    assert turn.response == reply.split(". ")[0] + "."
+    assert turn.messages, "a long multi-sentence reply must split into bubbles"
+    assert len(turn.messages) <= 2
+    assert all(b.strip() == b for b in turn.messages)
+
+
+def test_plan_share_requires_configuration(monkeypatch):
+    from miriam_agent.config.settings import Settings
+
+    service, states, _, _ = _service(monkeypatch)
+    # Default deployment: base URL empty -> no share is emitted at all.
+    monkeypatch.setattr(
+        "miriam_agent.onboarding.service.get_settings",
+        lambda: Settings(ONBOARDING_SHARE_BASE_URL=""),
+    )
+    assert service._plan_share("u-1") is None
+
+    monkeypatch.setattr(
+        "miriam_agent.onboarding.service.get_settings",
+        lambda: Settings(ONBOARDING_SHARE_BASE_URL="https://plans.example.com/"),
+    )
+    share = service._plan_share("u-1")
+    assert share == {
+        "kind": "plan",
+        "title": "Your plan",
+        "url": "https://plans.example.com/u-1",
+    }
+
+
+def test_reaction_and_share_flow_into_present_plan_payload(monkeypatch):
+    from miriam_agent.config.settings import Settings
+
+    monkeypatch.setattr(
+        "miriam_agent.onboarding.service.get_settings",
+        lambda: Settings(ONBOARDING_SHARE_BASE_URL="https://plans.example.com"),
+    )
+    responses = [
+        _greet("Great to meet you, Tola! What's on your mind about money?"),
+        _greet(
+            "So the month ends before the money does. Steady or in lumps?",
+            facts={
+                "money_moment": "month ends before the money",
+                "cashflow": "lumpy",
+            },
+        ),
+        _greet(
+            "And if nothing came in next month, how long could you float?",
+            facts={"income": "commissions, late"},
+        ),
+        _greet(
+            "A statement would make this real. Send one over, or just say skip.",
+            intent="request_statement",
+            facts={"runway": "maybe a month at best"},
+        ),
+        _greet("No worries, we go with what you told me.", intent="present_plan"),
+        json.dumps(
+            {
+                "reply": "Here is your picture: Stability Seeker.",
+                "reaction": "❤️",
+            }
+        ),
+    ]
+    service, states, memory, _ = _service(monkeypatch, FakeProvider(responses))
+    user = _user()
+
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    _run(service.handle_turn(user, message="the month ends before"))
+    _run(service.handle_turn(user, message="chunks and late"))
+    _run(service.handle_turn(user, message="maybe a month"))
+    turn = _run(service.handle_turn(user, message="Skip for now"))
+    assert states.data["u-1"].get("stage") == "plan_consent"
+    assert turn.response == "Here is your picture: Stability Seeker."
+    payload = turn.to_payload("c-1")
+    assert payload["reaction"] == "❤️"
+    assert payload["share"] == {
+        "kind": "plan",
+        "title": "Your plan",
+        "url": "https://plans.example.com/u-1",
+    }
 
 
 # ------------------------------------------------------------------

@@ -139,6 +139,9 @@ def _serialize_agent_result(result: Any) -> dict[str, Any]:
             }
             for c in result.cards
         ],
+        "messages": list(result.messages),
+        "reaction": str(result.reaction or ""),
+        "share": None,
     }
 
 

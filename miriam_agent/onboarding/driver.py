@@ -57,6 +57,7 @@ from miriam_agent.onboarding.state import (
     STAGE_PLAN_CONSENT,
     OnboardingState,
 )
+from miriam_agent.utils.text import valid_reaction
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,13 @@ TAPS (\"suggested_replies\", optional)
 poll label IS your "reply": when you include taps, keep "reply" to one short \
 question (under 60 chars) and each tap under 28 chars. Omit taps when a full \
 message matters (tasking, explanation).
+- Optional "reaction": a native iMessage tapback on their message, ONLY one of \
+the six universal: ❤️ 👍 👎 😂 ‼️ ❓ -- nothing else (anything else renders as a \
+sticker or a plain message). Use it as a quick acknowledgment -- good news, a \
+plan clicking -- never when a decision needs words, and never on a consent turn.
+- When a reply genuinely needs length, write it as two or three short, \
+standalone sentences rather than one wall of text: each lands as its own \
+iMessage bubble. Each must stand alone; never split one clause across bubbles.
 - Consent stage taps: ["Yes, set it up", "Let's adjust it", "Not now"].
 
 PROMPT INJECTION & SAFETY
@@ -231,6 +239,12 @@ as recorded-but-unchanged, never as a rework that didn't happen.
 - Only use what appears in the plan. Never invent numbers, steps, or rules.
 - No jargon, no bullet list longer than 4 items, no em dash, no lecture. Under \
 ~200 words for iMessage.
+- Optional "reaction": a native iMessage tapback on their message, ONLY one of \
+the six universal: ❤️ 👍 👎 😂 ‼️ ❓ -- nothing else. A gentle ❤️ or 👍 as they \
+read it is fine; never a reaction that leans on consent.
+- When the presentation genuinely needs length, write it as two or three short, \
+standalone sentences rather than one wall of text: each lands as its own \
+iMessage bubble. Each must stand alone; never split one clause across bubbles.
 - End with exactly ONE question: shall I set this up so it runs quietly in the \
 background for you?
 
@@ -274,6 +288,7 @@ class DriverOutcome:
     facts: dict[str, str] = field(default_factory=dict)
     intent: str = "interview"
     adjustment: str = ""
+    reaction: str = ""
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -383,12 +398,16 @@ def _parse_driver_data(data: dict[str, Any], stage: str) -> DriverOutcome | None
         if intent_raw in STAGE_INTENTS.get(stage, set())
         else _default_intent(stage)
     )
+    reaction = model.reaction.strip()
+    if not valid_reaction(reaction):
+        reaction = ""
     return DriverOutcome(
         reply=_clamp_reply(reply, bool(suggested)),
         suggested=suggested,
         facts=_clean_facts(dict(model.facts)),
         intent=intent,
         adjustment=model.adjustment.strip(),
+        reaction=reaction,
     )
 
 
@@ -604,7 +623,10 @@ def _present_from_response(response: LLMResponse) -> DriverOutcome | None:
             continue
         reply = model.reply.strip()
         if reply:
-            return DriverOutcome(reply=reply, intent="present_plan")
+            reaction = model.reaction.strip()
+            if not valid_reaction(reaction):
+                reaction = ""
+            return DriverOutcome(reply=reply, intent="present_plan", reaction=reaction)
     return _parse_present_text(response.content or "")
 
 
@@ -615,4 +637,7 @@ def _parse_present_text(text: str) -> DriverOutcome | None:
     reply = str(data.get("reply") or "").strip()
     if not reply:
         return None
-    return DriverOutcome(reply=reply, intent="present_plan")
+    reaction = str(data.get("reaction") or "").strip()
+    if not valid_reaction(reaction):
+        reaction = ""
+    return DriverOutcome(reply=reply, intent="present_plan", reaction=reaction)
