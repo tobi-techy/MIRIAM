@@ -134,19 +134,61 @@ SCENARIOS: list[tuple[str, list[dict[str, Any]]]] = [
             },
         ],
     ),
+    # spec v1.1 §53 regression: the tested conversation. These are the exact
+    # user lines that produced the parroting + therapist replies; the desired
+    # replies must lint clean -- they mirror once, then push toward the
+    # concrete instead of the feeling.
+    (
+        "spec v1.1 §53 - mirror then concrete, not feelings",
+        [
+            {
+                "user": "Quite a lot don't want to go broke",
+                "reply": (
+                    "okay. but what does 'going broke' actually look like for " "you?"
+                ),
+                "intent": "interview",
+            },
+        ],
+    ),
+    (
+        "spec v1.1 §53 - one question with concrete categories",
+        [
+            {
+                "user": (
+                    "Not being able to keep money in check, and when I "
+                    "can't, it's as if money just disappears"
+                ),
+                "reply": (
+                    "okay. let's figure out where the control disappears. Is "
+                    "it usually spending too much, unexpected expenses, "
+                    "helping other people, or not really knowing where the "
+                    "money went?"
+                ),
+                "intent": "interview",
+            },
+        ],
+    ),
 ]
 
 
 def run_replay(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Lint a list of recorded turns; one result dict per turn."""
+    """Lint a list of recorded turns; one result dict per turn.
+
+    Turns may carry ``user`` (the user message that preceded this reply) and
+    ``prev_user`` (an explicit override); the last ``user`` rolls forward so a
+    conversation lints in order, feeding the parroting rule (R11)."""
     results: list[dict[str, Any]] = []
+    last_user = ""
     for index, turn in enumerate(turns):
         reply = str(turn.get("reply") or "")
+        user_msg = str(turn.get("user") or "")
+        prev_user = str(turn.get("prev_user") or user_msg or last_user)
         meta = EvalMeta(
             intent=str(turn.get("intent") or "interview"),
             has_taps=bool(turn.get("has_taps")),
             present=bool(turn.get("present")),
             grounded=str(turn.get("grounded") or ""),
+            prev_user=prev_user,
         )
         violations = evaluate_reply(reply, meta)
         results.append(
@@ -157,6 +199,8 @@ def run_replay(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "ok": not violations,
             }
         )
+        if user_msg:
+            last_user = user_msg
     return results
 
 

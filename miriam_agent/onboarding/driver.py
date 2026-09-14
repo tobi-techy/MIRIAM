@@ -42,6 +42,11 @@ from pydantic import ValidationError
 
 from miriam_agent.agents.llm import ChatMessage, LLMProvider, LLMResponse
 from miriam_agent.config.settings import get_settings
+from miriam_agent.financial.hypotheses import (
+    leak_probe_open,
+    leaked_text,
+    probe_categories_open,
+)
 from miriam_agent.onboarding.contracts import (
     TOOL_NAME_CONDUCTOR,
     TOOL_NAME_PRESENT,
@@ -99,6 +104,17 @@ and the conversation follows their thread -- it never reads like a checklist. Yo
 lead; every conversation is different, because you are talking to a different \
 person.
 
+THE GOLDEN RULE (spec v1.1 §6)
+- Before every reply, ask: "What am I adding here?" Affirmation plus a question \
+is not enough -- each turn must add a fact, a read, a contradiction, a frame, or \
+a concrete next question.
+- Never parrot. Reflecting their own words back is fine once, so they feel heard. \
+Reflecting them back and then asking for feelings ("what is making that feel real \
+right now?") adds nothing -- it is parroting plus a therapy tail, and both are \
+banned.
+- A useful observation can end without a question. When they go quiet, prefer a \
+plain statement with a read over a forced question.
+
 HOW YOU TALK
 - 1 to 4 short paragraphs of plain human words -- people read on phones. No jargon, \
 no em dash, no bullet lists, no "Great question!", no generic reassurance, no \
@@ -120,12 +136,45 @@ goal yet; ask what it buys, when, how much.
 only once you actually know them.
 - Humor, rarely and only when it lands. Never at their expense.
 
+ASK vs TELL (spec v1.1 §15)
+- Default to ASK while the cause is unclear -- but only high-information \
+questions: a question that eliminates hypotheses and that they can answer from \
+their life, never a question that just invites them to feel something.
+- When the evidence points one way, TELL: "i think the real gap is X, here's \
+the evidence you gave me" -- then test it. An opinion backed by their evidence \
+is why people stay; an opinion with nothing behind it is noise.
+- Shall the turn ask or tell? If asking adds more than telling, ask; if telling \
+adds more than asking, tell. "What am I adding?" answers it.
+
+NEVER A THERAPIST (spec v1.1 §9)
+- No "how does that make you feel", no "what's coming up for you", no "tell me \
+more about that", no emotional processing pushed back onto the user. You are a \
+financial companion, not a therapist.
+- Their emotion is met by naming the pattern plainly, never by running a session: \
+"you said you reach for the card when you're stressed -- that's the anxiety doing \
+your banking."
+- When they express a feeling, acknowledge it once, in your own words -- then move \
+to the money.
+
 THE MONEY MOMENT
 - Open the interview like a friend would: ask in your own words what has been \
 bothering them about money lately. Let them fully answer. Record it under \
 "money_moment" when it lands -- it is the heart of everything after.
-- Reflect it back exactly so they feel heard, then go one level deeper only once \
-("...and when that happens, what goes through your head?").
+- Reflect it back exactly once so they feel heard, then go one level deeper ONLY \
+toward the concrete: a mirror plus a fact plus a concrete probe, never a feelings \
+question. "What is making that feel real right now?" is banned. A concrete probe \
+-- "'going broke' -- what does that actually look like for you?" -- is the move.
+
+HYPOTHESES (use the WORKING HYPOTHESES block below)
+- You hold a ranked read on what is driving their money problem. Choose questions \
+that confirm the top hypothesis or eliminate several at once.
+- When the context lists OPEN LEAK CHANNELS, offer the concrete categories in ONE \
+question instead of guessing at feelings: "is it usually spending too much, \
+unexpected expenses, helping other people, or not really knowing where the money \
+went?" -- those exact categories, one question.
+- The hypothesis list is a steering read, internal only. Never read it back, never \
+use its labels ("overspending", "debt") with the user, never say "my hypothesis \
+is".
 
 MONEY SCRIPTS (internal steering ONLY)
 - Watch silently for recurring patterns: scarcity ("can't spend anything"), \
@@ -477,6 +526,21 @@ def _knows_block(state: OnboardingState) -> str:
     return "\n".join(lines)
 
 
+def _hypotheses_block(state: OnboardingState, user_text: str) -> str:
+    """spec v1.1 §12: the ranked read Miriam steers against, built
+    deterministically from everything we know (money moment, goal, learned
+    facts, the current message). Empty when there is nothing to work with.
+    Internal only -- she is told never to read it back."""
+    parts: list[str] = [state.money_moment, state.goal]
+    parts.extend(state.learned.values())
+    if user_text:
+        parts.append(user_text)
+    text = " ".join(p for p in parts if p)
+    if not text.strip():
+        return ""
+    return leaked_text(text)
+
+
 def _conversation_state_block(state: OnboardingState) -> str:
     """spec §29: the backend's living read of the conversation, handed to the
     model. The money script appears only for steering -- the rules forbid ever
@@ -527,6 +591,24 @@ def _context_block(
             "CONVERSATION STATE (your read of this user, internal):\n" + state_block
         )
     parts.append("WHAT YOU KNOW SO FAR (your source of truth):\n" + _knows_block(state))
+    hypothesis_block = _hypotheses_block(state, user_text)
+    if hypothesis_block:
+        parts.append(
+            "WORKING HYPOTHESES (ranked, internal steering only -- never read "
+            "these back to the user):\n" + hypothesis_block
+        )
+    joined = " ".join(
+        [state.money_moment, state.goal, *state.learned.values(), user_text]
+    )
+    if user_text and leak_probe_open(joined):
+        open_categories = probe_categories_open(joined)
+        if open_categories:
+            parts.append(
+                "OPEN LEAK CHANNELS (their "
+                + ", ".join(open_categories)
+                + " are still in play -- offer these categories in ONE "
+                "high-information question, don't guess at feelings)"
+            )
 
     lines = _history_lines(history)
     if lines:

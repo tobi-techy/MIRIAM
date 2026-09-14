@@ -148,6 +148,116 @@ def test_r10_spelled_vs_digit_needs_digits_in_ground():
 
 
 # -----------------------------------------------------------------------
+# R11 / R12: the tested conversation regression (spec v1.1 §6, §9, §53)
+# -----------------------------------------------------------------------
+
+
+def test_r11_flags_parroting_without_new_information():
+    # The exact §53 reply that parrots the user then asks for feelings.
+    assert set(
+        _lint(
+            "Quite a lot, and you don't want to go broke. "
+            "What's making that feel real right now?",
+            prev_user="Quite a lot don't want to go broke",
+        )
+    ) == {"R11", "R12"}
+
+
+def test_r11_passes_mirror_plus_concrete_probe():
+    # The spec's desired move: mirror once, then make the symptom concrete.
+    assert (
+        _lint(
+            "okay. but what does 'going broke' actually look like for you?",
+            prev_user="Quite a lot don't want to go broke",
+        )
+        == []
+    )
+
+
+def test_r11_passes_one_question_with_concrete_categories():
+    # spec §5's high-information question: categories, not feelings.
+    assert (
+        _lint(
+            "okay. let's figure out where the control disappears. Is it usually "
+            "spending too much, unexpected expenses, helping other people, or "
+            "not really knowing where the money went?",
+            prev_user=(
+                "Not being able to keep money in check, and when I can't, it's "
+                "as if money just disappears"
+            ),
+        )
+        == []
+    )
+
+
+def test_r11_not_scored_without_previous_user_turn():
+    # No prev_user means nothing can be parroted: the rule stays silent.
+    assert _lint("So you don't want to go broke. What's next?") == []
+    assert (
+        _lint(
+            "So you don't want to go broke. What's next?",
+            prev_user="",
+        )
+        == []
+    )
+
+
+def test_r11_mirror_without_question_is_an_observation():
+    # A useful observation can end without a question (spec §64): mirroring
+    # the words back with no therapy tail is not a parrot.
+    assert (
+        _lint(
+            "So the money is running out before payday.",
+            prev_user="Money keeps running out before payday, every single month.",
+        )
+        == []
+    )
+
+
+def test_r11_echo_with_real_probe_is_not_a_parrot():
+    # The mirror is heavy, but the question adds a genuinely new fact probe.
+    assert (
+        _lint(
+            "The money runs out before payday. When the lump lands, does it "
+            "actually reach the buffer?",
+            prev_user="Money runs out before payday every month.",
+        )
+        == []
+    )
+
+
+def test_r12_flags_therapist_mode_openers():
+    therapist = [
+        "How does that make you feel?",
+        "What's coming up for you when you look at the balance?",
+        "Tell me more about that.",
+        "What's making that feel real right now?",
+        "I understand how difficult that must be. How are you feeling?",
+    ]
+    for reply in therapist:
+        assert "R12" in _lint(reply), reply
+
+
+def test_r12_plain_reactions_are_not_therapist_mode():
+    # Naming the pattern plainly is not a session, and neither is a concrete
+    # probe about the money.
+    assert (
+        _lint(
+            "You reach for the card when you're stressed. That's the "
+            "anxiety doing your banking."
+        )
+        == []
+    )
+    assert (
+        _lint(
+            "You feel anxious about the balance, and the number is "
+            "worse than you think. Let's look together."
+        )
+        == []
+    )
+
+
+# -----------------------------------------------------------------------
 # Prompt guardrails: the hard spec rules must stay encoded in the prompts
 # -----------------------------------------------------------------------
 
