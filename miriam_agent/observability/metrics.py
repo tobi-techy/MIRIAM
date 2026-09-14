@@ -25,6 +25,13 @@ ONBOARDING_EVENTS = Counter(
     "completed_automated, completed_draft, abandoned, restarted)",
     ["user_id", "event"],
 )
+MIRIAM_AHA_DETECTED = Counter(
+    "miriam_aha_detected_total",
+    "Aha moments detected in user replies (spec v1.1 §51): the plan engine "
+    "engineers the moment, this marks when it lands on the user "
+    "(recognition, insight, reframe, relief)",
+    ["kind", "stage"],
+)
 
 
 def setup_metrics() -> None:

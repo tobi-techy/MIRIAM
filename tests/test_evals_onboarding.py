@@ -434,3 +434,79 @@ def test_run_replay_flags_ungrounded_numbers():
         ]
     )
     assert results[0]["violations"] == ["R10"]
+
+
+# -----------------------------------------------------------------------
+# spec v1.1 §52/§53: personality regressions, wired end to end
+# -----------------------------------------------------------------------
+
+
+def test_spec_violations_wire_prev_user_for_parroting(monkeypatch):
+    """The linter's R11/R12 reach the live conductor path: `_spec_violations`
+    feeds the user's own message in as `prev_user`, so a parroting,
+    therapist-style reply is flagged the way the §53 conversation demands."""
+    from miriam_agent.onboarding.driver import DriverOutcome
+    from miriam_agent.onboarding.state import OnboardingState
+
+    service, _ = _service(monkeypatch)
+    state = OnboardingState()
+    state.money_moment = "Quite a lot don't want to go broke"
+    outcome = DriverOutcome(
+        reply=(
+            "Quite a lot, and you don't want to go broke. What's making that "
+            "feel real right now?"
+        ),
+        intent="interview",
+    )
+    violations = service._spec_violations(
+        state,
+        outcome,
+        grounded_extra="Quite a lot don't want to go broke",
+        present=False,
+    )
+    assert "R11" in violations
+    assert "R12" in violations
+
+
+def test_driver_context_block_ships_working_hypotheses(monkeypatch):
+    """The conductor's context carries the ranked read: the money moment plus
+    the current message feed the hypothesis engine, and the topics land in the
+    block she steers against (never read back verbatim)."""
+    from miriam_agent.onboarding import driver
+    from miriam_agent.onboarding.state import STAGE_INTERVIEW, OnboardingState
+
+    del monkeypatch
+    state = OnboardingState()
+    state.stage = STAGE_INTERVIEW
+    state.money_moment = "the month keeps running out before payday"
+    block = driver._context_block(
+        state=state,
+        user_text="I send money home to my mum every month",
+        is_poll_vote=False,
+        event="",
+        moving_on_hint="",
+        history=[],
+    )
+    assert "WORKING HYPOTHESES" in block
+    assert "broke_before_payday" in block
+    assert "family_obligations" in block
+
+
+def test_run_replay_threads_user_turn_into_prev_user():
+    from miriam_agent.onboarding import evals
+
+    # The user turn that precedes a reply is the reply's own context: parroting
+    # it must be caught even when no explicit "prev_user" is set.
+    results = evals.run_replay(
+        [
+            {
+                "user": "Quite a lot don't want to go broke",
+                "reply": (
+                    "Quite a lot, and you don't want to go broke. What's "
+                    "making that feel real right now?"
+                ),
+            }
+        ]
+    )
+    assert "R11" in results[0]["violations"]
+    assert "R12" in results[0]["violations"]

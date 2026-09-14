@@ -72,6 +72,7 @@ from miriam_agent.onboarding.trace import (
     TraceRecord,
     get_onboarding_trace_store,
 )
+from miriam_agent.utils.aha import detect_aha
 from miriam_agent.utils.text import bubble_sets, clean_text, lift_reaction
 
 logger = logging.getLogger(__name__)
@@ -413,6 +414,10 @@ class OnboardingService:
         doc_summary = self._doc_summary(document)
 
         state = await self._state_store.get_state(user.id)
+        if state is not None and text:
+            # spec v1.1 §50-51: an "aha" surfacing in their reply is the whole
+            # point of the plan reveal -- mark it, remember it, never block on it.
+            await self._check_for_aha(user.id, state.stage, text)
         if state is not None and state.complete:
             # An explicit redo/restart intent re-opens the interview from scratch
             # (completion is not a locked door; giving up never is either).
@@ -1131,6 +1136,7 @@ class OnboardingService:
                 has_taps=bool(outcome.suggested),
                 present=present,
                 grounded=ground,
+                prev_user=grounded_extra,
             ),
         )
 
@@ -1599,6 +1605,30 @@ class OnboardingService:
             ONBOARDING_EVENTS.labels(user_id=user_id, event=event).inc()
         except Exception:
             logger.debug("onboarding metric emit failed (non-blocking)")
+
+    async def _check_for_aha(self, user_id: str, stage: str, text: str) -> None:
+        """spec v1.1 §50 metric 6 / §51: detect an aha landing in the user's
+        reply, count it, and file the bright-spot memory. Detection is
+        deterministic (``utils.aha``) so analytics never depends on the LLM
+        volunteering anything. Telemetry and memory are never allowed to break
+        the conversation."""
+        signal = detect_aha(text)
+        if signal is None:
+            return
+        try:
+            from miriam_agent.observability.metrics import MIRIAM_AHA_DETECTED
+
+            MIRIAM_AHA_DETECTED.labels(kind=signal.kind, stage=stage).inc()
+        except Exception:
+            logger.debug("aha metric emit failed (non-blocking)")
+        await self._remember(
+            user_id,
+            "aha_moment",
+            "pattern",
+            f"aha ({signal.kind}): {signal.phrase}",
+            is_a_vote=False,
+            extra={"kind": signal.kind, "text": signal.text[:200]},
+        )
 
     async def _remember(
         self,
