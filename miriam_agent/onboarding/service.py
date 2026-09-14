@@ -45,7 +45,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from miriam_agent.agents.llm import LLMProvider, get_llm_provider
 from miriam_agent.config.settings import get_settings
@@ -82,6 +82,67 @@ _ACTION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# Mid-flow money detection.  The first-message gate (_ACTION_INTENT) is
+# deliberately broad -- there is no flow to protect.  Later, the interview,
+# statement and consent answers must never be hijacked, so a request only
+# counts as a money move when it is a concrete, now-directed action: an
+# execution verb followed (in the near window) by an amount or a concrete
+# money beneficiary (a person, a bill, an account, an instrument) -- or a
+# balance read.  "send it" (a statement answer) and "pay attention to X"
+# never trip it.
+_MONEY_EXECUTE_VERB = re.compile(
+    r"\b(send|transfer|pay|withdraw|invest|buy|sell|swap|exchange|deposit|"
+    r"put|move)\b",
+    re.IGNORECASE,
+)
+_MONEY_BENEFICIARY = re.compile(
+    r"\b(mom|mum|mother|dad|father|parent|family|brother|sister|friend|"
+    r"him|her|them|landlord|shop|car|house|rent|bill|bills|account|card|"
+    r"bank|debt|btc|bitcoin|eth|ethereum|usdc|sol|etf|stock|stocks|"
+    r"fund|funds|tuition|school)\b",
+    re.IGNORECASE,
+)
+# "pay off / pay down X" is a debt-reduction goal, not a do-it-now transfer.
+_MONEY_DEBT_REFRAME = re.compile(r"\bpay\s+(off|down)\b", re.IGNORECASE)
+_MONEY_BALANCE_READ = re.compile(r"\bbalance\b", re.IGNORECASE)
+# Habitual/scheduled/future phrasing ("I pay the rent every month", "I'll buy
+# etf tomorrow") is the user describing their life, not instructing a transfer
+# right now -- so a beneficiary match in that framing never hijacks the chat.
+_HABIT_OR_FUTURE = re.compile(
+    r"\b(every\s+\w+|each\s+\w+|monthly|weekly|biweekly|yearly|always|usually|"
+    r"normally|sometimes|tomorrow|next\s+\w+|on\s+the\s+(first|1st|"
+    r"[0-9]+(?:st|nd|rd|th)))\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_money_action(text: str) -> bool:
+    """True when the user is asking to move money *now* (or read a balance) --
+    the one thing the onboarding flow must never swallow, so it hands off to
+    the general agent with its own safety net instead of folding the request
+    into the plan chat.
+
+    Polar without being reckless: a bare "pay" or "invest" (a goal or a
+    thanks) is not a move; "send 500 to mom" and "what's my balance" are.
+    Amounts asked for live ("send 500") always count; a beneficiary match only
+    counts when the request is not habitual/scheduled/future phrasing.
+    """
+    t = _lower(text)
+    if _MONEY_DEBT_REFRAME.search(t):
+        return False
+    if _MONEY_BALANCE_READ.search(t):
+        return True
+    m = _MONEY_EXECUTE_VERB.search(t)
+    if not m:
+        return False
+    tail = t[m.end() : m.end() + 24]
+    if any(ch.isdigit() for ch in tail):
+        return True
+    if _HABIT_OR_FUTURE.search(tail) or _HABIT_OR_FUTURE.search(t):
+        return False
+    return _MONEY_BENEFICIARY.search(tail) is not None
+
+
 # Deterministic fallback vocabulary when the LLM is unavailable.
 _ABANDON = {
     "skip",
@@ -115,11 +176,12 @@ _YES_PHRASES = {
 _NO_PHRASES = {"no", "nope", "nah", "not now", "later", "skip it", "no thanks"}
 _ADJUST_HINTS = ("adjust", "change", "tweak", "edit", "rework", "instead")
 
-# Phrases that restart an already-finished/abandoned interview.
+# Phrases that restart an already-finished/abandoned interview. Deliberately
+# narrow: post-completion casual chit-chat ("let's go", "try again") must never
+# wipe a finished interview, so only unambiguous redo/revision phrasings count.
 _REENTER = re.compile(
-    r"\b(redo|restart|start over|start again|from scratch|try again|"
-    r"revisit\s+(my\s+)?plan|rework\s+(my\s+)?plan|change\s+(my\s+)?plan|"
-    r"let's\s+(go|do it|do this|start|restart|try again))\b",
+    r"\b(redo|restart|start\s+over|start\s+again|from\s+scratch|"
+    r"revisit\s+(my\s+)?plan|rework\s+(my\s+)?plan|change\s+(my\s+)?plan)\b",
     re.IGNORECASE,
 )
 
@@ -392,6 +454,7 @@ class OnboardingService:
                         doc_summary,
                         goal=state.goal,
                         money_moment=state.money_moment,
+                        adjustments=state.adjustments,
                     )
                 )
                 await self._state_store.save_state(user.id, state)
@@ -439,6 +502,13 @@ class OnboardingService:
         ):
             self._emit(user.id, "interview_finished")
             return await self._present_plan(user.id, state, conversation_id)
+
+        # A money move (or balance read) is never absorbed into the plan chat,
+        # whatever state the interview is in: hand it to the agent un-taken-over
+        # so its own safety net decides. Poll votes stay in the flow -- a tap on
+        # "Yes, send it now" is a statement answer, not a transfer.
+        if not is_poll_vote and _wants_money_action(text):
+            return OnboardingTurn(conversation_id=conversation_id)
 
         if not text:
             return OnboardingTurn(conversation_id=conversation_id)
@@ -560,6 +630,9 @@ class OnboardingService:
             state.conversation_state = ConversationState.model_validate(cs).model_dump()
         except ValidationError as exc:
             logger.warning("conversation_state failed contract validation: %s", exc)
+            # Fail sanitized: persist a fresh typed seed instead of the raw
+            # (possibly corrupt) read.
+            state.conversation_state = ConversationState().model_dump()
 
     # -- greeting (name first, before any question) ---------------------------
 
@@ -611,17 +684,38 @@ class OnboardingService:
     @classmethod
     def _extract_name(cls, text: str) -> str:
         """Pull a first name out of a greeting reply. Defensive: names are prose,
-        and a miss must never block the interview."""
+        and a miss must never block the interview. "I'm Tobi, nice to meet you"
+        and "It's Tobi!" both resolve to "Tobi"; trailing courtesy words and
+        punctuation can never leak into the stored name."""
         t = cls._NAME_PREFIX.sub("", (text or "").strip())
         if not t or not t[0].isalpha():
             return ""
-        words = [w for w in t.split() if any(ch.isalpha() for ch in w)]
+        head = re.split(r"[,!?.;]", t, maxsplit=1)[0].strip()
+        words = [w for w in head.split() if any(ch.isalpha() for ch in w)]
         if not words:
             return ""
-        words = [w.strip(" ,.'\"`") for w in words]
-        if len(words) > 2:
-            words = words[:2]
-        name = " ".join(words)
+        words = [w.strip(" '\"`") for w in words]
+        stopped = {
+            "nice",
+            "pleased",
+            "good",
+            "great",
+            "hello",
+            "hi",
+            "hey",
+            "greetings",
+            "to",
+            "meet",
+            "know",
+            "you",
+            "meeting",
+            "thanks",
+            "thank",
+        }
+        while words and words[-1].casefold() in stopped:
+            words.pop()
+        words = words[:2]
+        name = " ".join(words).strip(" ,.'\"`")
         if len(name) < 2 or len(name) > 40:
             return ""
         return name.title()
@@ -714,13 +808,14 @@ class OnboardingService:
                 state.goal = state.learned.pop(key)
 
     @staticmethod
-    def _meta_float(value: str) -> Any:
-        """The money-moment confidence is the one numeric structured value;
-        anything unparseable is kept as a capped string."""
+    def _meta_float(value: str) -> float | None:
+        """The money-moment confidence is the one numeric structured value.
+        Anything unparseable is not a confidence, so it is dropped rather than
+        stored as a junk string (which would fail the typed contract)."""
         try:
             return float(value[:_META_VALUE_MAX])
         except (TypeError, ValueError):
-            return value[:_META_VALUE_MAX]
+            return None
 
     @staticmethod
     def _meta_string(value: str) -> str:
@@ -734,9 +829,11 @@ class OnboardingService:
         for key in list(state.learned):
             k = key.casefold()
             if k == "money_moment_confidence":
-                state.money_moment_meta["confidence"] = self._meta_float(
-                    state.learned.pop(key)
-                )
+                # Unparseable confidence (e.g. the LLM emitting "high"): the
+                # key is consumed but nothing junk is stored.
+                parsed = self._meta_float(state.learned.pop(key))
+                if parsed is not None:
+                    state.money_moment_meta["confidence"] = parsed
             elif k in _MONEY_MOMENT_META_KEYS:
                 state.money_moment_meta[_MONEY_MOMENT_META_KEYS[k]] = self._meta_string(
                     state.learned.pop(key)
@@ -758,21 +855,42 @@ class OnboardingService:
         self._validate_meta(state)
 
     @staticmethod
-    def _validate_meta(state: OnboardingState) -> None:
-        """Typed at the write boundary: the structured reads persist as the
-        validated meta dumps, defaults dropped so empty reads stay {}."""
+    def _sanitized_meta(raw: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+        """Validate a meta dict field-by-field so one corrupt value (a string
+        where the contract wants a float, an out-of-range emotion) sanitizes
+        itself instead of either (a) failing whole-model validation and keeping
+        the raw bad dict in Redis, or (b) nuking the valid fields beside it."""
+        cleaned: dict[str, Any] = {}
+        for name in model.model_fields:
+            if name not in raw:
+                continue
+            value = raw[name]
+            if value is None or value == "":
+                continue
+            try:
+                model.model_validate({name: value})
+            except ValidationError:
+                logger.warning(
+                    "meta field '%s' failed contract validation; dropping it",
+                    name,
+                )
+                continue
+            cleaned[name] = value
         try:
-            state.money_moment_meta = MoneyMomentMeta.model_validate(
-                state.money_moment_meta
-            ).model_dump(exclude_none=True, exclude_defaults=True)
-        except ValidationError as exc:
-            logger.warning("money_moment_meta failed contract validation: %s", exc)
-        try:
-            state.goal_meta = GoalMeta.model_validate(state.goal_meta).model_dump(
+            return model.model_validate(cleaned).model_dump(
                 exclude_none=True, exclude_defaults=True
             )
-        except ValidationError as exc:
-            logger.warning("goal_meta failed contract validation: %s", exc)
+        except ValidationError:
+            return {}
+
+    @classmethod
+    def _validate_meta(cls, state: OnboardingState) -> None:
+        """Typed at the write boundary: the structured reads persist as the
+        validated meta dumps, defaults dropped so empty reads stay {}."""
+        state.money_moment_meta = cls._sanitized_meta(
+            state.money_moment_meta, MoneyMomentMeta
+        )
+        state.goal_meta = cls._sanitized_meta(state.goal_meta, GoalMeta)
 
     async def _apply_outcome(
         self,
@@ -1069,10 +1187,12 @@ class OnboardingService:
                 state.document_summary,
                 goal=state.goal,
                 money_moment=state.money_moment,
+                adjustments=state.adjustments,
             )
         )
         state.plan = plan
         state.stage = STAGE_PLAN_CONSENT
+        fresh_present = not state.plan_presented
         state.plan_presented = True
         self._update_conversation_state(state)
         await self._remember(
@@ -1089,8 +1209,10 @@ class OnboardingService:
         await self._state_store.save_state(user_id, state)
         self._emit(user_id, "plan_presented")
         # spec §27: success is a real insight, not a completed form. The plan
-        # reveal (with its deterministic financial_insight) is that "aha".
-        self._emit(user_id, "aha_generated")
+        # reveal (with its deterministic financial_insight) is that "aha" --
+        # and it fires once, on the first reveal, not on every re-work.
+        if fresh_present:
+            self._emit(user_id, "aha_generated")
 
         history = await self._history(conversation_id)
         try:

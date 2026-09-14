@@ -121,7 +121,13 @@ class OnboardingState:
         self.goal_meta: dict[str, Any] = dict(data.get("goal_meta") or {})
         # free-form facts the agent extracted from the conversation. key is the
         # agent's own label; value is a short concrete fact in her words.
-        self.learned: dict[str, str] = dict(data.get("learned", {}))
+        # Coerced at the read boundary: a corrupt/non-str persisted value must
+        # never blow up the turn (fail-open, never 500).
+        self.learned: dict[str, str] = {
+            k: (v if isinstance(v, str) else str(v))
+            for k, v in dict(data.get("learned", {})).items()
+            if v is not None
+        }
         # statement scan summary (from Go's sync scan) or None.
         self.document_summary: str | None = data.get("document_summary")
         self.plan: dict[str, Any] | None = data.get("plan")

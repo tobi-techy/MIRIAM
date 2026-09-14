@@ -222,3 +222,29 @@ def test_tool_schemas_expose_the_emit_names():
     assert conductor_tool()["function"]["name"] == TOOL_NAME_CONDUCTOR
     assert present_plan_tool()["function"]["name"] == TOOL_NAME_PRESENT
     assert "reply" in conductor_tool()["function"]["parameters"]["required"]
+
+
+# -----------------------------------------------------------------------
+# Review fix: MED-3 percent-aware number grounding
+# -----------------------------------------------------------------------
+
+
+def test_percent_grounds_plan_confidence():
+    # "60%" and a plan confidence of 0.6 are the same figure -- a presenter
+    # may say "sixty percent" beside the deterministic plan without being
+    # flagged as inventing a number.
+    grounded = '{"confidence": 0.6, "reference": "0.6"}'
+    assert _lint("I'm 60% sure this is the root", present=True, grounded=grounded) == []
+    assert _lint("Sixty percent of the buffer", present=True, grounded=grounded) == []
+
+
+def test_percent_wrong_value_still_flagged():
+    grounded = '{"confidence": 0.6, "reference": "0.6"}'
+    assert "R10" in _lint("I'm 70% sure", present=True, grounded=grounded)
+
+
+def test_percent_does_not_clash_with_plain_integer():
+    # A separator-free "60" is ambiguous (sixty dollars, sixty percent?), so it
+    # never matches a 0.6 ground: only an explicit % or 0.6 form does.
+    assert "R10" in _lint("60 of the buffer", present=True, grounded="0.6")
+    assert _lint("60% of the buffer", present=True, grounded="0.6") == []

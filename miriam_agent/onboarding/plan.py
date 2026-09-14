@@ -62,6 +62,32 @@ _SELF_DRIVEN = re.compile(
     re.IGNORECASE,
 )
 
+# Deterministic plan amendments (superset of what an adjustment note may ask).
+# A removal aimed at a specific move drops that move (and its standing rule)
+# from the re-presented plan; a note that matches nothing leaves the plan
+# intact but is recorded -- so "adjust" always does something honest.
+# Removals are conservative: a strong verb removes outright, a soft marker
+# ("no weekly check-in") removes too, but a retention hedge ("keep the check-in,
+# just not every week") always wins -- wrongly keeping a move is safer than
+# wrongly pruning a money move.
+_STRONG_REMOVE = re.compile(
+    r"\b(remove|removing|drop|skip|cut|cancel|delete|ditch|without|axe|"
+    r"kill|can the|x out)\b",
+    re.IGNORECASE,
+)
+_WEAK_REMOVE = re.compile(
+    r"\b(no\s+|not\s+|don'?t\s+want|don'?t\s+like|don'?t\s+need|"
+    r"instead\s+of|minus|than\s+(?:nothing|no))\b",
+    re.IGNORECASE,
+)
+_RETENTION_VETO = re.compile(
+    r"\b(keep|keeps|keeping|restore|undo|still|love|add)\b",
+    re.IGNORECASE,
+)
+# Moves that are foundational (base capability / the user's own goal) and can
+# never be removed by a text note -- removing them would be a bad-money move.
+_IMMUTABLE_STEPS = frozenset({"buffer", "goal"})
+
 # spec §21: one structured insight per plan. state -> (category, title,
 # summary fragment, recommended-action type). The personality layer speaks it;
 # the backend keeps the structured understanding.
@@ -190,18 +216,74 @@ def overlays(
     return out
 
 
+def _apply_adjustments(
+    steps: list[dict[str, str]],
+    standing_rules: list[dict[str, str]],
+    adjustments: list[str],
+) -> None:
+    """Fold adjustment notes into the plan deterministically.
+
+    A note that explicitly rejects a move ("no weekly check-in", "drop the debt
+    step") removes that move and the matching standing rule -- but "keep the
+    check-in, just not every week" (a retention hedge) never prunes it.  Moves
+    in ``_IMMUTABLE_STEPS`` can never be removed.  Any other note leaves the
+    plan intact but is still recorded on the plan so the re-presentation
+    reflects it honestly instead of promising a rework that changed nothing.
+    """
+    if not adjustments:
+        return
+
+    for note in adjustments:
+        lower = note.lower()
+        # The user affirming or hedging the move ("keep the check-in, just not
+        # every week", "keep it light, not those rules") is a keep, never a
+        # removal -- a wrong removal of a plan move is more harmful than a
+        # wrongly kept one.
+        if _RETENTION_VETO.search(lower):
+            continue
+        refuse = _STRONG_REMOVE.search(lower) or _WEAK_REMOVE.search(lower)
+        if not refuse:
+            continue
+        for step in list(steps):
+            if step["id"] in _IMMUTABLE_STEPS:
+                continue
+            needle = _MOVE_NEEDLE.get(step["id"], "")
+            target_seen = (
+                needle and re.search(needle, lower) or step["title"].lower() in lower
+            )
+            if not target_seen:
+                continue
+            steps.remove(step)
+            standing_rules[:] = [
+                r for r in standing_rules if r.get("kind") != step["id"]
+            ]
+
+
+_MOVE_NEEDLE = {
+    "income_rhythm": r"income",
+    "obligations": r"famil",
+    "debt": r"debt|borrow",
+    "spending_guard": r"spend",
+    "checkin": r"check[- ]?in|checkin",
+}
+
+
 def build_plan(
     facts: dict[str, str],
     document_summary: str | None = None,
     *,
     goal: str = "",
     money_moment: str = "",
+    adjustments: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the full plan dict: diagnosis, steps, standing rules, copy.
 
     Pure and deterministic so the service can persist it verbatim and tests can
-    assert exact rule sets.
+    assert exact rule sets.  ``adjustments`` (adjustment notes looped back in
+    after an "adjust" turn) are folded into the steps/standing rules when they
+    name and reject a move; otherwise they are recorded on the plan verbatim.
     """
+    adjustments = list(adjustments or [])
     txt = _text(facts, goal, money_moment)
     goal_named = _goal_text(facts, goal)
     state_name = diagnostic_state(facts, goal=goal, money_moment=money_moment)
@@ -356,7 +438,7 @@ def build_plan(
                     "cadence": "monthly",
                 }
             )
-        if _debt_heavy(txt):
+        if _debt_heavy(txt) or _leans_on_credit(txt):
             standing_rules.append(
                 {
                     "kind": "debt",
@@ -391,6 +473,8 @@ def build_plan(
         if len(evidence) < 2:
             evidence.append(value)
 
+    _apply_adjustments(steps, standing_rules, adjustments)
+
     summary = _summary_text(state_name, overlays_list, document_summary, goal_named)
     insight = _insight(state_name, overlays_list, evidence, document_summary)
 
@@ -405,6 +489,7 @@ def build_plan(
         "statement_summary": document_summary,
         "evidence": evidence,
         "summary": summary,
+        "adjustments": adjustments,
     }
 
 
@@ -468,5 +553,7 @@ def _summary_text(
     if overlays_list:
         text += ". The plan is ordered so the urgent parts come first"
     if goal:
+        text += "."
+    if not text.endswith("."):
         text += "."
     return text

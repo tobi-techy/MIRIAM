@@ -186,6 +186,7 @@ class Plan(BaseModel):
     statement_summary: str | None = None
     evidence: list[str] = Field(default_factory=list)
     summary: str = ""
+    adjustments: list[str] = Field(default_factory=list)
 
 
 def _function_schema(

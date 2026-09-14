@@ -228,6 +228,30 @@ def test_state_store_round_trip_and_isolation():
     assert _run(store.get_state("u-1")) is None
 
 
+def test_state_coerces_corrupt_non_string_learned_values():
+    """A corrupt persisted fact must load as text, never crash the turn
+    (fail-open at the read boundary)."""
+    from miriam_agent.onboarding.state import OnboardingState
+
+    s = OnboardingState({"learned": {"user_sentiment": 7, "cashflow": None}})
+    assert s.learned["user_sentiment"] == "7"
+    assert "cashflow" not in s.learned
+    assert isinstance(s.learned["user_sentiment"], str)
+
+
+def test_corrupt_learned_value_never_crashes_a_turn(monkeypatch):
+    from miriam_agent.onboarding.state import OnboardingState
+
+    user = _user()
+    service, states, _, _ = _service(monkeypatch)
+    raw = OnboardingState().to_dict()
+    raw["stage"] = "interview"
+    raw["learned"] = {"user_sentiment": 7, "goal": "Japan trip"}
+    states.data["u-1"] = raw
+    turn = _run(service.handle_turn(user, message="hello"))
+    assert turn.took_over is True
+
+
 def test_state_store_stamps_updated_at_and_expires_local_fallback():
     from miriam_agent.onboarding.state import OnboardingState, OnboardingStateStore
 
@@ -805,6 +829,24 @@ def test_redo_restarts_finished_interview(monkeypatch):
     assert states.data["u-1"].get("stage") == "interview"
 
 
+def test_finished_interview_survives_casual_chat(monkeypatch):
+    from miriam_agent.onboarding.state import STAGE_COMPLETE, OnboardingState
+
+    user = _user()
+    service, states, _, _ = _service(monkeypatch)
+    raw = OnboardingState().to_dict()
+    raw["stage"] = STAGE_COMPLETE
+    raw["name"] = "Tobi"
+    raw["goal"] = "Japan trip in 2027"
+    states.data["u-1"] = raw
+
+    for text in ("let's do it", "let's go", "try again", "ok go", "sounds fun"):
+        turn = _run(service.handle_turn(user, message=text))
+        assert turn.took_over is False, text
+        assert states.data["u-1"]["stage"] == STAGE_COMPLETE, text
+        assert states.data["u-1"]["goal"] == "Japan trip in 2027", text
+
+
 def test_structured_meta_lifted_from_facts(monkeypatch):
     """spec §6/§7/§22/§29: the agent's reserved meta keys are lifted off the
     free-form facts onto structured state (money-moment read, goal read,
@@ -1178,3 +1220,268 @@ def test_present_plan_turn_returns_reply():
         )
     )
     assert out is not None and "Financial Beginner" in out.reply
+
+
+# ------------------------------------------------------------------
+# Review fixes: HIGH-1 adjustments rework the plan, HIGH-2 mid-flow
+# money actions bypass, MED-1 name prose, MED-2 meta sanitizing
+# ------------------------------------------------------------------
+
+
+def test_plan_adjustment_removal_reworks_steps():
+    from miriam_agent.onboarding.plan import build_plan
+
+    facts = {
+        "income": "all over the place, commissions come late",
+        "involvement": "set it up for me",
+    }
+    plan = build_plan(facts, adjustments=["drop the weekly check-in"])
+    ids = {s["id"] for s in plan["steps"]}
+    assert "checkin" not in ids
+    assert "buffer" in ids  # the base capability survives
+    assert {"buffer", "income_rhythm"} <= {r["kind"] for r in plan["standing_rules"]}
+    assert plan["adjustments"] == ["drop the weekly check-in"]
+
+    # A rejected move prunes both its step and its standing rule.
+    plan = build_plan(
+        {
+            "income": "steady, six months saved",
+            "debt": "credit card balances are high",
+            "involvement": "set it up for me",
+        },
+        adjustments=["cut the debt step"],
+    )
+    assert "debt" not in {s["id"] for s in plan["steps"]}
+    assert "debt" not in {r["kind"] for r in plan["standing_rules"]}
+
+
+def test_plan_adjustment_cannot_remove_foundation_or_goal():
+    from miriam_agent.onboarding.plan import build_plan
+
+    facts = {
+        "income": "steady, six months of runway saved",
+        "debt": "card debt piling up",
+        "involvement": "set it up for me",
+    }
+    plan = build_plan(
+        facts,
+        goal="invest and build wealth",
+        adjustments=["no buffer", "drop the goal", "cut the debt step"],
+    )
+    ids = {s["id"] for s in plan["steps"]}
+    assert "buffer" in ids and "goal" in ids  # foundations can't be removed
+    assert "debt" not in ids  # a removable move still honors the note
+
+
+def test_plan_adjustment_matching_nothing_records_note_but_keeps_plan():
+    from miriam_agent.onboarding.plan import build_plan
+
+    plan = build_plan({"involvement": "keep it light"}, adjustments=["bigger buffer"])
+    assert any(s["id"] == "checkin" for s in plan["steps"])
+    assert plan["adjustments"] == ["bigger buffer"]
+
+
+def test_plan_adjustment_keep_note_never_removes_a_move():
+    from miriam_agent.onboarding.plan import build_plan
+
+    # "Keep the check-in" names the move but is an affirmation, not a removal --
+    # and a later reversal must not be able to prune it either.
+    plan = build_plan(
+        {"involvement": "keep it light"}, adjustments=["keep the weekly check-in"]
+    )
+    assert any(s["id"] == "checkin" for s in plan["steps"])
+
+
+def test_plan_adjustment_hedge_never_removes_a_move():
+    from miriam_agent.onboarding.plan import build_plan
+
+    # "keep the check-in, just not every week" refines the cadence; it must not
+    # prune the whole move (a wrong removal is costlier than a kept one).
+    plan = build_plan(
+        {"involvement": "keep it light"},
+        adjustments=["keep the check-in, just not every week"],
+    )
+    assert any(s["id"] == "checkin" for s in plan["steps"])
+    # Retention hedges protect equally explicit removals in the same note.
+    plan2 = build_plan(
+        {"involvement": "keep it light"},
+        adjustments=["no rush on the check-in, keep it"],
+    )
+    assert any(s["id"] == "checkin" for s in plan2["steps"])
+
+
+def test_plan_adjustment_matches_word_variants():
+    from miriam_agent.onboarding.plan import build_plan
+
+    # "checkin" without a hyphen, "check in" with a space, and "debt" all name
+    # the moves they reject.
+    for note in (
+        "drop the monthly checkin",
+        "drop the check in",
+        "remove the check-in",
+    ):
+        plan = build_plan({"involvement": "keep it light"}, adjustments=[note])
+        assert not any(s["id"] == "checkin" for s in plan["steps"]), note
+    plan = build_plan(
+        {"debt": "some credit card debt", "involvement": "set it up for me"},
+        adjustments=["cut the debt step"],
+    )
+    assert not any(s["id"] == "debt" for s in plan["steps"])
+
+
+def test_plan_debt_rule_matches_set_up_by_credit_reliance():
+    from miriam_agent.onboarding.plan import build_plan
+
+    # A hands-on user who leans on credit gets the debt step AND the matching
+    # standing rule (both keyed off the same signal).
+    plan = build_plan(
+        {
+            "income": "all over the place",
+            "cashflow": "cover gaps with an advance",
+            "involvement": "set it up for me",
+        }
+    )
+    assert any(s["id"] == "debt" for s in plan["steps"])
+    assert any(r["kind"] == "debt" for r in plan["standing_rules"])
+
+
+def test_adjustment_removal_actually_changes_presented_plan(monkeypatch):
+    user = _user()
+    provider = FakeProvider(
+        [
+            _greet("here's your picture", intent="present_plan"),
+            _plan_present("Here is your plan."),
+            _greet("Sure.", intent="adjust", adjustment="drop the weekly check-in"),
+            _plan_present("Here is the reworked plan."),
+        ]
+    )
+    service, states, _, _ = _service(monkeypatch, provider)
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="Tola"))
+    turn = _run(service.handle_turn(user, message="make the plan lighter"))
+    reworked = states.data["u-1"]["plan"]
+    assert {s["id"] for s in reworked["steps"]}.isdisjoint({"checkin"})
+    assert states.data["u-1"]["adjustments"] == ["drop the weekly check-in"]
+    assert turn.response == "Here is the reworked plan."
+
+
+def test_wants_money_action_is_polar():
+    from miriam_agent.onboarding.service import _wants_money_action
+
+    actions = {
+        "send 500 to mom",
+        "transfer 200 to my account",
+        "withdraw 100 now",
+        "buy 0.1 btc",
+        "invest 500 in an ETF",
+        "deposit 50 into savings",
+        "put 300 in the emergency fund",
+        "move 200 to rent",
+        "what's my balance?",
+    }
+    replies = {
+        "send it",
+        "send it now",
+        "yes",
+        "skip for now",
+        "later",
+        "I'll pay off my debt next month",
+        "pay attention to my spending",
+        "looks good",
+        "set it up",
+        # Habitual / scheduled / future phrasing is the user describing their
+        # life, not instructing a now-transfer -- it must stay in the chat.
+        "I pay the rent every month",
+        "I pay rent on the first",
+        "I will buy etf tomorrow",
+        "I invest in my etf each month",
+    }
+    for msg in actions:
+        assert _wants_money_action(msg), msg
+    for msg in replies:
+        assert not _wants_money_action(msg), msg
+    # A no-amount beneficiary request still reads as an ask, not a description.
+    assert _wants_money_action("can you pay him back"), "pay him back"
+
+
+def test_mid_flow_money_action_bypasses_to_agent(monkeypatch):
+    from miriam_agent.onboarding.state import OnboardingState
+
+    user = _user()
+    service, states, _, _ = _service(monkeypatch)
+    for stage, msg in (
+        ("interview", "send 500 to mom please"),
+        ("plan_consent", "transfer 200 to my account"),
+        ("awaiting_statement", "buy 0.1 btc"),
+        ("awaiting_adjustment", "what's my balance?"),
+    ):
+        raw = OnboardingState().to_dict()
+        raw["stage"] = stage
+        states.data["u-1"] = raw
+        turn = _run(service.handle_turn(user, message=msg))
+        assert turn.took_over is False, (stage, msg)
+
+
+def test_stage_answers_are_never_hijacked_as_money_actions(monkeypatch):
+    from miriam_agent.onboarding.state import OnboardingState
+
+    user = _user()
+    provider = FakeProvider()
+    service, states, _, _ = _service(monkeypatch, provider)
+    raw = OnboardingState().to_dict()
+    raw["stage"] = "awaiting_statement"
+    states.data["u-1"] = raw
+    # A poll vote on the statement ask is an answer, never a transfer.
+    turn = _run(service.handle_turn(user, message="send it", is_poll_vote=True))
+    assert turn.took_over is True and len(provider.calls) == 1
+
+
+def test_extract_name_handles_prose_greetings():
+    from miriam_agent.onboarding.service import OnboardingService
+
+    cases = {
+        "I'm Tobi, nice to meet you": "Tobi",
+        "It's Tobi!": "Tobi",
+        "It's Tobi, great to meet you": "Tobi",
+        "my name is Tobi Ademi": "Tobi Ademi",
+        "Call me Dana.": "Dana",
+        "I am Tobiloba": "Tobiloba",
+    }
+    for text, expected in cases.items():
+        assert OnboardingService._extract_name(text) == expected, text
+
+
+def test_meta_float_rejects_non_numeric():
+    from miriam_agent.onboarding.service import OnboardingService
+
+    assert OnboardingService._meta_float("0.72") == 0.72
+    assert OnboardingService._meta_float("high") is None
+    assert OnboardingService._meta_float("") is None
+
+
+def test_invalid_meta_sanitized_instead_of_kept_raw(monkeypatch):
+    from miriam_agent.onboarding.contracts import MoneyMomentMeta
+
+    provider = FakeProvider(
+        [
+            _greet(
+                "Got it.",
+                facts={
+                    "money_moment": "running out before payday",
+                    "money_moment_confidence": "high",
+                    "money_moment_emotion": "frustrated",
+                },
+            )
+        ]
+    )
+    service, states, _, _ = _service(monkeypatch, provider)
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+    _run(service.handle_turn(user, message="my name is Tola"))
+    meta = states.data["u-1"]["money_moment_meta"]
+    # The junk string confidence is dropped; the valid emotion survives; what
+    # persists passes the contract (never the raw bad dict).
+    assert meta == {"emotion": "frustrated"}
+    assert "confidence" not in meta
+    assert "money_moment_confidence" not in states.data["u-1"]["learned"]
+    MoneyMomentMeta.model_validate(meta)

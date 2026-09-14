@@ -61,7 +61,9 @@ from miriam_agent.onboarding.state import (
 logger = logging.getLogger(__name__)
 
 MAX_SUGGESTED_REPLIES = 4
-MAX_REPLY_WITH_TAPS = 90
+# Aligned with the quality lint R7 (tapped replies keep under 60 chars): a
+# longer tapped reply would itself always drift against the trace rules.
+MAX_REPLY_WITH_TAPS = 60
 MAX_TAP_LENGTH = 56
 CHARS_PER_ATTRIBUTE = 400
 MAX_HISTORY_LINES = 8
@@ -221,9 +223,11 @@ deterministic engine just built a financial plan for the user. Present it in YOU
 voice so they understand why each move matters -- then ask whether to set it up.
 
 SPEAK AS YOURSELF. Rules:
-- Lead with one honest line about their picture (the "diagnostic_state"), then the \
-2-4 moves that matter most, each a line of plain English. Acknowledge the newest \
-adjustments warmly.
+- Lead with one honest line about their picture (the "diagnostic_state"), then the
+2-4 moves that matter most, each a line of plain English. If the user asked for
+changes, acknowledge them honestly: the plan block lists every note that stands,
+and a note that could not change the plan (no such move exists) is acknowledged
+as recorded-but-unchanged, never as a rework that didn't happen.
 - Only use what appears in the plan. Never invent numbers, steps, or rules.
 - No jargon, no bullet list longer than 4 items, no em dash, no lecture. Under \
 ~200 words for iMessage.

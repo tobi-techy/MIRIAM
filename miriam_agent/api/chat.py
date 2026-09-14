@@ -27,7 +27,7 @@ from miriam_agent.api.dependencies import (
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
 from miriam_agent.integrations.supermemory_client import container_tag_for
-from miriam_agent.onboarding.service import OnboardingService
+from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.safety.validator import InputValidator
 from miriam_agent.tools import build_tool_registry
@@ -186,13 +186,20 @@ async def chat_with_agent(
     # must never be handed to onboarding: the user already reviewed and proved
     # the action by email code, so it goes straight to the agent for execution.
     if not approved_actions:
-        onboarding = await OnboardingService(memory_store).handle_turn(
-            user,
-            message=message,
-            is_poll_vote=bool(request.get("is_poll_vote", False)),
-            poll_title=request.get("poll_title") or "",
-            document=request.get("document"),
-        )
+        try:
+            onboarding = await OnboardingService(memory_store).handle_turn(
+                user,
+                message=message,
+                is_poll_vote=bool(request.get("is_poll_vote", False)),
+                poll_title=request.get("poll_title") or "",
+                document=request.get("document"),
+            )
+        except Exception:
+            # Fail-open: onboarding must never 500 a message. If it crashes we
+            # hand the turn to the general agent rather than lose the user's
+            # message to a broken flow.
+            logger.exception("onboarding handle_turn failed for %s", user.id)
+            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
         if onboarding.took_over:
             return await _finish_onboarding_turn(
                 memory_store, supermemory_memory, user, message, onboarding
@@ -315,13 +322,19 @@ async def chat_stream(
     # approved_actions were already reviewed and email-verified by the user.
     onboarding = None
     if not approved_actions:
-        onboarding = await OnboardingService(memory_store).handle_turn(
-            user,
-            message=message,
-            is_poll_vote=bool(request.get("is_poll_vote", False)),
-            poll_title=request.get("poll_title") or "",
-            document=request.get("document"),
-        )
+        try:
+            onboarding = await OnboardingService(memory_store).handle_turn(
+                user,
+                message=message,
+                is_poll_vote=bool(request.get("is_poll_vote", False)),
+                poll_title=request.get("poll_title") or "",
+                document=request.get("document"),
+            )
+        except Exception:
+            # Fail-open, mirroring /chat: never 500 the stream over onboarding;
+            # fall through to the general agent.
+            logger.exception("onboarding handle_turn failed for %s", user.id)
+            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
