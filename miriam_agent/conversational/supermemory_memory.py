@@ -17,7 +17,7 @@ returns empty data so the agent still works, just without memory.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from miriam_agent.integrations.supermemory_client import (
     SupermemoryClient,
@@ -82,7 +82,7 @@ class SupermemoryMemory:
             for bucket_key, raw_items in buckets.items():
                 if not isinstance(raw_items, list):
                     continue
-                items: list[Any] = raw_items
+                items = cast(list[Any], raw_items)
                 for item in items[:2]:
                     add(f"bucket:{bucket_key}", item)
         except Exception as e:
