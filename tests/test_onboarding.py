@@ -1228,6 +1228,93 @@ def test_conductor_turn_sends_stage_and_knows():
     assert "DIMENSIONS STILL TO COVER" not in user_block
 
 
+def test_conductor_turn_surfaces_poll_title_for_ambiguous_taps():
+    from miriam_agent.agents.llm import LLMResponse
+    from miriam_agent.onboarding import driver
+    from miriam_agent.onboarding.state import OnboardingState
+
+    class Capture:
+        async def complete(
+            self, messages, tools=None, temperature=None, max_tokens=None
+        ):
+            self.messages = messages
+            return LLMResponse(
+                content='{"reply":"got it","intent":"request_statement"}'
+            )
+
+    state = OnboardingState()
+    state.stage = "awaiting_statement"
+    provider = Capture()
+    out = _run(
+        driver.conductor_turn(
+            provider=provider,
+            state=state,
+            history=[],
+            user_text="Yes, send it now",
+            is_poll_vote=True,
+            poll_title="Send me a bank statement for a real deep dive?",
+        )
+    )
+    assert out is not None and out.intent == "request_statement"
+    user_block = provider.messages[-1].content
+    assert "IS A POLL TAP: yes" in user_block
+    assert (
+        'POLL BEING ANSWERED: "Send me a bank statement for a real deep dive?"'
+        in user_block
+    )
+
+
+def test_completed_user_tapping_old_poll_gets_ack(monkeypatch):
+    """A completed user re-tapping an old consent poll must not fall through
+    to the general agent (which would lack the onboarding marker and be
+    silently dropped by Go). Instead the onboarding layer returns a short,
+    friendly ack so the tap never reads as dead."""
+    from miriam_agent.onboarding.state import STAGE_COMPLETE, OnboardingState
+
+    user = _user()
+    service, states, _, _ = _service(monkeypatch)
+    raw = OnboardingState().to_dict()
+    raw["stage"] = STAGE_COMPLETE
+    raw["name"] = "Tobi"
+    states.data["u-1"] = raw
+
+    turn = _run(service.handle_turn(user, message="Yes, set it up", is_poll_vote=True))
+    assert turn.took_over is True
+    assert turn.completed is False  # ack, not a re-completion
+    assert any(
+        phrase in turn.response.lower()
+        for phrase in ("already all set", "older message")
+    )
+
+
+def test_consent_stage_poll_vote_resolves_deterministically(monkeypatch):
+    """Tapping 'Yes, set it up' on the consent poll must complete onboarding
+    deterministically (no LLM call). The conductor must be bypassed entirely so
+    consent decisions are never left to an intent classifier."""
+    from miriam_agent.onboarding.state import (
+        STAGE_COMPLETE,
+        STAGE_PLAN_CONSENT,
+        OnboardingState,
+    )
+
+    user = _user()
+    provider = FakeProvider()
+    service, states, memory, _ = _service(monkeypatch, provider=provider)
+    raw = OnboardingState().to_dict()
+    raw["stage"] = STAGE_PLAN_CONSENT
+    raw["name"] = "Tobi"
+    raw["goal"] = "build an emergency fund"
+    raw["plan"] = {"diagnostic_state": "Financial Beginner", "steps": []}
+    states.data["u-1"] = raw
+
+    turn = _run(service.handle_turn(user, message="Yes, set it up", is_poll_vote=True))
+    assert turn.took_over is True
+    assert turn.completed is True
+    # Deterministic: LLM was never called.
+    assert provider.calls == []
+    assert states.data["u-1"]["stage"] == STAGE_COMPLETE
+
+
 def test_present_plan_turn_returns_reply():
     from miriam_agent.agents.llm import LLMResponse
     from miriam_agent.onboarding import driver
@@ -1573,9 +1660,10 @@ def test_stage_answers_are_never_hijacked_as_money_actions(monkeypatch):
     raw = OnboardingState().to_dict()
     raw["stage"] = "awaiting_statement"
     states.data["u-1"] = raw
-    # A poll vote on the statement ask is an answer, never a transfer.
+    # A poll vote on the statement ask is an answer, never a transfer, and it
+    # resolves deterministically without consulting the LLM.
     turn = _run(service.handle_turn(user, message="send it", is_poll_vote=True))
-    assert turn.took_over is True and len(provider.calls) == 1
+    assert turn.took_over is True and provider.calls == []
 
 
 def test_extract_name_handles_prose_greetings():
