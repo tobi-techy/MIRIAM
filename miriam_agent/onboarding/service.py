@@ -406,7 +406,6 @@ class OnboardingService:
         poll_title: str = "",
         document: dict[str, Any] | None = None,
     ) -> OnboardingTurn:
-        del poll_title  # taps arrive as plain text; the LLM reads the option
         if not self._settings.ONBOARDING_ENABLED:
             return OnboardingTurn(conversation_id=message or "")
         text = (message or "").strip()
@@ -421,12 +420,25 @@ class OnboardingService:
         if state is not None and state.complete:
             # An explicit redo/restart intent re-opens the interview from scratch
             # (completion is not a locked door; giving up never is either).
-            if not is_poll_vote and not doc_summary and _REENTER.search(text):
+            if is_poll_vote:
+                # A tap on an old poll (a consent/statement option from an earlier
+                # session) must never read as silence against a finished sign-up:
+                # acknowledge and re-open the door, without re-running the
+                # interview or handing a stale option to the general agent.
+                return self._turn(
+                    "You're already all set from our earlier chat - that "
+                    "option was from an older message. Is there anything else "
+                    "you'd like to look at?",
+                    stage=state.stage,
+                )
+            if not doc_summary and _REENTER.search(text):
                 state = OnboardingState()
                 state.stage = STAGE_INTERVIEW  # skip the greeting on a redo
                 await self._state_store.clear(user.id)
                 self._emit(user.id, "restarted")
-                return await self._conductor_turn(user.id, state, conversation_id, text)
+                return await self._conductor_turn(
+                    user.id, state, conversation_id, text, poll_title=poll_title
+                )
             return OnboardingTurn(conversation_id=conversation_id)
 
         if doc_summary:
@@ -445,6 +457,7 @@ class OnboardingService:
                     conversation_id,
                     text,
                     event=f"the user just shared a bank statement: {doc_summary}",
+                    poll_title=poll_title,
                 )
             if state.stage in (
                 STAGE_INTERVIEW,
@@ -506,6 +519,7 @@ class OnboardingService:
                     text,
                     event="the user skipped giving a name; start the interview "
                     "without one",
+                    poll_title=poll_title,
                 )
             return await self._name_turn(user.id, state, conversation_id, text)
 
@@ -528,8 +542,24 @@ class OnboardingService:
         if not text:
             return OnboardingTurn(conversation_id=conversation_id)
 
+        if is_poll_vote and state.stage in (
+            STAGE_AWAITING_STATEMENT,
+            STAGE_PLAN_CONSENT,
+        ):
+            # A tap carries the chosen option verbatim, so resolve it
+            # deterministically against the poll that rendered it instead of
+            # trusting the LLM to re-derive a consent/statement decision from a
+            # few words. The deterministic fallback already implements exactly
+            # these two stages; run it as the primary path for taps.
+            return await self._fallback_turn(user.id, state, conversation_id, text)
+
         return await self._conductor_turn(
-            user.id, state, conversation_id, text, is_poll_vote=is_poll_vote
+            user.id,
+            state,
+            conversation_id,
+            text,
+            is_poll_vote=is_poll_vote,
+            poll_title=poll_title,
         )
 
     # -- LLM-led turns ------------------------------------------------------
@@ -763,6 +793,7 @@ class OnboardingService:
         *,
         is_poll_vote: bool = False,
         event: str = "",
+        poll_title: str = "",
     ) -> OnboardingTurn:
         self._update_conversation_state(state)
         history = await self._history(conversation_id)
@@ -774,6 +805,7 @@ class OnboardingService:
                 user_text=text,
                 is_poll_vote=is_poll_vote,
                 event=event,
+                poll_title=poll_title,
                 moving_on_hint=self._moving_on_hint(state),
             )
         except Exception:

@@ -62,7 +62,7 @@ class SupermemoryMemory:
             return []
 
         facts: list[dict[str, Any]] = []
-        seen_contents: set = set()
+        seen_contents: set[str] = set()
 
         def add(kind: str, content: str) -> None:
             content = (content or "").strip()
@@ -73,18 +73,18 @@ class SupermemoryMemory:
 
         try:
             result = await self.client.profile(container_tag, query=query)
-            profile = result.get("profile", {})
+            profile: dict[str, Any] = result.get("profile", {}) or {}
             for item in profile.get("static", []):
                 add("profile", item)
             for item in profile.get("dynamic", []):
                 add("recent", item)
-            buckets = profile.get("buckets", {})
-            if isinstance(buckets, dict):
-                for bucket_key, items in buckets.items():
-                    if not isinstance(items, list):
-                        continue
-                    for item in items[:2]:
-                        add(f"bucket:{bucket_key}", item)
+            buckets: dict[str, Any] = profile.get("buckets", {})
+            for bucket_key, raw_items in buckets.items():
+                if not isinstance(raw_items, list):
+                    continue
+                items: list[Any] = raw_items
+                for item in items[:2]:
+                    add(f"bucket:{bucket_key}", item)
         except Exception as e:
             logger.warning("Supermemory profile failed: %s", e)
 
@@ -102,14 +102,15 @@ class SupermemoryMemory:
                     memory = (hit.get("memory") or "").strip()
                     if not memory:
                         continue
-                    meta = hit.get("metadata") or {}
+                    meta: dict[str, Any] = hit.get("metadata") or {}
                     source = meta.get("source") or meta.get("kind") or "memory"
                     add(str(source), memory)
                     # Surface one-hop related edges so chain facts can help
                     # even when the top hit alone is thin.
                     if include_related:
-                        context = hit.get("context") or {}
-                        for rel in (context.get("related") or [])[:1]:
+                        context: dict[str, Any] = hit.get("context") or {}
+                        related: list[Any] = context.get("related") or []
+                        for rel in related[:1]:
                             rel_text = (rel.get("memory") or "").strip()
                             if rel_text:
                                 add("related", rel_text)
@@ -142,12 +143,13 @@ class SupermemoryMemory:
                 memory = (hit.get("memory") or "").strip()
                 if not memory:
                     continue
+                meta: dict[str, Any] = hit.get("metadata") or {}
                 out.append(
                     {
                         "content": memory,
-                        "type": (hit.get("metadata") or {}).get("source", "memory"),
+                        "type": meta.get("source", "memory"),
                         "similarity": hit.get("similarity"),
-                        "metadata": hit.get("metadata"),
+                        "metadata": meta,
                     }
                 )
             return out

@@ -574,6 +574,7 @@ def _context_block(
     event: str,
     moving_on_hint: str,
     history: list[dict[str, Any]],
+    poll_title: str = "",
 ) -> str:
     parts = [
         "USER CONTEXT",
@@ -583,6 +584,8 @@ def _context_block(
         parts.append(f"EVENT: {event}")
     parts.append(f'INBOUND MESSAGE: "{user_text}"')
     parts.append(f"IS A POLL TAP: {'yes' if is_poll_vote else 'no'}")
+    if poll_title:
+        parts.append(f'POLL BEING ANSWERED: "{poll_title}"')
     if moving_on_hint:
         parts.append(f"MOVING ON: {moving_on_hint}")
     state_block = _conversation_state_block(state)
@@ -625,6 +628,7 @@ async def conductor_turn(
     is_poll_vote: bool = False,
     event: str = "",
     moving_on_hint: str = "",
+    poll_title: str = "",
 ) -> DriverOutcome | None:
     """One LLM-led conversation turn in whatever stage the interview is in."""
     settings = get_settings()
@@ -635,6 +639,7 @@ async def conductor_turn(
         event=event,
         moving_on_hint=moving_on_hint,
         history=history,
+        poll_title=poll_title,
     )
     messages = [
         ChatMessage(role="system", content=CONDUCTOR_SYSTEM_PROMPT),
@@ -668,6 +673,7 @@ async def present_plan_turn(
         event=event,
         moving_on_hint="",
         history=history,
+        poll_title="",
     )
     adjustment_note = ""
     if adjustments:
