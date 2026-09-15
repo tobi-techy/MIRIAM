@@ -113,9 +113,9 @@ class GoBackendClient:
         snapshot = await self._engine_snapshot(token)
         return compute_cash_flow_forecast(snapshot)
 
-    async def get_investment_positions(self, token: str) -> list[dict[str, Any]]:
-        data = await self._token_get("/api/v1/investment/positions", token)
-        return data.get("positions", data if isinstance(data, list) else [])
+    async def get_investment_positions(self, token: str) -> dict[str, Any]:
+        # Agent API positions read; returns {"positions": [...]} (raw body).
+        return await self._token_get("/api/v1/investments/positions", token)
 
     async def get_upcoming_bills(self, token: str) -> list[dict[str, Any]]:
         data = await self._token_get("/api/v1/financial-obligations", token)
@@ -177,7 +177,7 @@ class GoBackendClient:
         balances: dict[str, Any] = {}
         spending: dict[str, Any] = {}
         obligations: list[dict[str, Any]] = []
-        positions: list[dict[str, Any]] = []
+        positions: dict[str, Any] = {}
         try:
             balances = await self.get_balances(token)
         except IntegrationError:
@@ -241,26 +241,219 @@ class GoBackendClient:
             idempotency_key=idempotency_key,
         )
 
-    async def execute_investment(
+    # ---- investments (Agent API reads: /api/v1/investments/*) ----
+
+    async def get_investment_limits(self, token: str) -> dict[str, Any]:
+        return await self._token_get("/api/v1/investments/limits", token)
+
+    async def get_investment_portfolio(self, token: str) -> dict[str, Any]:
+        return await self._token_get("/api/v1/investments/portfolio", token)
+
+    async def list_investment_assets(
+        self, token: str, query: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if query:
+            params["query"] = query
+        if limit is not None:
+            params["limit"] = limit
+        return await self._token_get(
+            "/api/v1/investments/assets", token, params=params or None
+        )
+
+    async def get_investment_asset(
         self,
         token: str,
-        symbol: str,
-        amount: float,
-        side: str = "buy",
-        idempotency_key: str | None = None,
+        asset_id: str,
+        caip19: str | None = None,
+        symbol: str | None = None,
     ) -> dict[str, Any]:
-        payload = {
-            "symbol": symbol,
-            "side": side,
-            "type": "market",
-            "time_in_force": "day",
-            "notional": str(amount),
-        }
-        return await self._token_post(
-            "/api/v1/investment/orders",
+        params: dict[str, Any] = {}
+        if caip19:
+            params["caip19"] = caip19
+        if symbol:
+            params["symbol"] = symbol
+        return await self._token_get(
+            f"/api/v1/investments/assets/{asset_id}", token, params=params or None
+        )
+
+    async def list_investment_strategies(
+        self, token: str, status: str | None = None
+    ) -> dict[str, Any]:
+        params = {"status": status} if status else None
+        return await self._token_get(
+            "/api/v1/investments/strategies", token, params=params
+        )
+
+    async def get_investment_strategy(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}", token
+        )
+
+    async def preview_investment_strategy(
+        self, token: str, strategy_id: str, amount_usd: float | None = None
+    ) -> dict[str, Any]:
+        params = {"amount_usd": amount_usd} if amount_usd is not None else None
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/preview",
             token,
-            payload,
-            idempotency_key=idempotency_key,
+            params=params,
+        )
+
+    async def list_investment_executions(
+        self, token: str, status: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if status:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        return await self._token_get(
+            "/api/v1/investments/executions", token, params=params or None
+        )
+
+    async def get_investment_execution(
+        self, token: str, execution_id: str
+    ) -> dict[str, Any]:
+        return await self._token_get(
+            f"/api/v1/investments/executions/{execution_id}", token
+        )
+
+    async def list_investment_audit_events(
+        self, token: str, limit: int | None = None
+    ) -> dict[str, Any]:
+        params = {"limit": limit} if limit is not None else None
+        return await self._token_get("/api/v1/investments/audit", token, params=params)
+
+    async def list_investment_investors(
+        self,
+        token: str,
+        collection: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if collection:
+            params["collection"] = collection
+        if cursor:
+            params["cursor"] = cursor
+        if limit is not None:
+            params["limit"] = limit
+        return await self._token_get(
+            "/api/v1/investments/investors", token, params=params or None
+        )
+
+    async def get_investment_investor(
+        self, token: str, investor_id: str
+    ) -> dict[str, Any]:
+        return await self._token_get(
+            f"/api/v1/investments/investors/{investor_id}", token
+        )
+
+    async def get_investment_investor_activity(
+        self, token: str, investor_id: str
+    ) -> dict[str, Any]:
+        return await self._token_get(
+            f"/api/v1/investments/investors/{investor_id}/activity", token
+        )
+
+    # ---- investments (staged mutations) ----
+    #
+    # Every mutation below returns HTTP 202 with a body carrying
+    # ``status: "AWAITING_CONFIRMATION"`` plus a ``confirmation`` object until
+    # the caller replays the exact same payload with the confirmation token.
+    # We pass the token back as the request body field the Go handler expects
+    # (``confirmation_token``); it also accepts the X-Investment-Confirmation
+    # header. Idempotency keys go in the body because that is where the Go
+    # request structs read them (``idempotency_key``).
+
+    async def create_investment_strategy(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            "/api/v1/investments/strategies",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    async def publish_investment_strategy_version(
+        self,
+        token: str,
+        strategy_id: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/versions",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    async def enroll_investment(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            "/api/v1/investments/enroll",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    async def create_investment_order(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            "/api/v1/investments/orders",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    async def set_investment_allocation(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            "/api/v1/investments/allocations",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    # ---- investments (immediate mutations; no staged confirmation) ----
+
+    async def pause_investment_strategy(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/pause", token, {}
+        )
+
+    async def resume_investment_strategy(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/resume", token, {}
+        )
+
+    async def rebalance_investment_strategy(
+        self, token: str, strategy_id: str, reason: str | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/rebalance", token, payload
         )
 
     # ---- lookups / automations / obligations / schedules ----
@@ -479,6 +672,20 @@ class GoBackendClient:
             )
         except httpx.HTTPError as e:
             raise IntegrationError(f"Go backend {method} {path} unreachable: {e}")
+
+
+def _with_confirmation(
+    payload: dict[str, Any], confirmation_token: str | None
+) -> dict[str, Any]:
+    """Merge a staged-action confirmation token into a request body.
+
+    The Go investment API accepts the token either as the ``confirmation_token``
+    body field or the ``X-Investment-Confirmation`` header; we use the body
+    field. The token must accompany the exact same payload it was issued for.
+    """
+    if not confirmation_token:
+        return payload
+    return {**payload, "confirmation_token": confirmation_token}
 
 
 def _as_list(data: Any, key: str) -> list[dict[str, Any]]:

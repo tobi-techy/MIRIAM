@@ -132,27 +132,175 @@ def test_send_money_matches_go_p2p_shape():
     _run(client.close())
 
 
-def test_execute_investment_matches_go_order_shape():
+def test_investment_reads_use_agent_paths():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        path = request.url.path
+        if path == "/api/v1/investments/portfolio":
+            return httpx.Response(
+                200, json={"total_value_usd": 100, "source": "glider"}
+            )
+        if path == "/api/v1/investments/positions":
+            return httpx.Response(200, json={"positions": [{"symbol": "AAPL"}]})
+        if path == "/api/v1/investments/assets":
+            return httpx.Response(
+                200,
+                json={"assets": [{"asset_id": "a1", "symbol": "AAPL", "price_usd": 1}]},
+            )
+        if path == "/api/v1/investments/strategies":
+            return httpx.Response(200, json={"strategies": [{"id": "s1"}]})
+        if path == "/api/v1/investments/limits":
+            return httpx.Response(200, json={"kyc_tier": "tier1"})
+        if path == "/api/v1/investments/executions/e1":
+            return httpx.Response(200, json={"id": "e1", "status": "filled"})
+        if path == "/api/v1/investments/investors":
+            return httpx.Response(200, json={"investors": [{"investor_id": "i1"}]})
+        return httpx.Response(
+            404, json={"code": "INVESTMENT_NOT_FOUND", "message": "no"}
+        )
+
+    client = _client_for(handler)
+    portfolio = _run(client.get_investment_portfolio("tok"))
+    assert portfolio["total_value_usd"] == 100
+    positions = _run(client.get_investment_positions("tok"))
+    assert positions["positions"][0]["symbol"] == "AAPL"
+    assets = _run(client.list_investment_assets("tok", query="AAPL", limit=5))
+    assert assets["assets"][0]["symbol"] == "AAPL"
+    strategies = _run(client.list_investment_strategies("tok", status="active"))
+    assert strategies["strategies"][0]["id"] == "s1"
+    limits = _run(client.get_investment_limits("tok"))
+    assert limits["kyc_tier"] == "tier1"
+    execution = _run(client.get_investment_execution("tok", "e1"))
+    assert execution["status"] == "filled"
+    investors = _run(client.list_investment_investors("tok", collection="curated"))
+    assert investors["investors"][0]["investor_id"] == "i1"
+    assert "GET /api/v1/investments/portfolio" in seen
+    assert not any("/investment/glider" in line for line in seen)
+    _run(client.close())
+
+
+def test_investment_staged_order_sends_confirmation_token():
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["path"] = request.url.path
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"status": "accepted"})
+        return httpx.Response(
+            202,
+            json={
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-1"},
+            },
+        )
 
     client = _client_for(handler)
-    _run(
-        client.execute_investment(
-            "tok", "AAPL", 25, side="buy", idempotency_key="k-inv"
+    first = _run(
+        client.create_investment_order(
+            "tok",
+            {
+                "symbol": "AAPL",
+                "side": "buy",
+                "amount_usd": 25,
+                "idempotency_key": "k-inv",
+            },
         )
     )
-    assert seen["path"] == "/api/v1/investment/orders"
+    assert seen["path"] == "/api/v1/investments/orders"
     assert seen["body"]["symbol"] == "AAPL"
     assert seen["body"]["side"] == "buy"
-    assert seen["body"]["type"] == "market"
-    assert seen["body"]["time_in_force"] == "day"
-    assert seen["body"]["notional"] == "25"
+    assert seen["body"]["amount_usd"] == 25
+    assert seen["body"]["idempotency_key"] == "k-inv"
+    assert "confirmation_token" not in seen["body"]
+    assert first["status"] == "AWAITING_CONFIRMATION"
+
+    replay = _run(
+        client.create_investment_order(
+            "tok",
+            {
+                "symbol": "AAPL",
+                "side": "buy",
+                "amount_usd": 25,
+                "idempotency_key": "k-inv",
+            },
+            confirmation_token="cfm-1",
+        )
+    )
+    assert seen["body"]["confirmation_token"] == "cfm-1"
+    assert replay["confirmation"]["token"] == "cfm-1"
     _run(client.close())
+
+
+def test_investment_mutations_use_agent_paths():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            {
+                "path": request.url.path,
+                "body": json.loads(request.content) if request.content else {},
+            }
+        )
+        return httpx.Response(202, json={"status": "AWAITING_CONFIRMATION"})
+
+    client = _client_for(handler)
+    _run(client.create_investment_strategy("tok", {"name": "Growth"}))
+    _run(
+        client.publish_investment_strategy_version(
+            "tok", "s1", {"rationale": "rebalance"}
+        )
+    )
+    _run(
+        client.enroll_investment(
+            "tok", {"strategy_id": "s1", "idempotency_key": "k-enr"}
+        )
+    )
+    _run(
+        client.set_investment_allocation(
+            "tok",
+            {"targets": [{"symbol": "VOO"}], "idempotency_key": "k-all"},
+        )
+    )
+    _run(client.pause_investment_strategy("tok", "s1"))
+    _run(client.resume_investment_strategy("tok", "s1"))
+    _run(client.rebalance_investment_strategy("tok", "s1", reason="drift"))
+    assert seen[0]["path"] == "/api/v1/investments/strategies"
+    assert seen[1]["path"] == "/api/v1/investments/strategies/s1/versions"
+    assert seen[2]["path"] == "/api/v1/investments/enroll"
+    assert seen[2]["body"]["idempotency_key"] == "k-enr"
+    assert seen[3]["path"] == "/api/v1/investments/allocations"
+    assert seen[3]["body"]["targets"][0]["symbol"] == "VOO"
+    assert seen[4]["path"] == "/api/v1/investments/strategies/s1/pause"
+    assert seen[5]["path"] == "/api/v1/investments/strategies/s1/resume"
+    assert seen[6]["path"] == "/api/v1/investments/strategies/s1/rebalance"
+    assert seen[6]["body"]["reason"] == "drift"
+    assert not any("/investment/glider" in s["path"] for s in seen)
+    _run(client.close())
+
+
+def test_investment_cooldown_surfaces_integration_error():
+    from miriam_agent.core.exceptions import IntegrationError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/investments/strategies/s1/rebalance"
+        return httpx.Response(
+            429,
+            json={"code": "INVESTMENT_PROVIDER_COOLDOWN", "message": "try later"},
+        )
+
+    client = _client_for(handler)
+    with pytest.raises(IntegrationError) as excinfo:
+        _run(client.rebalance_investment_strategy("tok", "s1"))
+    assert "INVESTMENT_PROVIDER_COOLDOWN" in str(excinfo.value)
+    _run(client.close())
+
+
+def test_agent_client_exposes_no_withdrawal_method():
+    from miriam_agent.integrations.go_client import GoBackendClient
+
+    methods = [name for name in dir(GoBackendClient) if not name.startswith("__")]
+    assert not any("withdraw" in name for name in methods)
 
 
 def test_stash_transfers_use_real_paths_and_idempotency_header():

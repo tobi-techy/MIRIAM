@@ -46,10 +46,18 @@ _validator = InputValidator()
 # durable log -- read-only tool arguments are never captured.
 _MONEY_TOOLS = {
     "send_money",
-    "execute_investment",
     "transfer_stash_to_spending",
     "transfer_spending_to_stash",
     "pay_bill",
+    "create_strategy",
+    "update_strategy",
+    "enroll_strategy",
+    "pause_strategy",
+    "resume_strategy",
+    "rebalance_strategy",
+    "buy_asset",
+    "sell_asset",
+    "set_allocation",
 }
 
 
@@ -68,12 +76,18 @@ def _money_details(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         details["amount"] = args.get("amount")
     elif "amount_ngn" in args:
         details["amount"] = args.get("amount_ngn")
+    elif "amount_usd" in args:
+        details["amount"] = args.get("amount_usd")
     if "to" in args:
         details["recipient"] = args.get("to")
     elif "recipient" in args:
         details["recipient"] = args.get("recipient")
     if "symbol" in args:
         details["symbol"] = args.get("symbol")
+    if "asset_id" in args:
+        details["asset_id"] = args.get("asset_id")
+    if "strategy_id" in args:
+        details["strategy_id"] = args.get("strategy_id")
     if "category" in args:
         details["category"] = args.get("category")
     return details

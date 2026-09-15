@@ -572,7 +572,61 @@ class Agent:
                 str(ctx.get("user_id", "")), name, args
             )
         result = await self.registry.execute(name, args, context=exec_ctx)
-        return result
+        return await self._replay_staged_confirmation(name, args, exec_ctx, result)
+
+    async def _replay_staged_confirmation(
+        self,
+        name: str,
+        args: dict[str, Any],
+        exec_ctx: dict[str, Any],
+        result: Any,
+    ) -> Any:
+        """Replay a Go-staged action with the confirmation token it just issued.
+
+        Rail's investment API answers a mutation with a preview plus a
+        payload-bound confirmation token (HTTP 202) instead of executing it.
+        Miriam only reaches execution after the user approved the action, so the
+        token is replayed once with the identical payload. Actions whose policy
+        verdict needs an in-app passcode are never auto-replayed.
+        """
+        if not isinstance(result, dict):
+            return result
+        if result.get("status") != "AWAITING_CONFIRMATION":
+            return result
+
+        from miriam_agent.tools.investment_definitions import (
+            STAGED_CONFIRMATION_TOOLS,
+        )
+
+        if name not in STAGED_CONFIRMATION_TOOLS:
+            return result
+
+        token = (result.get("confirmation") or {}).get("token")
+        if not token:
+            return result
+
+        verdict = str((result.get("policy") or {}).get("verdict", "")).upper()
+        if verdict == "REQUIRES_AUTHENTICATION":
+            return {
+                **result,
+                "error": (
+                    f"'{name}' needs an in-app passcode confirmation before it can "
+                    "run. It was not executed."
+                ),
+            }
+
+        replay_ctx = dict(exec_ctx)
+        replay_ctx["confirmation_token"] = token
+        replayed = await self.registry.execute(name, args, context=replay_ctx)
+        if isinstance(replayed, dict) and replayed.get("status") == "AWAITING_CONFIRMATION":
+            return {
+                **replayed,
+                "error": (
+                    f"'{name}' still reported AWAITING_CONFIRMATION after the "
+                    "confirmation replay. Nothing further ran."
+                ),
+            }
+        return replayed
 
     def _idempotency_key(
         self, user_id: str, tool_name: str, args: dict[str, Any]
@@ -640,9 +694,26 @@ class Agent:
                 else "spending → stash"
             )
             return f"Move {args.get('amount')} ({direction})"
-        if tool.name == "execute_investment":
-            side = args.get("side", "buy").upper()
-            return f"{side} {args.get('amount')} of {args.get('symbol')}"
+        if tool.name in ("buy_asset", "sell_asset"):
+            side = "BUY" if tool.name == "buy_asset" else "SELL"
+            target = args.get("symbol") or args.get("asset_id")
+            return f"{side} ${args.get('amount_usd')} of {target}"
+        if tool.name == "set_allocation":
+            targets = args.get("targets") or []
+            return f"Set allocation across {len(targets)} assets"
+        if tool.name == "create_strategy":
+            return f"Create strategy {args.get('name')} (risk: {args.get('risk')})"
+        if tool.name == "update_strategy":
+            return f"Update strategy {args.get('strategy_id')}"
+        if tool.name == "enroll_strategy":
+            amount = args.get("amount_usd")
+            suffix = f" with ${amount}" if amount is not None else ""
+            return f"Enroll in strategy {args.get('strategy_id')}{suffix}"
+        if tool.name in ("pause_strategy", "resume_strategy"):
+            verb = "Pause" if tool.name == "pause_strategy" else "Resume"
+            return f"{verb} strategy {args.get('strategy_id')}"
+        if tool.name == "rebalance_strategy":
+            return f"Rebalance strategy {args.get('strategy_id')}"
         if tool.name == "pay_bill":
             return (
                 f"Pay {args.get('amount_ngn')} NGN of {args.get('category')} "
