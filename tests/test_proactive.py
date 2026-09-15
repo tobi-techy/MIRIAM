@@ -63,6 +63,21 @@ def test_safety_policy_allowlist_matches_live_registry():
         "get_financial_health",
         "create_obligation",
         "mark_obligation_paid",
+        "get_portfolio",
+        "get_positions",
+        "get_asset",
+        "search_assets",
+        "get_strategy",
+        "list_strategies",
+        "get_rebalance_preview",
+        "get_investment_limits",
+        "list_executions",
+        "get_execution",
+        "get_execution_status",
+        "list_audit_events",
+        "get_investor",
+        "get_investor_activity",
+        "list_investors",
     }
     assert read_only <= registry_names
     for name in read_only:
@@ -71,7 +86,6 @@ def test_safety_policy_allowlist_matches_live_registry():
     # Live money / lasting-behavior tools are allowed (staged + idempotent + RBAC).
     for name in {
         "send_money",
-        "execute_investment",
         "transfer_stash_to_spending",
         "transfer_spending_to_stash",
         "create_automation",
@@ -80,6 +94,15 @@ def test_safety_policy_allowlist_matches_live_registry():
         "create_scheduled_investment",
         "pause_scheduled_investment",
         "resume_scheduled_investment",
+        "create_strategy",
+        "update_strategy",
+        "enroll_strategy",
+        "pause_strategy",
+        "resume_strategy",
+        "rebalance_strategy",
+        "buy_asset",
+        "sell_asset",
+        "set_allocation",
     }:
         assert _run(allowed(name)) is True, name
 

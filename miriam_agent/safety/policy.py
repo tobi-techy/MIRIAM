@@ -171,7 +171,6 @@ class SafetyPolicy:
         # mutation tool can never bypass policy just by being registered.
         money_tools = {
             "send_money",
-            "execute_investment",
             "transfer_stash_to_spending",
             "transfer_spending_to_stash",
             "create_automation",
@@ -181,6 +180,15 @@ class SafetyPolicy:
             "pause_scheduled_investment",
             "resume_scheduled_investment",
             "pay_bill",
+            "create_strategy",
+            "update_strategy",
+            "enroll_strategy",
+            "pause_strategy",
+            "resume_strategy",
+            "rebalance_strategy",
+            "buy_asset",
+            "sell_asset",
+            "set_allocation",
         }
 
         try:
@@ -711,10 +719,16 @@ class SafetyPolicy:
     _MONEY_ACTIONS = frozenset(
         {
             "send_money",
-            "execute_investment",
             "transfer_stash_to_spending",
             "transfer_spending_to_stash",
             "pay_bill",
+            "create_strategy",
+            "update_strategy",
+            "enroll_strategy",
+            "rebalance_strategy",
+            "buy_asset",
+            "sell_asset",
+            "set_allocation",
         }
     )
 

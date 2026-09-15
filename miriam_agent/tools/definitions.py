@@ -254,47 +254,6 @@ registry.register(
 )
 
 
-async def _execute_investment(
-    args: dict[str, Any], ctx: dict[str, Any]
-) -> dict[str, Any]:
-    client = get_go_client()
-    return await client.execute_investment(
-        ctx["token"],
-        symbol=args["symbol"],
-        amount=args["amount"],
-        side=args.get("side", "buy"),
-        idempotency_key=ctx.get("idempotency_key"),
-    )
-
-
-registry.register(
-    name="execute_investment",
-    description="Buy or sell an investment. Capped and requires confirmation.",
-    args_schema={
-        "type": "object",
-        "properties": {
-            "symbol": {
-                **_SCHEMA_STRING,
-                "description": "Ticker symbol (e.g. AAPL, VOO)",
-            },
-            "amount": {**_SCHEMA_NUMBER, "description": "Dollar amount"},
-            "side": {
-                "type": "string",
-                "enum": ["buy", "sell"],
-                "description": "Trade direction",
-            },
-        },
-        "required": ["symbol", "amount"],
-    },
-    category="investment",
-    risk_level=RiskLevel.HIGH,
-    is_mutation=True,
-    requires_approval=True,
-    allow_auto_execute=False,
-    handler=_execute_investment,
-)
-
-
 # ---------------------------------------------------------------------------
 # Advice & planning
 # ---------------------------------------------------------------------------
