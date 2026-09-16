@@ -2,13 +2,17 @@
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from miriam_agent.config.settings import get_settings
 
 _engine: AsyncEngine | None = None
-_async_session_factory: sessionmaker | None = None
+_async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine() -> AsyncEngine:
@@ -26,11 +30,11 @@ def get_engine() -> AsyncEngine:
     return _engine
 
 
-def get_session_factory() -> sessionmaker:
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
     """Get or create the async session factory singleton."""
     global _async_session_factory
     if _async_session_factory is None:
-        _async_session_factory = sessionmaker(
+        _async_session_factory = async_sessionmaker(
             get_engine(),
             class_=AsyncSession,
             expire_on_commit=False,

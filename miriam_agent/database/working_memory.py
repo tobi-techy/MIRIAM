@@ -9,10 +9,15 @@ Fail-open by design: if Redis is unavailable, calls return empty/False so
 the agent still works — memory is an enhancement, never a hard dependency.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis as AsyncRedis
 
 from miriam_agent.config.settings import get_settings
 
@@ -29,10 +34,10 @@ class WorkingMemory:
     def __init__(self, redis_url: str | None = None, ttl: int = DEFAULT_TTL_SECONDS):
         self.redis_url = redis_url or get_settings().REDIS_URL
         self.ttl = ttl
-        self._redis = None
+        self._redis: AsyncRedis | None = None
         self._lock = asyncio.Lock()
 
-    async def _client(self):
+    async def _client(self) -> AsyncRedis | None:
         if self._redis is None:
             import redis.asyncio as aioredis
 
@@ -47,16 +52,12 @@ class WorkingMemory:
     def _key(self, user_id: str) -> str:
         return f"{_KEY_PREFIX}{user_id}"
 
-    async def _available(self) -> bool:
-        client = await self._client()
-        return client is not None
-
     async def push(self, user_id: str, entry: dict[str, Any]) -> bool:
         """Add a summary entry to the user's recent working memory."""
-        if not await self._available():
+        client = await self._client()
+        if client is None:
             return False
         try:
-            client = await self._client()
             key = self._key(user_id)
             payload = json.dumps({"memo": entry}, default=str)
             async with self._lock:
@@ -72,10 +73,10 @@ class WorkingMemory:
 
     async def recent(self, user_id: str, limit: int = 8) -> list[dict[str, Any]]:
         """Return the most recent working-memory entries (oldest first)."""
-        if not await self._available():
+        client = await self._client()
+        if client is None:
             return []
         try:
-            client = await self._client()
             key = self._key(user_id)
             items = await client.lrange(key, -limit, -1)
             out = []
@@ -91,10 +92,10 @@ class WorkingMemory:
             return []
 
     async def clear(self, user_id: str) -> bool:
-        if not await self._available():
+        client = await self._client()
+        if client is None:
             return False
         try:
-            client = await self._client()
             await client.delete(self._key(user_id))
             return True
         except Exception as e:
