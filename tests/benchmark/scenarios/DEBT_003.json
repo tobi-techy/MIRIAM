@@ -1,0 +1,63 @@
+{
+  "id": "DEBT_003",
+  "name": "High income couple with $100k debt - 'Should I still marry him?'",
+  "category": "debt",
+  "description": "Based on podcast episode 277 - Partner has $100k debt, user earns well, wrestling with whether to proceed with marriage. Debt is not the problem - avoidance and lack of plan is.",
+  "user_profile": {
+    "user_id": "benchmark_debt_003",
+    "name": "Alex",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["decide on marriage", "create debt payoff plan", "align with partner"],
+    "known_facts": {"partner_debt": 100000, "user_income": 180000, "partner_income": 60000, "engaged": true}
+  },
+  "financial_state": {
+    "balances": {"spending": 5000, "stash": 20000, "investments": 50000},
+    "income": {"salary_user": {"amount": 15000, "frequency": "monthly", "volatility": "low"}, "salary_partner": {"amount": 5000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 2500, "groceries": 600, "transport": 400, "debt_minimums": 800},
+    "debts": [{"name": "partner_student_loans", "amount": 70000, "rate": 0.06, "min_payment": 500}, {"name": "partner_credit_cards", "amount": 30000, "rate": 0.22, "min_payment": 300}],
+    "investments": [{"symbol": "VTI", "amount": 50000, "type": "etf"}],
+    "obligations": [],
+    "missing_data": ["partner_full_debt_breakdown", "partner_spending_habits"],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "My fiancé has $100k in debt (student loans + credit cards). I make $180k, he makes $60k. Should I still marry him? I'm terrified this will sink us.",
+  "expected_intent": "debt_marriage_decision",
+  "expected_reasoning_path": [
+    "Reframe: The debt number ($100k) isn't the problem - the avoidance and lack of plan is",
+    "Ask: 'Has he ever shown you the full breakdown? Does he know his exact payoff date?'",
+    "Distinguish debt types: student loans (6%) vs credit cards (22%) - different strategies",
+    "Calculate: With combined $240k income, $100k debt is solvable in 2-3 years with focus",
+    "Surface the real fear: Not the money, but the dynamic - one person carrying the financial load",
+    "Ask: 'Have you had a positive money conversation? Or only fights/avoidance?'",
+    "Script the conversation: 'I want us to be teammates. Here's what I need from you...'",
+    "Create joint debt payoff plan with automation, not 'we'll figure it out'"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "budget_advice", "get_financial_health", "create_automation"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "budget_advice", "arguments": {"goal": "debt_paydown"}, "tool_type": "planning", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Debt reframed as solvable math problem, avoidance identified as real issue, joint payoff plan with automation, marriage decision framework based on financial partnership not debt number",
+  "forbidden_behaviors": [
+    {"description": "Making the marriage decision for them", "detection_pattern": "you should marry|don't marry|break up", "severity": "critical"},
+    {"description": "Treating $100k as catastrophic on $240k income", "detection_pattern": "that's huge|insurmountable|red flag", "severity": "critical"},
+    {"description": "Ignoring the relationship dynamic", "detection_pattern": "just pay it off|math works out", "severity": "warning"},
+    {"description": "Therapist-style processing", "detection_pattern": "how does that make you feel|explore your anxiety", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["makes_decision", "catastrophizes_debt", "ignores_dynamic", "therapist_mode"]
+  },
+  "tags": ["debt_marriage", "100k_debt", "avoidance", "joint_plan", "automation"],
+  "difficulty": "hard"
+}

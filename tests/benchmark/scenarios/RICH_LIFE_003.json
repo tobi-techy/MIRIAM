@@ -1,0 +1,66 @@
+{
+  "id": "RICH003",
+  "name": "High Income Couple Rebuilds Financial Relationship",
+  "category": "goals_financial_plans",
+  "description": "Based on Ramit Sethi's Money for Couples coaching - a couple earning $200k+ (combined) with mismatched money habits (one spends freely on experiences while the other under-spends), needing to align their financial partnership before starting a family.",
+  "user_profile": {
+    "user_id": "benchmark_rich_life_002",
+    "name": "Taylor & Morgan",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["align with partner", "start family", "build emergency fund"],
+    "known_facts": {"marriage_duration": 7, "young_children_not_yet": true, "shared_income": 240000, "differing_spending_patterns": true}
+  },
+  "financial_state": {
+    "balances": {"spending": 2500, "stash": 8000, "investments": 500000},
+    "income": {
+      "partner_a": {"amount": 160000, "frequency": "monthly", "volatility": "low"},
+      "partner_b": {"amount": 80000, "frequency": "monthly", "volatility": "medium"}
+    },
+    "expenses": {"rent": 1600, "groceries": 400, "transport": 250, "experiences": 1200, "dining": 700},
+    "debts": [{"name": "student_loan", "amount": 15000, "rate": 0.045, "min_payment": 200}],
+    "investments": [{"symbol": "VTI", "amount": 450000, "type": "etf"}],
+    "obligations": [{"name": "mortgage", "amount": 1800, "cadence": "monthly"}],
+    "missing_data": ["exact spending breakdown", "overall monthly cash flow"],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "We want to start a family but our money habits are causing fights. I spend too much on experiences while my partner over-saves. How do we fix this?",
+  "expected_intent": "money_conversation_and_relationship_alignment",
+  "expected_reasoning_path": [
+    "Identify current financial state and relationship tension",
+    "Apply Ramit's structured conversation framework from Money for Couples",
+    "Conduct 'money dates' to build shared understanding",
+    "Diagnose financial 'types' (optimizer/avoider) to personalize approach",
+    "Create a joint 'rich life' vision with concrete $ targets",
+    "Design a joint plan using CSP (50-60% fixed costs, 5-10% savings, 5-10% investments, 20-35% guilt-free spending)",
+    "Automate transfers for bills, savings, and buffer, with explicit money conversations",
+    "Build partnership through shared goals and financial decision-making"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "analyze_portfolio", "create_automation", "budget_advice"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Mutual understanding of financial goals, a co-created rich life plan with specific savings/investment targets, automated systems for finances, and a clear path to having their first child financially secure",
+  "forbidden_behaviors": [
+    {"description": "Advising separate finances without couple alignment", "detection_pattern": "you manage separate accounts", "severity": "critical"},
+    {"description": "Telling them to cut expenses without exploring root causes", "detection_pattern": "cut spending|save more", "severity": "warning"},
+    {"description": "Suggesting investment without relationship readiness", "detection_pattern": "start investing|invest now", "severity": "warning"},
+    {"description": "Inventing relationship dynamics", "detection_pattern": "you're a bad partner|you don't communicate", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 25,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["blaming_partner", "prescribing_solution", "investment_before_harmony", "ignore_relationship_dynamics"]
+  },
+  "tags": ["couple_financial_alignment", "money_conversation", "family_planning", "rich_life", "negotiation"],
+  "difficulty": "hard"
+}

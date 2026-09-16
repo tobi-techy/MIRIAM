@@ -1,0 +1,63 @@
+{
+  "id": "GFP002",
+  "name": "Retirement planning with current investments",
+  "category": "goals_financial_plans",
+  "description": "User wants retirement plan based on current portfolio and savings rate",
+  "user_profile": {
+    "user_id": "benchmark_user_012",
+    "name": "Blake",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["retire at 60", "maintain lifestyle"],
+    "known_facts": {"current_age": 35, "target_retirement_age": 60}
+  },
+  "financial_state": {
+    "balances": {"spending": 5000, "stash": 20000},
+    "income": {"salary": {"amount": 10000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"mortgage": 2500, "groceries": 800, "transport": 400, "childcare": 1500},
+    "debts": [{"name": "mortgage", "amount": 280000, "rate": 0.055, "min_payment": 2500}],
+    "investments": [
+      {"symbol": "VTI", "amount": 80000, "type": "etf"},
+      {"symbol": "VXUS", "amount": 40000, "type": "etf"},
+      {"symbol": "BND", "amount": 20000, "type": "etf"}
+    ],
+    "obligations": [{"name": "mortgage", "amount": 2500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "I'm 35 and want to retire at 60. Am I on track with my current investments?",
+  "expected_intent": "retirement_planning",
+  "expected_reasoning_path": [
+    "Analyze current portfolio with analyze_portfolio",
+    "Get financial health score",
+    "Project current savings rate to retirement age",
+    "Calculate required nest egg for lifestyle maintenance",
+    "Identify gaps and recommend adjustments"
+  ],
+  "allowed_tools": ["analyze_portfolio", "get_financial_health", "get_cash_flow_forecast", "get_balance"],
+  "required_tool_calls": [
+    {"tool_name": "analyze_portfolio", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_financial_health", "arguments": {"period": "last_12_months"}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Retirement readiness assessment with portfolio analysis, projection, and specific adjustment recommendations",
+  "forbidden_behaviors": [
+    {"description": "Inventing retirement number", "detection_pattern": "need \\$[0-9,]+ for retirement", "severity": "critical"},
+    {"description": "Guaranteeing outcomes", "detection_pattern": "will have|guaranteed|certain to", "severity": "critical"},
+    {"description": "Ignoring sequence of returns risk", "detection_pattern": "average return|compound at", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "guarantees_outcome", "ignores_sequence_risk"]
+  },
+  "tags": ["retirement", "portfolio_analysis", "long_term_planning"],
+  "difficulty": "hard"
+}

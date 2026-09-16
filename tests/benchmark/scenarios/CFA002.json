@@ -1,0 +1,63 @@
+{
+  "id": "CFA002",
+  "name": "Mid-month cash flow check with upcoming bills",
+  "category": "cash_flow_analysis",
+  "description": "User wants mid-month cash flow check with several bills due",
+  "user_profile": {
+    "user_id": "benchmark_user_004",
+    "name": "Morgan",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["pay bills on time", "maintain buffer"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 2000, "stash": 8000},
+    "income": {"salary": {"amount": 7000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 2000, "groceries": 600, "transport": 300, "insurance": 150},
+    "debts": [],
+    "investments": [{"symbol": "VOO", "amount": 20000, "type": "etf"}],
+    "obligations": [
+      {"name": "rent", "amount": 2000, "cadence": "monthly", "due_day": 1},
+      {"name": "electricity", "amount": 180, "cadence": "monthly", "due_day": 10},
+      {"name": "internet", "amount": 80, "cadence": "monthly", "due_day": 15},
+      {"name": "phone", "amount": 60, "cadence": "monthly", "due_day": 20}
+    ],
+    "missing_data": [],
+    "last_statement_date": "2026-08-10"
+  },
+  "conversation_history": [],
+  "user_request": "I'm mid-month and have electricity, internet, and phone bills coming up. Can I cover them all?",
+  "expected_intent": "cash_flow_forecast",
+  "expected_reasoning_path": [
+    "Identify user needs mid-month cash flow check with specific upcoming bills",
+    "Call get_cash_flow_forecast to get projection",
+    "Check obligations for due dates and amounts",
+    "Calculate if spending balance covers upcoming bills",
+    "Recommend stash transfer if needed"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "list_obligations", "get_balance"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "list_obligations", "arguments": {}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Cash flow analysis confirming bill coverage or recommending stash transfer with specific amounts",
+  "forbidden_behaviors": [
+    {"description": "Inventing bill amounts", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Missing specific bill amounts in response", "detection_pattern": "bills.*coming up", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 25,
+    "reasoning_quality": 20,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "missing_specifics"]
+  },
+  "tags": ["mid_month", "multiple_bills", "buffer_check"],
+  "difficulty": "medium"
+}

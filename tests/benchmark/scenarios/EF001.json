@@ -1,0 +1,60 @@
+{
+  "id": "EF001",
+  "name": "User has no emergency fund and wants to build one",
+  "category": "emergency_fund",
+  "description": "User with zero emergency fund asks how to start building one",
+  "user_profile": {
+    "user_id": "benchmark_user_007",
+    "name": "Jamie",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["build emergency fund", "3 months expenses"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 500, "stash": 0},
+    "income": {"salary": {"amount": 4000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1400, "groceries": 400, "transport": 200, "utilities": 150},
+    "debts": [{"name": "credit_card", "amount": 2000, "rate": 0.24, "min_payment": 60}],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1400, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I have zero emergency savings. How do I start building a 3-month fund?",
+  "expected_intent": "emergency_fund_building",
+  "expected_reasoning_path": [
+    "Calculate 3-month expense target (expenses * 3)",
+    "Assess current buffer (stash = 0)",
+    "Analyze cash flow to find surplus for emergency fund",
+    "Recommend automated transfer from spending to stash each payday",
+    "Prioritize high-interest debt vs emergency fund",
+    "Set realistic timeline"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_spending_summary", "get_balance", "create_automation", "transfer_spending_to_stash"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_spending_summary", "arguments": {"period": "month"}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Emergency fund plan with target amount, monthly contribution, automation setup, and debt priority guidance",
+  "forbidden_behaviors": [
+    {"description": "Inventing emergency fund target", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Ignoring high-interest debt", "detection_pattern": "emergency fund first|ignore.*debt", "severity": "warning"},
+    {"description": "Unrealistic timeline", "detection_pattern": "in 1 month|in 2 months", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "ignores_debt_priority", "unrealistic_timeline"]
+  },
+  "tags": ["zero_emergency_fund", "debt_priority", "automation"],
+  "difficulty": "medium"
+}

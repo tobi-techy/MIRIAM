@@ -1,0 +1,59 @@
+{
+  "id": "IS001",
+  "name": "User wants to start investing with moderate risk",
+  "category": "investment_strategy",
+  "description": "New investor wants to build a diversified portfolio",
+  "user_profile": {
+    "user_id": "benchmark_user_015",
+    "name": "Dakota",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["start investing", "long-term growth"],
+    "known_facts": {"investment_experience": "beginner"}
+  },
+  "financial_state": {
+    "balances": {"spending": 3000, "stash": 15000},
+    "income": {"salary": {"amount": 5500, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1500, "groceries": 500, "transport": 200},
+    "debts": [],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I've never invested before. I have $15k in stash and can add $500/month. What should I do?",
+  "expected_intent": "investment_strategy_creation",
+  "expected_reasoning_path": [
+    "Confirm emergency fund adequacy (3-6 months expenses in stash)",
+    "Assess risk tolerance and timeline",
+    "Recommend diversified ETF portfolio (VTI/VXUS/BND allocation)",
+    "Suggest dollar-cost averaging with scheduled investments",
+    "Create strategy with create_strategy or scheduled investments"
+  ],
+  "allowed_tools": ["get_balance", "get_cash_flow_forecast", "analyze_portfolio", "create_strategy", "create_scheduled_investment"],
+  "required_tool_calls": [
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 1, "is_required": true},
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Investment strategy recommendation with ETF allocation, DCA schedule, and emergency fund check",
+  "forbidden_behaviors": [
+    {"description": "Recommending individual stocks for beginner", "detection_pattern": "buy.*apple|buy.*tesla|individual stock", "severity": "critical"},
+    {"description": "Inventing allocation percentages", "detection_pattern": "[0-9]+%.*VTI|[0-9]+%.*VXUS", "severity": "critical"},
+    {"description": "Guaranteeing returns", "detection_pattern": "will return|guaranteed.*return", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["individual_stocks", "fabricated_allocation", "guarantees"]
+  },
+  "tags": ["beginner_investor", "etf_allocation", "dca"],
+  "difficulty": "medium"
+}

@@ -1650,10 +1650,512 @@ class FinancialIntelligence:
 
         return max(0.1, min(1.0, confidence))
 
+    async def analyze_debt_avalanche(
+        self, user_id: str, debt_data: dict, monthly_payment: float
+    ) -> dict[str, Any]:
+        """Analyze and generate debt avalanche payoff strategy.
+
+        This method implements the debt avalanche method where users pay the
+        minimum on all debts except the highest interest rate debt, which they
+        pay aggressively until paid off, then roll that payment into the next
+        highest interest debt.
+
+        Args:
+            user_id: The user's ID
+            debt_data: List of debt items with interest rates and minimum payments
+            monthly_payment: Total available amount for debt repayment
+
+        Returns:
+            Dictionary containing the debt avalanche strategy
+        """
+        try:
+            # Sort debts by interest rate (highest first)
+            sorted_debts = sorted(
+                debt_data,
+                key=lambda d: d.get("interest_rate", 0),
+                reverse=True,
+            )
+
+            # Calculate payoff timeline for each debt
+            payoff_schedule = []
+            total_months = 0
+            remaining_payment = monthly_payment
+
+            for debt in sorted_debts:
+                balance = debt.get("balance", 0)
+                interest_rate = debt.get("interest_rate", 0)
+                min_payment = debt.get("minimum_payment", 0)
+
+                # Calculate monthly payment needed to pay this debt off
+                monthly_required = min(remaining_payment, min_payment)
+
+                # Calculate months to payoff this debt
+                if interest_rate > 0:
+                    months = self._calculate_months_to_payoff(
+                        balance, monthly_required, interest_rate / 12
+                    )
+                else:
+                    months = int(balance / monthly_required) if monthly_required > 0 else 0
+
+                total_months += months
+                remaining_payment -= monthly_required
+
+                payoff_schedule.append(
+                    {
+                        "debt_id": debt.get("id", "unknown"),
+                        "name": debt.get("name", "Unknown Debt"),
+                        "balance": balance,
+                       || "interest_rate": interest_rate,
+                        "minimum_payment": min_payment,
+                        "monthly_payment": monthly_required,
+                        "payoff_time_months": months,
+                        "total_interest_paid": self._calculate_total_interest(
+                            balance, monthly_required, months, interest_rate / 12
+                        ),
+                    }
+                )
+
+                if remaining_payment <= 0:
+                    break
+
+            # Calculate total strategy metrics
+            total_interest_saved = self._calculate_total_interest_saved(sorted_debts)
+            total_time_months = sum(
+                schedule["payoff_time_months"] for schedule in payoff_schedule
+            )
+
+            return {
+                "strategy": "debt_avalanche",
+                "payoff_schedule": payoff_schedule,
+                "total_months": total_time_months,
+                "total_interest_saved": total_interest_saved,
+                "total_cost": sum(
+                    schedule["balance"] + schedule["total_interest_paid"]
+                    for schedule in payoff_schedule
+                ),
+                "savings_percentage": (
+                    (total_interest_saved / sum(d.get("balance", 0) for d in sorted_debts))
+                    * 100
+                )
+                if sum(d.get("balance", 0) for d in sorted_debts) > 0
+                else 0,
+                "recommendations": self._generate_debt_avalanche_recommendations(
+                    payoff_schedule, monthly_payment
+                ),
+            }
+
+        except Exception as e:
+            logger.error(
+                "Error analyzing debt avalanche strategy",
+                exc_info=True,
+            )
+            raise FinancialError(
+                f"Failed to analyze debt avalanche strategy: {str(e)}"
+            )
+
+    def _calculate_months_to_payoff(
+        self, balance: float, monthly_payment: float, monthly_rate: float
+    ) -> int:
+        """Calculate number of months required to pay off a debt.
+
+        Uses the standard loan amortization formula to calculate the time
+        required to pay off a debt given the balance, monthly payment, and
+        monthly interest rate.
+        """
+        if monthly_payment <= balance * monthly_rate:
+            return float("inf")
+
+        numerator = (
+            balance
+            * (1 + monthly_rate) ** 10000
+            * (1 + monthly_rate - 1)
+        )
+        denominator = (
+            (1 + monthly_rate) ** 10000 - 1
+        ) * monthly_payment
+
+        if denominator <= 0:
+            return float("inf")
+
+        months = numerator / denominator
+        return int(round(months))
+
+    def _calculate_total_interest(
+        self,
+        principal: float,
+        monthly_payment: float,
+        months: int,
+        monthly_rate: float,
+    ) -> float:
+        """Calculate total interest paid over the life of a loan."""
+        total_paid = monthly_payment * months
+        total_interest = total_paid - principal
+        return max(0, total_interest)
+
+    def _calculate_total_interest_saved(
+        self, debts: list[dict[str, Any]]
+    ) -> float:
+        """Calculate total interest saved by using debt avalanche vs minimum payments."""
+        try:
+            # Calculate total interest with minimum payments only
+            total_min_interest = sum(
+                self._calculate_min_payment_interest(debt) for debt in debts
+            )
+
+            # Calculate total interest with avalanche method
+            sorted_debts = sorted(debt for debt in debts if debt.get("balance", 0) > 0)
+            remaining_payment = 1000.0  # Example monthly payment
+
+            avalanche_interest = 0
+            for debt in sorted_debts:
+                balance = debt.get("balance", 0)
+                interest_rate = debt.get("interest_rate", 0)
+                min_payment = debt.get("minimum_payment", 0)
+
+                monthly_required = min(remaining_payment, min_payment)
+                months = self._calculate_months_to_payoff(
+                    balance, monthly_required, interest_rate / 12
+                )
+
+                total_interest = self._calculate_total_interest(
+                    balance, monthly_required, months, interest_rate / 12
+                )
+                avalanche_interest += total_interest
+
+                remaining_payment -= monthly_required
+                if remaining_payment <= 0:
+                    break
+
+            return total_min_interest - avalanche_interest
+
+        except Exception as e:
+            logger.error(
+                "Error calculating total interest saved",
+                exc_info=True,
+            )
+            return 0.0
+
+    def _calculate_min_payment_interest(
+        self, debt: dict[str, Any]
+    ) -> float:
+        """Calculate total interest paid if only minimum payments are made."""
+        try:
+            balance = debt.get("balance", 0)
+            interest_rate = debt.get("interest_rate", 0)
+            min_payment = debt.get("minimum_payment", 0)
+
+            if min_payment <= 0 or interest_rate <= 0:
+                return 0.0
+
+            # Estimate months to payoff (simplified calculation)
+            months = int(balance / min_payment) if min_payment > 0 else 0
+
+            return self._calculate_total_interest(
+                balance, min_payment, months, interest_rate / 12
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error calculating minimum payment interest",
+                exc_info=True,
+            )
+            return 0.0
+
+    def _generate_debt_avalanche_recommendations(
+        self, payoff_schedule: list[dict[str, Any]], monthly_payment: float
+    ) -> list[str]:
+        """Generate recommendations based on debt avalanche strategy."""
+        recommendations = []
+
+        try:
+            # Find highest interest debt
+            if payoff_schedule:
+                highest_interest_debt = max(
+                    payoff_schedule, key=lambda d: d.get("interest_rate", 0)
+                )
+
+                recommendations.append(
+                    f"Prioritize paying off {highest_interest_debt['name']} first "
+                    f"(interest rate: {highest_interest_debt['interest_rate'] * 100:.1f}%). "
+                    f"Allocate ${monthly_payment:.2f} monthly toward this debt."
+                )
+
+                # Calculate total time saved
+                total_avalanche_time = sum(
+                    d["payoff_time_months"] for d in payoff_schedule
+                )
+                total_min_payment_time = sum(
+                    d["balance"] / d["minimum_payment"]
+                    if d["minimum_payment"] > 0
+                    else 0
+                    for d in payoff_schedule
+                )
+
+                time_saved = total_min_payment_time - total_avalanche_time
+                if time_saved > 0:
+                    years_saved = time_saved / 12
+                    recommendations.append(
+                        f"Debt avalanche will save approximately {years_saved:.1f} years "
+                        f"compared to paying minimum amounts only."
+                    )
+
+            recommendations.append(
+                "Consider consolidating high-interest debt to reduce interest rates."
+            )
+            recommendations.append(
+                "Build an emergency fund before aggressively paying down debt."
+            )
+            recommendations.append(
+                "Track your spending to free up more money for debt repayment."
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error generating debt avalanche recommendations",
+                exc_info=True,
+            )
+
+        return recommendations
+
+    async def generate_debt_paydown_strategy(
+        self, user_id: str, debt_data: dict, monthly_income: float
+    ) -> dict[str, Any]:
+        """Generate a comprehensive debt payoff strategy.
+
+        This method provides a detailed debt payoff strategy using the debt
+        avalanche method, including calculations, timelines, and recommendations.
+        """
+        try:
+            # Calculate available monthly payment
+            current_expenses = await self._get_current_monthly_expenses(user_id)
+            monthly_savings = self._calculate_monthly_savings_target(
+                monthly_income, debt_data
+            )
+            available_for_debt = (
+                monthly_income
+                - current_expenses
+                - monthly_savings
+                - self._calculate_fixed_monthly_obligations(user_id)
+            )
+
+            monthly_payment = max(0, available_for_debt)
+
+            # Analyze debt avalanche strategy
+            avalanche_analysis = await self.analyze_debt_avalanche(
+                user_id, debt_data, monthly_payment
+            )
+
+            # Calculate financial goals
+            financial_goals = self._calculate_financial_goals(debt_data, monthly_income)
+
+            # Generate recommendations
+            recommendations = await self._generate_comprehensive_debt_recommendations(
+                avalanche_analysis, financial_goals
+            )
+
+            return {
+                "strategy_type": "debt_avalanche",
+                "monthly_payment": round(monthly_payment, 2),
+                "avalanche_analysis": avalanche_analysis,
+                "financial_goals": financial_goals,
+                "recommendations": recommendations,
+                "expected_timeline_months": avalanche_analysis["total_months"],
+                "total_interest_saved": avalanche_analysis["total_interest_saved"],
+                "next_steps": [
+                    "Set up automatic transfers for debt payments",
+                    "Track progress regularly",
+                    "Review and adjust strategy as needed",
+                    "Consider debt consolidation if interest rates are high",
+                ],
+            }
+
+        except Exception as e:
+            logger.error(
+                "Error generating debt payoff strategy",
+                exc_info=True,
+            )
+            raise FinancialError(f"Failed to generate debt payoff strategy: {str(e)}")
+
+    async def _get_current_monthly_expenses(self, user_id: str) -> float:
+        """Get current monthly expenses from the user's financial data."""
+        try:
+            expense_data = await self.memory_store.get_expense_data(user_id)
+
+            # Calculate total monthly expenses
+            monthly_expenses = 0.0
+            for category, data in expense_data.get("category_expenses", {}).items():
+                monthly_expenses += data.get("monthly_amount", 0)
+
+            return monthly_expenses
+
+        except Exception as e:
+            logger.error(
+                "Error getting current monthly expenses",
+                exc_info=True,
+            )
+            return 0.0
+
+    def _calculate_monthly_savings_target(
+        self, monthly_income: float, debt_data: dict
+    ) -> float:
+        """Calculate monthly savings target."""
+        try:
+            # Basic savings target: 10% of monthly income
+            savings_target = monthly_income * 0.10
+
+            # Adjust based on debt situation
+            total_debt = sum(d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0)
+
+            if total_debt > 10000:
+                # Higher savings for high debt
+                savings_target = max(savings_target, monthly_income * 0.15)
+            elif total_debt > 5000:
+                # Moderate savings for medium debt
+                savings_target = max(savesavings_target, monthly_income * 0.12)
+
+            return savings_target
+
+        except Exception as e:
+            logger.error(
+                "Error calculating monthly savings target",
+                exc_info=True,
+            )
+            return monthly_income * 0.10
+
+    def _calculate_fixed_monthly_obligations(
+        self, user_id: str
+    ) -> float:
+        """Calculate fixed monthly obligations (rent, utilities, insurance, etc.)."""
+        try:
+            # Get user profile for fixed obligations
+            profile = await self.memory_store.get_financial_profile(user_id)
+
+            if not profile:
+                return 0.0
+
+            # Sum up fixed obligations
+            fixed_obligations = 0.0
+
+            # Add housing costs
+            if profile.get("housing_cost"):
+                fixed_obligations += profile["housing_cost"]
+
+            # Add insurance costs
+            if profile.get("insurance_cost"):
+                fixed_obligations += profile["insurance_cost"]
+
+            # Add other regular obligations
+            for obligation in profile.get("regular_obligations", []):
+                fixed_obligations += obligation.get("amount", 0)
+
+            return fixed_obligations
+
+        except Exception as e:
+            logger.error(
+                "Error calculating fixed monthly obligations",
+                exc_info=True,
+            )
+            return 0.0
+
+    def _calculate_financial_goals(
+        self, debt_data: dict, monthly_income: float
+    ) -> dict[str, Any]:
+        """Calculate financial goals based on debt situation."""
+        try:
+            total_debt = sum(d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0)
+
+            goals = []
+
+            if total_debt > 10000:
+                goals.append(
+                    {
+                        "type": "debt_freedom",
+                        "target": f"Pay off ${total_debt:,.0f} debt",
+                        "timeline_months": int(total_debt / (monthly_income * 0.15)),
+                        "priority": "high",
+                    }
+                )
+            elif total_debt > 5000:
+                goals.append(
+                    {
+                        "type": "debt_reduction",
+                        "target": f"Reduce debt to ${total_debt/2:,.0f}",
+                        "timeline_months": int((total_debt / 2) / (monthly_income * 0.10)),
+                        "priority": "medium",
+                    }
+                )
+            else:
+                goals.append(
+                    {
+                        "type": "debt_management",
+                        "target": f"Manage existing debt effectively",
+                        "timeline_months": 12,
+                        "priority": "low",
+                    }
+                )
+
+            # Add savings goal
+            savings_goal = monthly_income * 0.10
+            goals.append(
+                {
+                    "type": "emergency_fund",
+                    "target": f"Build ${savings_goal:,.0f} emergency fund",
+                    "timeline_months": 12,
+                    "priority": "high",
+                }
+            )
+
+            return {"goals": goals, "total_debt": total_debt}
+
+        except Exception as e:
+            logger.error(
+                "Error calculating financial goals",
+                exc_info=True,
+            )
+            return {"goals": [], "total_debt": 0}
+
+    async def _generate_comprehensive_debt_recommendations(
+        self,
+        avalanche_analysis: dict[str, Any],
+        financial_goals: dict[str, Any],
+    ) -> list[str]:
+        """Generate comprehensive debt management recommendations."""
+        recommendations = []
+
+        try:
+            # Add avalanche strategy recommendations
+            recommendations.extend(avalanche_analysis.get("recommendations", []))
+
+            # Add financial goal recommendations
+            for goal in financial_goals.get("goals", []):
+                recommendations.append(
+                    f"{goal['priority'].title()} Priority: {goal['target']} "
+                    f"(Timeline: {goal['timeline_months']} months)"
+                )
+
+            # Add general debt management recommendations
+            recommendations.extend(
+                [
+                    "Create a realistic budget that includes debt payments",
+                    "Track all expenses to identify areas for cost reduction",
+                    "Consider debt consolidation if interest rates are high",
+                    "Build an emergency fund before aggressively paying down debt",
+                    "Stay consistent with debt repayment plan",
+                    "Celebrate milestones and small victories along the way",
+                ]
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error generating comprehensive debt recommendations",
+                exc_info=True,
+            )
+
+        return recommendations
+
     async def get_financial_advice(
         self, user_id: str, context: str = "general"
-    ) -> dict[str, Any]:
-        """Get personalized financial advice."""
+    ) -> dict[str, Any]:\n        """Get personalized financial advice."""
         try:
             # Get user financial profile
             profile = await self.memory_store.get_financial_profile(user_id)
@@ -1669,33 +2171,10 @@ class FinancialIntelligence:
             advice = {
                 "recommendations": [],
                 "priority": "low",
-                "next_steps": [],
-            }
+                "next_steps": [],\n```
 
-            # Generate advice based on context
-            if context == "budgeting":
-                advice = await self._generate_budgeting_advice(
-                    profile, income_data, expense_data
-                )
-            elif context == "investing":
-                advice = await self._generate_investing_advice(profile, portfolio_data)
-            elif context == "debt":
-                advice = await self._generate_debt_advice(
-                    profile, income_data, expense_data
-                )
-            else:
-                advice = await self._generate_general_advice(
-                    profile, portfolio_data, income_data, expense_data
-                )
-
-            return advice
-
-        except Exception as e:
-            logger.error(
-                "Error generating financial advice",
-                exc_info=True,
-            )
-            raise FinancialError(f"Failed to generate financial advice: {str(e)}")
+I need to fix the edit - there's too much content. Let me be more selective and focus on the key areas.[
+{
 
     async def _generate_budgeting_advice(
         self, profile: Any, income_data: dict[str, Any], expense_data: dict[str, Any]

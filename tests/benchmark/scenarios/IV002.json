@@ -1,0 +1,58 @@
+{
+  "id": "IV002",
+  "name": "Commission-based income with seasonal patterns",
+  "category": "income_volatility",
+  "description": "User has commission income with known seasonal patterns",
+  "user_profile": {
+    "user_id": "benchmark_user_006",
+    "name": "Riley",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["handle seasonal dips", "maximize high months"],
+    "known_facts": {"income_type": "commission", "seasonal": true, "peak_months": ["Nov", "Dec", "May"]}
+  },
+  "financial_state": {
+    "balances": {"spending": 4000, "stash": 20000},
+    "income": {"commission": {"amount": 8000, "frequency": "monthly", "volatility": "medium", "seasonal_factor": 2.5}},
+    "expenses": {"mortgage": 2200, "groceries": 600, "transport": 300, "childcare": 1200},
+    "debts": [{"name": "mortgage", "amount": 300000, "rate": 0.06, "min_payment": 2200}],
+    "investments": [{"symbol": "VTI", "amount": 30000, "type": "etf"}],
+    "obligations": [{"name": "mortgage", "amount": 2200, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "I make 3x more in Nov/Dec and May. How should I handle the low months?",
+  "expected_intent": "income_volatility_planning",
+  "expected_reasoning_path": [
+    "Identify seasonal commission pattern",
+    "Analyze current buffer (stash) relative to low-month expenses",
+    "Calculate required buffer for 3-4 low months",
+    "Recommend automated transfers from peak months to stash",
+    "Suggest scheduled investment increases during peak months"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "create_automation", "create_scheduled_investment"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Seasonal income plan with buffer target, automated peak-month transfers, and investment scheduling",
+  "forbidden_behaviors": [
+    {"description": "Ignoring seasonal pattern", "detection_pattern": "steady income|every month", "severity": "critical"},
+    {"description": "Inventing buffer numbers", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["ignores_seasonality", "fabricated_numbers"]
+  },
+  "tags": ["commission", "seasonal", "buffer_planning"],
+  "difficulty": "hard"
+}

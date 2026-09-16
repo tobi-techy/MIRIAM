@@ -1,0 +1,60 @@
+{
+  "id": "MAC002",
+  "name": "User wants spending analysis and coaching",
+  "category": "money_audit_coaching",
+  "description": "User asks for spending analysis and specific coaching on where money goes",
+  "user_profile": {
+    "user_id": "benchmark_user_002",
+    "name": "Jordan",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["reduce spending", "build emergency fund"],
+    "known_facts": {"spending_concern": "dining_out"}
+  },
+  "financial_state": {
+    "balances": {"spending": 800, "stash": 3000},
+    "income": {"freelance": {"amount": 4500, "frequency": "monthly", "volatility": "high"}},
+    "expenses": {"rent": 1500, "groceries": 400, "dining_out": 800, "transport": 200, "subscriptions": 100},
+    "debts": [{"name": "credit_card", "amount": 3000, "rate": 0.22, "min_payment": 100}],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "I feel like I'm spending too much on food and dining out. Can you analyze my spending and coach me on cutting back?",
+  "expected_intent": "spending_analysis_coaching",
+  "expected_reasoning_path": [
+    "Identify user concern about dining_out spending",
+    "Get spending summary for current month",
+    "Get transaction history to see dining_out details",
+    "Analyze spending patterns vs income",
+    "Provide specific coaching on dining_out reduction",
+    "Suggest budget adjustments"
+  ],
+  "allowed_tools": ["get_spending_summary", "get_transactions", "get_balance", "budget_advice"],
+  "required_tool_calls": [
+    {"tool_name": "get_spending_summary", "arguments": {"period": "month"}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_transactions", "arguments": {"limit": 50, "category": "dining_out"}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Spending analysis showing dining_out as % of income, specific reduction targets, and budget coaching",
+  "forbidden_behaviors": [
+    {"description": "Inventing transaction amounts", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Generic advice without data", "detection_pattern": "you should cook more|stop eating out", "severity": "warning"},
+    {"description": "Judging character", "detection_pattern": "you're irresponsible|you're bad with money", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 20,
+    "tool_selection": 15,
+    "tool_arguments": 15,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "generic_advice", "identity_attack"]
+  },
+  "tags": ["spending_focus", "coaching", "high_volatility_income"],
+  "difficulty": "medium"
+}

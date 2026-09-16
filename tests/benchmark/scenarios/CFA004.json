@@ -1,0 +1,66 @@
+{
+  "id": "CFA004",
+  "name": "Multiple bills due with low balance - confirmation required",
+  "category": "cash_flow_analysis",
+  "description": "User has electricity, internet, phone bills due but spent on a $500 concert tickets last week. Balance is $1,200. Decision point: can they cover bills?",
+  "user_profile": {
+    "user_id": "benchmark_bills_001",
+    "name": "Taylor",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["pay bills on time", "maintain credit score"],
+    "known_facts": {"recent_purchase": "concert_tickets_500", "today_balance": 1200}
+  },
+  "financial_state": {
+    "balances": {"spending": 1200, "stash": 3000},
+    "income": {"salary": {"amount": 4500, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"groceries": 400, "transport": 250, "concert_tickets": 500, "social": 300},
+    "debts": [],
+    "investments": [],
+    "obligations": [
+      {"name": "electricity", "amount": 180, "cadence": "monthly", "due_in_days": 3},
+      {"name": "internet", "amount": 85, "cadence": "monthly", "due_in_days": 5},
+      {"name": "phone", "amount": 95, "cadence": "monthly", "due_in_days": 7},
+      {"name": "streaming", "amount": 45, "cadence": "monthly", "due_in_days": 2}
+    ],
+    "missing_data": [],
+    "last_statement_date": "2026-08-10"
+  },
+  "conversation_history": [],
+  "user_request": "My bills total $405 but I spent $500 on concert tickets and now only have $1,200. Should I transfer from stash or use my credit card?",
+  "expected_intent": "cash_flow_decision_with_confirmation",
+  "expected_reasoning_path": [
+    "Calculate exact bill total: electricity $180 + internet $85 + phone $95 + streaming $45 = $405",
+    "Calculate spendable after bills: $1200 - $405 = $795 remaining",
+    "Check if bills can be paid directly from spending balance: YES, $1200 > $405",
+    "Point out: Concert ticket purchase already happened - the real question is about upcoming obligations",
+    "Connect to conscious spending: 'You spent $500 on joy. Now you need to find $405 for obligations. Where do you find it?'",
+    "Offer automation: Set up automatic transfers for bills to avoid this situation",
+    "Suggest: Create separate 'obligations' bucket or use automatic bill pay"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "list_obligations", "transfer_spending_to_stash"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "list_obligations", "arguments": {}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Analysis showing bills CAN be paid from current balance, no transfer needed, but automation suggested to prevent future shortfalls",
+  "forbidden_behaviors": [
+    {"description": "Suggesting credit card use", "detection_pattern": "use your credit card|pay with card|card payment", "severity": "critical"},
+    {"description": "Inventing balance numbers", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Ignoring the conscious spending tension", "detection_pattern": "nice concert|enjoy it|worth it", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 15,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 5,
+    "critical_failures": ["credit_card_suggestion", "fabricated_numbers", "misses_spending_tension"]
+  },
+  "tags": ["bill_payment", "concert_tickets", "conscious_spending", "buffer_management"],
+  "difficulty": "medium"
+}

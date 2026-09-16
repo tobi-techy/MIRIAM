@@ -1,0 +1,60 @@
+{
+  "id": "GFP001",
+  "name": "User wants a financial plan for a specific goal",
+  "category": "goals_financial_plans",
+  "description": "User has a concrete goal (house down payment) and wants a plan",
+  "user_profile": {
+    "user_id": "benchmark_user_011",
+    "name": "Sam",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["house down payment $50k in 3 years"],
+    "known_facts": {"target_amount": 50000, "target_date": "2029-09-01"}
+  },
+  "financial_state": {
+    "balances": {"spending": 2000, "stash": 8000},
+    "income": {"salary": {"amount": 6000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1600, "groceries": 500, "transport": 250, "entertainment": 300},
+    "debts": [{"name": "car_loan", "amount": 12000, "rate": 0.05, "min_payment": 300}],
+    "investments": [{"symbol": "VTI", "amount": 10000, "type": "etf"}],
+    "obligations": [{"name": "rent", "amount": 1600, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I want to save $50k for a house down payment in 3 years. Can you make me a plan?",
+  "expected_intent": "goal_based_financial_plan",
+  "expected_reasoning_path": [
+    "Calculate monthly savings needed: $50k / 36 months = ~$1,389/month",
+    "Assess current cash flow and surplus",
+    "Call get_financial_plan for comprehensive plan",
+    "Recommend automated savings to stash",
+    "Suggest investment strategy for timeline",
+    "Account for car loan payoff freeing up cash flow"
+  ],
+  "allowed_tools": ["get_financial_plan", "get_cash_flow_forecast", "get_balance", "create_automation", "create_scheduled_investment"],
+  "required_tool_calls": [
+    {"tool_name": "get_financial_plan", "arguments": {}, "tool_type": "planning", "order": 1, "is_required": true},
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Goal-based plan with monthly savings target, automation, investment strategy, and timeline milestones",
+  "forbidden_behaviors": [
+    {"description": "Inventing monthly savings amount", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Ignoring existing debt in plan", "detection_pattern": "ignore.*car|don't worry.*loan", "severity": "warning"},
+    {"description": "Unrealistic return assumptions", "detection_pattern": "10% return|12% return|guaranteed", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "ignores_debt", "unrealistic_returns"]
+  },
+  "tags": ["house_down_payment", "3_year_goal", "goal_based_planning"],
+  "difficulty": "medium"
+}

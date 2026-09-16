@@ -1,0 +1,56 @@
+{
+  "id": "SS001",
+  "name": "User wants to optimize stash yield",
+  "category": "savings_stash",
+  "description": "User has cash in stash and wants to know if they're getting the best yield",
+  "user_profile": {
+    "user_id": "benchmark_user_013",
+    "name": "River",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["maximize stash yield", "keep liquid"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 3000, "stash": 25000},
+    "income": {"salary": {"amount": 6500, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1800, "groceries": 600, "transport": 250},
+    "debts": [],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1800, "cadence": "monthly"}],
+    "missing_data": ["current_stash_apr"],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I have $25k in my stash. Am I getting the best yield on this money?",
+  "expected_intent": "stash_yield_optimization",
+  "expected_reasoning_path": [
+    "Check current stash balance and yield",
+    "Compare to available alternatives (HYSA, money market, T-bills)",
+    "Consider liquidity needs vs yield",
+    "Recommend optimal allocation"
+  ],
+  "allowed_tools": ["get_balance", "analyze_portfolio", "get_financial_plan"],
+  "required_tool_calls": [
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 1, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Stash yield analysis with current rate, alternatives, and recommendation based on liquidity needs",
+  "forbidden_behaviors": [
+    {"description": "Inventing current APY", "detection_pattern": "[0-9]+\\.?[0-9]*% APY|[0-9]+\\.?[0-9]*% yield", "severity": "critical"},
+    {"description": "Recommending illiquid options for emergency money", "detection_pattern": "lock.*up|cd.*year|bond.*fund", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_apy", "illiquid_recommendation"]
+  },
+  "tags": ["stash_yield", "optimization", "liquidity"],
+  "difficulty": "medium"
+}

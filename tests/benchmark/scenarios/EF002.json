@@ -1,0 +1,58 @@
+{
+  "id": "EF002",
+  "name": "User has partial emergency fund, wants to complete it",
+  "category": "emergency_fund",
+  "description": "User has 1.5 months of expenses saved, wants to reach 6 months",
+  "user_profile": {
+    "user_id": "benchmark_user_008",
+    "name": "Drew",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["complete 6-month emergency fund"],
+    "known_facts": {"current_emergency_months": 1.5}
+  },
+  "financial_state": {
+    "balances": {"spending": 2000, "stash": 6000},
+    "income": {"salary": {"amount": 5500, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1500, "groceries": 500, "transport": 250, "insurance": 200},
+    "debts": [{"name": "student_loan", "amount": 15000, "rate": 0.04, "min_payment": 200}],
+    "investments": [{"symbol": "VTI", "amount": 10000, "type": "etf"}],
+    "obligations": [{"name": "rent", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "I have about 1.5 months of expenses in my stash. Want to get to 6 months. What's the plan?",
+  "expected_intent": "emergency_fund_building",
+  "expected_reasoning_path": [
+    "Calculate current months of expenses covered (stash / monthly_expenses)",
+    "Calculate target for 6 months",
+    "Determine gap and monthly surplus from cash flow",
+    "Recommend automated transfer to close gap",
+    "Consider if any stash should go to investments after target reached"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_spending_summary", "get_balance", "create_automation"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Emergency fund completion plan with current coverage, target, monthly contribution, and timeline",
+  "forbidden_behaviors": [
+    {"description": "Inventing current coverage months", "detection_pattern": "[0-9]+\\.?[0-9]*\\s*months", "severity": "critical"},
+    {"description": "Suggesting investment before emergency fund complete", "detection_pattern": "invest.*instead|put.*investments", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "premature_investment"]
+  },
+  "tags": ["partial_emergency_fund", "target_6_months", "automation"],
+  "difficulty": "medium"
+}
