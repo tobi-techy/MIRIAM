@@ -1678,7 +1678,7 @@ class FinancialIntelligence:
 
             # Calculate payoff timeline for each debt
             payoff_schedule = []
-            total_months = 0
+            total_months = 0.0
             remaining_payment = monthly_payment
 
             for debt in sorted_debts:
@@ -1705,7 +1705,7 @@ class FinancialIntelligence:
                         "debt_id": debt.get("id", "unknown"),
                         "name": debt.get("name", "Unknown Debt"),
                         "balance": balance,
-                       || "interest_rate": interest_rate,
+                       "interest_rate": interest_rate,
                         "minimum_payment": min_payment,
                         "monthly_payment": monthly_required,
                         "payoff_time_months": months,
@@ -1755,7 +1755,7 @@ class FinancialIntelligence:
 
     def _calculate_months_to_payoff(
         self, balance: float, monthly_payment: float, monthly_rate: float
-    ) -> int:
+    ) -> float:
         """Calculate number of months required to pay off a debt.
 
         Uses the standard loan amortization formula to calculate the time
@@ -1784,7 +1784,7 @@ class FinancialIntelligence:
         self,
         principal: float,
         monthly_payment: float,
-        months: int,
+        months: float,
         monthly_rate: float,
     ) -> float:
         """Calculate total interest paid over the life of a loan."""
@@ -1803,10 +1803,14 @@ class FinancialIntelligence:
             )
 
             # Calculate total interest with avalanche method
-            sorted_debts = sorted(debt for debt in debts if debt.get("balance", 0) > 0)
+            sorted_debts = sorted(
+                (debt for debt in debts if debt.get("balance", 0) > 0),
+                key=lambda d: d.get("interest_rate", 0),
+                reverse=True,
+            )
             remaining_payment = 1000.0  # Example monthly payment
 
-            avalanche_interest = 0
+            avalanche_interest = 0.0
             for debt in sorted_debts:
                 balance = debt.get("balance", 0)
                 interest_rate = debt.get("interest_rate", 0)
@@ -1828,7 +1832,7 @@ class FinancialIntelligence:
 
             return total_min_interest - avalanche_interest
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating total interest saved",
                 exc_info=True,
@@ -1854,7 +1858,7 @@ class FinancialIntelligence:
                 balance, min_payment, months, interest_rate / 12
             )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating minimum payment interest",
                 exc_info=True,
@@ -1909,7 +1913,7 @@ class FinancialIntelligence:
                 "Track your spending to free up more money for debt repayment."
             )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating debt avalanche recommendations",
                 exc_info=True,
@@ -1935,7 +1939,7 @@ class FinancialIntelligence:
                 monthly_income
                 - current_expenses
                 - monthly_savings
-                - self._calculate_fixed_monthly_obligations(user_id)
+                - await self._calculate_fixed_monthly_obligations(user_id)
             )
 
             monthly_payment = max(0, available_for_debt)
@@ -1988,7 +1992,7 @@ class FinancialIntelligence:
 
             return monthly_expenses
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error getting current monthly expenses",
                 exc_info=True,
@@ -2011,18 +2015,18 @@ class FinancialIntelligence:
                 savings_target = max(savings_target, monthly_income * 0.15)
             elif total_debt > 5000:
                 # Moderate savings for medium debt
-                savings_target = max(savesavings_target, monthly_income * 0.12)
+                savings_target = max(savings_target, monthly_income * 0.12)
 
             return savings_target
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating monthly savings target",
                 exc_info=True,
             )
             return monthly_income * 0.10
 
-    def _calculate_fixed_monthly_obligations(
+    async def _calculate_fixed_monthly_obligations(
         self, user_id: str
     ) -> float:
         """Calculate fixed monthly obligations (rent, utilities, insurance, etc.)."""
@@ -2050,7 +2054,7 @@ class FinancialIntelligence:
 
             return fixed_obligations
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating fixed monthly obligations",
                 exc_info=True,
@@ -2088,7 +2092,7 @@ class FinancialIntelligence:
                 goals.append(
                     {
                         "type": "debt_management",
-                        "target": f"Manage existing debt effectively",
+                        "target": "Manage existing debt effectively",
                         "timeline_months": 12,
                         "priority": "low",
                     }
@@ -2107,7 +2111,7 @@ class FinancialIntelligence:
 
             return {"goals": goals, "total_debt": total_debt}
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error calculating financial goals",
                 exc_info=True,
@@ -2145,7 +2149,7 @@ class FinancialIntelligence:
                 ]
             )
 
-        except Exception as e:
+        except Exception:
             logger.error(
                 "Error generating comprehensive debt recommendations",
                 exc_info=True,
@@ -2155,7 +2159,8 @@ class FinancialIntelligence:
 
     async def get_financial_advice(
         self, user_id: str, context: str = "general"
-    ) -> dict[str, Any]:\n        """Get personalized financial advice."""
+    ) -> dict[str, Any]:
+        """Get personalized financial advice."""
         try:
             # Get user financial profile
             profile = await self.memory_store.get_financial_profile(user_id)
@@ -2171,10 +2176,33 @@ class FinancialIntelligence:
             advice = {
                 "recommendations": [],
                 "priority": "low",
-                "next_steps": [],\n```
+                "next_steps": [],
+            }
 
-I need to fix the edit - there's too much content. Let me be more selective and focus on the key areas.[
-{
+            # Generate advice based on context
+            if context == "budgeting":
+                advice = await self._generate_budgeting_advice(
+                    profile, income_data, expense_data
+                )
+            elif context == "investing":
+                advice = await self._generate_investing_advice(profile, portfolio_data)
+            elif context == "debt":
+                advice = await self._generate_debt_advice(
+                    profile, income_data, expense_data
+                )
+            else:
+                advice = await self._generate_general_advice(
+                    profile, portfolio_data, income_data, expense_data
+                )
+
+            return advice
+
+        except Exception as e:
+            logger.error(
+                "Error generating financial advice",
+                exc_info=True,
+            )
+            raise FinancialError(f"Failed to generate financial advice: {str(e)}")
 
     async def _generate_budgeting_advice(
         self, profile: Any, income_data: dict[str, Any], expense_data: dict[str, Any]
@@ -2186,7 +2214,8 @@ I need to fix the edit - there's too much content. Let me be more selective and 
         try:
             # Calculate current budget metrics
             monthly_income = self._calculate_monthly_income(income_data)
-            monthly_expenses = self._calculate_monthly_expenses(expense_data)
+            monthly_expense_totals = self._calculate_monthly_expenses(expense_data)
+            monthly_expenses = sum(monthly_expense_totals.values())
             savings_rate = (
                 (monthly_income - monthly_expenses) / monthly_income * 100
                 if monthly_income > 0
@@ -2434,7 +2463,8 @@ I need to fix the edit - there's too much content. Let me be more selective and 
 
             # Calculate savings rate (0-40 points)
             monthly_income = self._calculate_monthly_income(income_data)
-            monthly_expenses = self._calculate_monthly_expenses(expense_data)
+            monthly_expense_totals = self._calculate_monthly_expenses(expense_data)
+            monthly_expenses = sum(monthly_expense_totals.values())
             savings_rate = (
                 (monthly_income - monthly_expenses) / monthly_income * 100
                 if monthly_income > 0

@@ -210,6 +210,15 @@ def _s(value: Any) -> str:
     return str(value).strip().casefold() if value is not None else ""
 
 
+def _f(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve(
     profile: FinancialProfile,
     health: dict[str, Any] | None,
@@ -252,15 +261,9 @@ def _resolve(
     sig.stressed = _s(profile.value("financial_stress")) == "high"
 
     if health:
-        try:
-            sig.health_score = float(health.get("score"))
-        except (TypeError, ValueError):
-            sig.health_score = None
+        sig.health_score = _f(health.get("score"))
         sig.health_status = _s(health.get("status"))
-        try:
-            sig.savings_rate = float(health.get("savings_rate_pct"))
-        except (TypeError, ValueError):
-            sig.savings_rate = None
+        sig.savings_rate = _f(health.get("savings_rate_pct"))
         sig.budget_status = _s(health.get("budget_status"))
     return sig
 
