@@ -47,7 +47,7 @@ class MemoryStore:
         """Yield an AsyncSession; callers must call ``initialize()`` first."""
         if self.async_session is None:
             raise RuntimeError("MemoryStore.initialize() must be called before use")
-        async with self._session() as session:
+        async with self.async_session() as session:
             yield session
 
     async def close(self):
