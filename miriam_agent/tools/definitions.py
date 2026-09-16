@@ -83,6 +83,41 @@ registry.register(
 )
 
 
+async def _get_document_result(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    """Read-only document result for the authenticated user.
+
+    Go enforces ownership (cross-user ids return 404→AuthorizationError);
+    the tool only forwards ctx["token"] and validates the contract.
+    """
+    client = get_go_client()
+    result = await client.get_document_result(ctx["token"], args["document_id"])
+    return result.model_dump(mode="json")
+
+
+registry.register(
+    name="get_document_result",
+    description=(
+        "Get the processing status and extracted result of one of the user's "
+        "uploaded financial documents (receipt, statement, invoice). Read-only."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "document_id": {
+                **_SCHEMA_STRING,
+                "description": "Go document ID from the upload response",
+            },
+        },
+        "required": ["document_id"],
+    },
+    category="documents",
+    risk_level=RiskLevel.LOW,
+    handler=_get_document_result,
+)
+
+
 async def _get_spending_summary(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:

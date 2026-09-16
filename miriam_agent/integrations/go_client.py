@@ -589,6 +589,18 @@ class GoBackendClient:
         data = await self._token_get("/api/v1/billpay/history", token)
         return _as_list(data, "history")
 
+    # ---- documents (read-only contract v1; Go owns lifecycle/storage) ----
+
+    async def get_document_result(self, token: str, document_id: str):
+        """Fetch the versioned document result for the authenticated user.
+
+        Uses this client's shared httpx session (base URL, timeout, CSRF
+        header) plus the caller's user JWT — Go enforces ownership.
+        """
+        from miriam_agent.documents.client import fetch_document_result
+
+        return await fetch_document_result(self._client, token, document_id)
+
     # ---- internal helpers ----
 
     async def _token_get(
