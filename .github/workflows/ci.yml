@@ -48,6 +48,12 @@ jobs:
       - name: Run mypy type checking
         run: mypy miriam_agent
 
+      - name: Run spec gate tests
+        run: |
+          uv run pytest tests/test_miriam_spec.py tests/test_spec_examples.py -v
+        env:
+          PYTHONPATH: miriam_agent
+
       - name: Run tests
         run: |
           pytest tests/ -v --cov=miriam_agent --cov-report=xml

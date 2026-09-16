@@ -131,7 +131,7 @@ def test_plan_minimal_default_is_financial_beginner():
 
 
 def test_plan_carries_a_structured_insight_per_diagnostic():
-    """spec §21: every plan carries one deterministic financial_insight object.
+    """spec v1.2 §21: every plan carries one deterministic financial_insight object.
     The personality layer speaks it; the backend keeps the structured read."""
     from miriam_agent.onboarding.plan import build_plan
 
@@ -848,7 +848,7 @@ def test_finished_interview_survives_casual_chat(monkeypatch):
 
 
 def test_structured_meta_lifted_from_facts(monkeypatch):
-    """spec §6/§7/§22/§29: the agent's reserved meta keys are lifted off the
+    """spec v1.2 §6/§7/§22/§29: the agent's reserved meta keys are lifted off the
     free-form facts onto structured state (money-moment read, goal read,
     sentiment, internal money script)."""
     provider = FakeProvider(
@@ -906,7 +906,7 @@ def test_structured_meta_lifted_from_facts(monkeypatch):
 
 
 def test_conversation_state_escalates_and_directness_levels(monkeypatch):
-    """spec §29/§12: the conversation read recomputes each turn. Early turns are
+    """spec v1.2 §29/§12: the conversation read recomputes each turn. Early turns are
     tentative (directness 1-2); once the plan lands, the problem/insight are
     named, the relationship is established, and severity pushes directness up."""
     from miriam_agent.config.settings import get_settings
@@ -971,7 +971,7 @@ def _aha_flow_provider():
 
 
 def test_aha_generated_event_on_plan_present(monkeypatch):
-    """spec §27: success is measured as a real insight, not a completed form;
+    """spec v1.2 §27: success is measured as a real insight, not a completed form;
     the deterministic plan reveal emits the aha event."""
     from miriam_agent.observability import metrics as metrics_mod
 

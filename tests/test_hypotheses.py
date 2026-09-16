@@ -1,4 +1,4 @@
-"""Tests for the ranked hypothesis engine (spec v1.1 §12).
+"""Tests for the ranked hypothesis engine (spec v1.2 §12).
 
 The engine sniffs the joined interview text against structural causes and
 returns them ranked with evidence. Determinism matters: the same words must

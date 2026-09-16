@@ -109,14 +109,14 @@ class OnboardingState:
         self.name: str = str(data.get("name") or "")
         # the opening Money Moment ("what's been bothering you about money?").
         self.money_moment: str = str(data.get("money_moment") or "")
-        # spec §6: a structured read of the money moment (emotion, suspected
+        # spec v1.2 §6: a structured read of the money moment (emotion, suspected
         # problem, confidence), lifted from reserved fact keys or {}.
         self.money_moment_meta: dict[str, Any] = dict(
             data.get("money_moment_meta") or {}
         )
         # the desired-life goal she converged on ("Japan trip next year").
         self.goal: str = str(data.get("goal") or "")
-        # spec §7: a structured read of the goal (target date, cost, priority,
+        # spec v1.2 §7: a structured read of the goal (target date, cost, priority,
         # funding status), lifted from reserved fact keys or {}.
         self.goal_meta: dict[str, Any] = dict(data.get("goal_meta") or {})
         # free-form facts the agent extracted from the conversation. key is the

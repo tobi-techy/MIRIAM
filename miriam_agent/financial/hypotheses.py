@@ -1,4 +1,4 @@
-"""Ranked hypothesis engine for the money conversation (spec v1.1 §12).
+"""Ranked hypothesis engine for the money conversation (spec v1.2 §12).
 
 Miriam works from *hypotheses*, not vibes. Each turn she holds a ranked read
 on the structural cause behind what the user says, and her next question is
@@ -44,7 +44,7 @@ class Hypothesis:
         return self.probe or self.label
 
 
-# The four concrete leak categories spec §5 / §53 wants offered in one
+# The four concrete leak categories spec v1.2 §5 / §53 wants offered in one
 # high-information probe. Ordered exactly as a natural choice reads.
 PROBE_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("spending too much", "overspending"),
@@ -323,7 +323,7 @@ _LEAK_THEME_CODE = "lack_of_visibility"
 
 
 def leak_probe_open(text: str) -> bool:
-    """spec §5 / §53: when the leak/control theme is present but no single
+    """spec v1.2 §5 / §53: when the leak/control theme is present but no single
     leak channel has clearly resolved, Miriam should offer the concrete
     categories in one high-information question ("is it usually spending too
     much, unexpected expenses, helping other people, or not really knowing

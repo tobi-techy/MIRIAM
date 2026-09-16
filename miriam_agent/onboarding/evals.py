@@ -134,12 +134,12 @@ SCENARIOS: list[tuple[str, list[dict[str, Any]]]] = [
             },
         ],
     ),
-    # spec v1.1 §53 regression: the tested conversation. These are the exact
+    # spec v1.2 §53 regression: the tested conversation. These are the exact
     # user lines that produced the parroting + therapist replies; the desired
     # replies must lint clean -- they mirror once, then push toward the
     # concrete instead of the feeling.
     (
-        "spec v1.1 §53 - mirror then concrete, not feelings",
+        "spec v1.2 §53 - mirror then concrete, not feelings",
         [
             {
                 "user": "Quite a lot don't want to go broke",
@@ -151,7 +151,7 @@ SCENARIOS: list[tuple[str, list[dict[str, Any]]]] = [
         ],
     ),
     (
-        "spec v1.1 §53 - one question with concrete categories",
+        "spec v1.2 §53 - one question with concrete categories",
         [
             {
                 "user": (
