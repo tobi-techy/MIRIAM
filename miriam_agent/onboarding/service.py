@@ -1088,7 +1088,14 @@ class OnboardingService:
                 # validates title >=1 and an empty poll would fail to cache
                 # (ZodError) and break subsequent votes.
                 title = clean_text(outcome.reply or "").strip() or "What's your pick?"
+            title = title.strip()
+            # Extra guard: if title still looks empty or just "…", fallback
+            if not title or title == "…" or len(title.strip("… ")) == 0:
+                title = "What's your pick?"
             if title.strip():
+                # Log for debugging empty title issues
+                import logging as _logging
+                _logging.getLogger(__name__).info("poll created title=%r options=%r", title, list(outcome.suggested))
                 poll = {"title": title.strip(), "options": list(outcome.suggested)}
         return OnboardingTurn(
             took_over=True,
