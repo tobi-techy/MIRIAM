@@ -25,12 +25,22 @@ from miriam_agent.agents.llm import ChatMessage, LLMProvider, get_llm_provider
 from miriam_agent.agents.system_prompt import build_system_prompt
 from miriam_agent.agents.tools import Tool, ToolRegistry
 from miriam_agent.integrations.go_client import GoBackendClient
+from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.utils.text import bubble_sets, lift_reaction
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 5
+
+
+def _tool_call_record(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """One executed tool call, tagged with the request's trace id.
+
+    The record is what a caller (and the audit trail) uses to reconstruct
+    "what did this message actually do", so the id travels with it.
+    """
+    return {"name": name, "arguments": args, "trace_id": current_trace_id()}
 
 
 @dataclass
@@ -55,6 +65,9 @@ class AgentRunResult:
     # on the user's message. Empty when the reply stayed one message.
     messages: list[str] = field(default_factory=list)
     reaction: str = ""
+    # Correlation id for the request this result belongs to, defaulted from the
+    # bound context so every construction site carries it without plumbing.
+    trace_id: str = field(default_factory=current_trace_id)
 
 
 class Agent:
@@ -148,7 +161,7 @@ class Agent:
                 confirmed_executions.append(
                     {"tool": tool_name, "arguments": args, "result": result}
                 )
-                tool_calls_made.append({"name": tool_name, "arguments": args})
+                tool_calls_made.append(_tool_call_record(tool_name, args))
             except Exception as e:
                 confirmed_executions.append(
                     {"tool": tool_name, "arguments": args, "error": str(e)}
@@ -208,7 +221,7 @@ class Agent:
                             call.get("id"), name, {"error": f"unknown tool {name}"}
                         )
                     )
-                    tool_calls_made.append({"name": name, "arguments": args})
+                    tool_calls_made.append(_tool_call_record(name, args))
                     continue
 
                 # Money movement -> stage for confirmation, never auto-run.
@@ -246,7 +259,7 @@ class Agent:
                                     {"error": f"{name} failed to execute: {exc}"},
                                 )
                             )
-                        tool_calls_made.append({"name": name, "arguments": args})
+                        tool_calls_made.append(_tool_call_record(name, args))
                     else:
                         proposed.append(
                             ProposedAction(
@@ -259,7 +272,7 @@ class Agent:
                     continue
 
                 # Auto-execute read-only tools.
-                tool_calls_made.append({"name": name, "arguments": args})
+                tool_calls_made.append(_tool_call_record(name, args))
                 try:
                     result = await self._safe_execute(
                         name, args, ctx, user_id, user_context

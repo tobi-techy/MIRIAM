@@ -1,12 +1,18 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from miriam_agent.api.chat import router as chat_router
 from miriam_agent.api.proactive import router as proactive_router
+from miriam_agent.observability.correlation import (
+    TRACE_HEADER,
+    bind_trace_id,
+    new_trace_id,
+    normalize_trace_id,
+)
 from miriam_agent.observability.logging import setup_logging
 from miriam_agent.observability.metrics import setup_metrics
 from miriam_agent.observability.tracing import setup_tracing
@@ -49,6 +55,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def correlate_requests(request: Request, call_next):
+    """Adopt the channel's trace id, or mint one, and echo it back.
+
+    This is the top of the request: the channel adapter (the Go bridge relaying
+    iMessage/WhatsApp, or a web client) may mint ``X-Miriam-Trace-Id`` and the
+    id is adopted rather than replaced, so a message can be followed across
+    systems. Everything below -- orchestrator, tool registry, safety audit,
+    onboarding trace, OTel spans -- records the same value, and it comes back on
+    the response so a caller can correlate replies with its own records.
+    """
+    trace_id = normalize_trace_id(request.headers.get(TRACE_HEADER)) or new_trace_id()
+    with bind_trace_id(trace_id) as bound:
+        response = await call_next(request)
+    response.headers[TRACE_HEADER] = bound
+    return response
 
 
 # Add health check endpoint

@@ -1,9 +1,15 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from miriam_agent.database.models import (
     Base,
@@ -19,8 +25,8 @@ class MemoryStore:
 
     def __init__(self, database_url: str):
         self.database_url = database_url
-        self.engine = None
-        self.async_session = None
+        self.engine: AsyncEngine | None = None
+        self.async_session: async_sessionmaker[AsyncSession] | None = None
 
     async def initialize(self):
         """Initialize the database connection."""
@@ -32,9 +38,17 @@ class MemoryStore:
             await conn.run_sync(Base.metadata.create_all)
 
         # Create async session factory
-        self.async_session = sessionmaker(
-            self.engine, class_=AsyncSession, expire_on_commit=False
+        self.async_session = async_sessionmaker(
+            self.engine, expire_on_commit=False
         )
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[AsyncSession]:
+        """Yield an AsyncSession; callers must call ``initialize()`` first."""
+        if self.async_session is None:
+            raise RuntimeError("MemoryStore.initialize() must be called before use")
+        async with self._session() as session:
+            yield session
 
     async def close(self):
         """Close database connections."""
@@ -56,7 +70,7 @@ class MemoryStore:
         """
         from miriam_agent.database.models import User
 
-        async with self.async_session() as session:
+        async with self._session() as session:
             existing = await session.get(User, user.id)
             if existing is not None:
                 return
@@ -78,7 +92,7 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Store an interaction (user message or assistant response)."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 # Create or get conversation
                 if conversation_id:
@@ -138,7 +152,7 @@ class MemoryStore:
         self, conversation_id: str
     ) -> list[dict[str, Any]]:
         """Get conversation history."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 # Get conversation
                 conversation = await session.get(Conversation, conversation_id)
@@ -170,7 +184,7 @@ class MemoryStore:
         self, user_id: str, limit: int = 10
     ) -> list[MemoryEntry]:
         """Get recent interactions for a user."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 # Get recent memory entries
                 memory_entries = await session.execute(
@@ -194,7 +208,7 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Store a memory entry."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 memory_entry = MemoryEntry(
                     user_id=user_id,
@@ -219,7 +233,7 @@ class MemoryStore:
         filter_metadata: dict[str, Any] | None = None,
     ) -> list[MemoryEntry]:
         """Retrieve memories for a user."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 # Build query
                 query = select(MemoryEntry).where(MemoryEntry.user_id == user_id)
@@ -247,7 +261,7 @@ class MemoryStore:
         self, memory_id: str, content: str, metadata: dict[str, Any] | None = None
     ) -> bool:
         """Update a memory entry."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 memory_entry = await session.get(MemoryEntry, memory_id)
                 if not memory_entry:
@@ -266,7 +280,7 @@ class MemoryStore:
 
     async def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory entry."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 memory_entry = await session.get(MemoryEntry, memory_id)
                 if not memory_entry:
@@ -284,7 +298,7 @@ class MemoryStore:
         self, user_id: str, query: str, limit: int = 5
     ) -> list[MemoryEntry]:
         """Search for memories based on query text."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 # This is a simple text-based search
                 # In a production system, you would use vector search with embeddings
@@ -340,7 +354,7 @@ class MemoryStore:
         self, user_id: str, limit: int = 10
     ) -> list[Conversation]:
         """Get conversations for a user."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 conversations = await session.execute(
                     select(Conversation)
@@ -356,7 +370,7 @@ class MemoryStore:
 
     async def get_conversation_messages(self, conversation_id: str) -> list[Message]:
         """Get all messages for a conversation."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 messages = await session.execute(
                     select(Message)
@@ -371,7 +385,7 @@ class MemoryStore:
 
     async def create_conversation(self, user_id: str, title: str) -> Conversation:
         """Create a new conversation."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 conversation = Conversation(
                     user_id=user_id,
@@ -388,7 +402,7 @@ class MemoryStore:
 
     async def update_conversation_title(self, conversation_id: str, title: str) -> bool:
         """Update conversation title."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 conversation = await session.get(Conversation, conversation_id)
                 if not conversation:
@@ -406,7 +420,7 @@ class MemoryStore:
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 conversation = await session.get(Conversation, conversation_id)
                 if not conversation:
@@ -422,7 +436,7 @@ class MemoryStore:
 
     async def get_financial_profile(self, user_id: str) -> FinancialProfile | None:
         """Get user's financial profile."""
-        async with self.async_session() as session:
+        async with self._session() as session:
             try:
                 result = await session.execute(
                     select(FinancialProfile).where(FinancialProfile.user_id == user_id)

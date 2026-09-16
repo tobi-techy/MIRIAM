@@ -23,6 +23,7 @@ from miriam_agent.core.exceptions import (
     ToolExecutionError,
     ValidationError,
 )
+from miriam_agent.observability.correlation import current_trace_id
 
 
 class RiskLevel(StrEnum):
@@ -244,6 +245,9 @@ class ToolRegistry:
         if tool is None:
             raise ToolExecutionError(f"Unknown tool: '{name}'")
 
+        # One id for the whole request, so the trace, the audit row, and the
+        # message the user gets can be joined up (observability.correlation).
+        trace_id = current_trace_id()
         start = time.perf_counter()
         try:
             validated = validate_args(tool, args or {})
@@ -262,6 +266,7 @@ class ToolRegistry:
                     "status": "error",
                     "error": str(e),
                     "elapsed": elapsed,
+                    "trace_id": trace_id,
                     "_context": context or {},
                     "_args": args or {},
                 },
@@ -274,12 +279,17 @@ class ToolRegistry:
         result.setdefault("_tool_name", name)
         result.setdefault("_risk_level", tool.risk_level.value)
         result.setdefault("_is_mutation", tool.is_mutation)
+        # Correlation id for this request, so a tool result can be tied back to
+        # the message that caused it (see observability.correlation).
+        if trace_id:
+            result.setdefault("_trace_id", trace_id)
         self._notify(
             name,
             {
                 "status": "success",
                 "elapsed": elapsed,
                 "result": result,
+                "trace_id": trace_id,
                 "_context": context or {},
                 # The validated call arguments (e.g. amount, recipient).
                 # Needed so the audit observer can record what actually

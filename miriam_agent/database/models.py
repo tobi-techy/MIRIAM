@@ -35,7 +35,9 @@ class FinancialProfile(Base):
 
     __tablename__ = "financial_profiles"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     monthly_income: Mapped[float] = mapped_column(Float, nullable=False)
     current_savings: Mapped[float] = mapped_column(Float, default=0.0)
@@ -57,7 +59,9 @@ class Transaction(Base):
 
     __tablename__ = "transactions"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     financial_profile_id = Column(
         String, ForeignKey("financial_profiles.id"), nullable=False
     )
@@ -78,7 +82,9 @@ class Investment(Base):
 
     __tablename__ = "investments"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     financial_profile_id = Column(
         String, ForeignKey("financial_profiles.id"), nullable=False
     )
@@ -100,7 +106,9 @@ class Budget(Base):
 
     __tablename__ = "budgets"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     financial_profile_id = Column(
         String, ForeignKey("financial_profiles.id"), nullable=False
     )
@@ -118,7 +126,9 @@ class Conversation(Base):
 
     __tablename__ = "conversations"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     title = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -134,7 +144,9 @@ class Message(Base):
 
     __tablename__ = "messages"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     conversation_id = Column(String, ForeignKey("conversations.id"), nullable=False)
     role = Column(String, nullable=False)  # user, assistant
     content = Column(Text, nullable=False)
@@ -150,7 +162,9 @@ class MemoryEntry(Base):
 
     __tablename__ = "memory_entries"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     type = Column(String, nullable=False)  # conversation, financial, preference
     content = Column(Text, nullable=False)
@@ -168,7 +182,9 @@ class AuditLog(Base):
 
     __tablename__ = "audit_logs"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     action = Column(String, nullable=False)
     resource = Column(String, nullable=False)
@@ -185,7 +201,9 @@ class ToolUsage(Base):
 
     __tablename__ = "tool_usage"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     tool_name = Column(String, nullable=False)
     parameters = Column(SQLAlchemyJSON, default=dict)

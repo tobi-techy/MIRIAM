@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from miriam_agent.database.models import AuditLog, Base
+from miriam_agent.observability.correlation import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,21 @@ class AuditSystem:
         if self.engine:
             await self.engine.dispose()
 
+    @staticmethod
+    def _with_trace(details: dict[str, Any] | None) -> dict[str, Any]:
+        """Return ``details`` with the request's trace id attached.
+
+        The audit row is the durable record of what ran; without the trace id
+        it cannot be joined back to the user message and tool calls that caused
+        it. Stored inside the existing ``details`` JSON column, so no migration
+        is needed and old rows stay readable.
+        """
+        enriched = dict(details or {})
+        trace_id = current_trace_id()
+        if trace_id:
+            enriched.setdefault("trace_id", trace_id)
+        return enriched
+
     async def log_action(
         self,
         user_id: str,
@@ -57,7 +73,7 @@ class AuditSystem:
                     action=action,
                     resource=resource,
                     resource_id=resource_id,
-                    details=details or {},
+                    details=self._with_trace(details),
                     created_at=datetime.utcnow(),
                 )
 
@@ -118,18 +134,20 @@ class AuditSystem:
                     action="money_movement",
                     resource="transaction",
                     resource_id=transaction_id,
-                    details={
-                        "transaction_id": transaction_id,
-                        "amount": amount,
-                        "currency": currency,
-                        "action": action,
-                        "status": status,
-                        "from_account": from_account,
-                        "to_account": to_account,
-                        "requires_approval": requires_approval,
-                        "approval_id": approval_id,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    },
+                    details=self._with_trace(
+                        {
+                            "transaction_id": transaction_id,
+                            "amount": amount,
+                            "currency": currency,
+                            "action": action,
+                            "status": status,
+                            "from_account": from_account,
+                            "to_account": to_account,
+                            "requires_approval": requires_approval,
+                            "approval_id": approval_id,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                    ),
                     created_at=datetime.utcnow(),
                 )
 

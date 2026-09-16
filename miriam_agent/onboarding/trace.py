@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from miriam_agent.config.settings import get_settings
+from miriam_agent.observability.correlation import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class TraceRecord:
     ``violations`` holds the spec rules the linter found for this reply
     (computed with the same grounding the service used); ``clamped`` marks a
     plan presentation that was refused because it invented a number.
+    ``trace_id`` ties the turn to the request that carried it, so an onboarded
+    plan can be read alongside the tool calls and audit rows behind it.
     """
 
     user_id: str
@@ -57,6 +60,9 @@ class TraceRecord:
     adjustment: str = ""
     grounded: str = ""
     ts: float = field(default_factory=time.time)
+    # Defaulted from the bound request context: every service call site gets the
+    # request's id without having to pass it down.
+    trace_id: str = field(default_factory=current_trace_id)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +83,7 @@ class TraceRecord:
             adjustment=str(data.get("adjustment") or ""),
             grounded=str(data.get("grounded") or ""),
             ts=float(data.get("ts") or time.time()),
+            trace_id=str(data.get("trace_id") or ""),
         )
 
 

@@ -27,6 +27,7 @@ from miriam_agent.api.dependencies import (
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
 from miriam_agent.integrations.supermemory_client import container_tag_for
+from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.safety.validator import InputValidator
@@ -117,6 +118,10 @@ def _install_audit_observer() -> None:
                     "status": result.get("status"),
                     "elapsed": result.get("elapsed"),
                     "error": result.get("error"),
+                    # Explicit (rather than only contextvar-inherited) so the
+                    # audit row is joinable to the turn even if this observer
+                    # is ever invoked from a fresh task.
+                    "trace_id": result.get("trace_id") or "",
                     **_money_details(tool_name, result.get("_args") or {}),
                 },
                 risk_level=result.get("result", {}).get("_risk_level"),
@@ -156,6 +161,9 @@ def _serialize_agent_result(result: Any) -> dict[str, Any]:
         "messages": list(result.messages),
         "reaction": str(result.reaction or ""),
         "share": None,
+        # Same id the inbound request carried (and the header echoes), so the
+        # client can join this reply to the tool calls and audit rows behind it.
+        "trace_id": getattr(result, "trace_id", "") or current_trace_id(),
     }
 
 
@@ -528,8 +536,13 @@ async def get_conversation_messages(
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    """Format a dict as a single Server-Sent Events ``data:`` frame."""
-    return f"data: {json.dumps(payload)}\n\n"
+    """Format a dict as a single Server-Sent Events ``data:`` frame.
+
+    Every frame carries the request's trace id, so a streamed reply can be
+    joined to the tool calls and audit rows behind it without a second lookup.
+    """
+    frame = {"trace_id": current_trace_id(), **payload}
+    return f"data: {json.dumps(frame)}\n\n"
 
 
 async def _finish_onboarding_turn(
@@ -566,6 +579,7 @@ async def _finish_onboarding_turn(
     payload["conversation_history"] = await memory_store.get_conversation_history(
         conv_id
     )
+    payload["trace_id"] = current_trace_id()
     return payload
 
 
