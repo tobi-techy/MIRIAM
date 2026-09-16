@@ -1,0 +1,59 @@
+{
+  "id": "CFA001",
+  "name": "Cash flow forecast for upcoming month",
+  "category": "cash_flow_analysis",
+  "description": "User wants to know if they'll run out of money this month",
+  "user_profile": {
+    "user_id": "benchmark_user_003",
+    "name": "Taylor",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["avoid overdraft", "stable cash flow"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 1200, "stash": 5000},
+    "income": {"salary": {"amount": 5000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1600, "groceries": 500, "transport": 250, "utilities": 200, "subscriptions": 100},
+    "debts": [{"name": "car_loan", "amount": 15000, "rate": 0.05, "min_payment": 350}],
+    "investments": [],
+    "obligations": [
+      {"name": "rent", "amount": 1600, "cadence": "monthly", "due_day": 1},
+      {"name": "car_loan", "amount": 350, "cadence": "monthly", "due_day": 15}
+    ],
+    "missing_data": [],
+    "last_statement_date": "2026-08-20"
+  },
+  "conversation_history": [],
+  "user_request": "Will I make it to the end of the month without overdrafting? What's my safe daily spend?",
+  "expected_intent": "cash_flow_forecast",
+  "expected_reasoning_path": [
+    "Identify user needs cash flow forecast and safe daily spend",
+    "Call get_cash_flow_forecast to get end-of-month projection",
+    "Calculate safe daily spend from forecast",
+    "Present forecast with specific numbers and risk assessment"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "get_transactions"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Cash flow forecast showing end-of-month balance, safe daily spend amount, and risk level",
+  "forbidden_behaviors": [
+    {"description": "Inventing forecast numbers", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Vague 'you should be fine' without numbers", "detection_pattern": "you should be fine|you'll be okay|don't worry", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 25,
+    "reasoning_quality": 20,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "vague_assurance"]
+  },
+  "tags": ["forecast", "daily_spend", "overdraft_risk"],
+  "difficulty": "easy"
+}

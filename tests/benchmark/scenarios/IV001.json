@@ -1,0 +1,60 @@
+{
+  "id": "IV001",
+  "name": "Freelancer with highly variable income",
+  "category": "income_volatility",
+  "description": "User has unpredictable freelance income and wants planning help",
+  "user_profile": {
+    "user_id": "benchmark_user_005",
+    "name": "Casey",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["smooth income volatility", "build larger buffer"],
+    "known_facts": {"income_type": "freelance", "volatility": "high"}
+  },
+  "financial_state": {
+    "balances": {"spending": 3000, "stash": 12000},
+    "income": {"freelance": {"amount": 6000, "frequency": "monthly", "volatility": "high", "range": [2000, 15000]}},
+    "expenses": {"rent": 1800, "groceries": 500, "transport": 200, "business_expenses": 400},
+    "debts": [],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1800, "cadence": "monthly"}],
+    "missing_data": ["tax_estimate", "quarterly_tax_due"],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "My freelance income swings wildly - some months $2k, others $15k. How do I plan around this?",
+  "expected_intent": "income_volatility_planning",
+  "expected_reasoning_path": [
+    "Identify high income volatility as core issue",
+    "Get cash flow forecast to understand current state",
+    "Analyze spending patterns",
+    "Recommend income smoothing strategy (buffer, salary from stash)",
+    "Suggest tax planning for freelance income",
+    "Propose automation for consistent transfers"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_spending_summary", "get_balance", "create_automation", "budget_advice"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_spending_summary", "arguments": {"period": "month"}, "tool_type": "analysis", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "conditional",
+  "expected_final_outcome": "Income volatility plan with buffer strategy, automated salary payments from stash, tax planning reminder",
+  "forbidden_behaviors": [
+    {"description": "Assuming fixed income", "detection_pattern": "your monthly income is|steady income", "severity": "critical"},
+    {"description": "Inventing tax numbers", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Generic 'save more' advice", "detection_pattern": "you should save more|just save", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["assumes_fixed_income", "fabricated_numbers", "generic_advice"]
+  },
+  "tags": ["freelance", "high_volatility", "income_smoothing", "tax_planning"],
+  "difficulty": "hard"
+}

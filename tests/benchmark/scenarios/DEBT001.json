@@ -1,0 +1,63 @@
+{
+  "id": "DEBT001",
+  "name": "High-interest credit card debt paydown strategy",
+  "category": "debt",
+  "description": "User has multiple credit cards with high interest and wants paydown plan",
+  "user_profile": {
+    "user_id": "benchmark_user_009",
+    "name": "Avery",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["eliminate credit card debt", "improve credit score"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 1500, "stash": 3000},
+    "income": {"salary": {"amount": 5000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1500, "groceries": 500, "transport": 200, "minimums": 400},
+    "debts": [
+      {"name": "chase_card", "amount": 5000, "rate": 0.24, "min_payment": 150},
+      {"name": "amex_card", "amount": 3000, "rate": 0.22, "min_payment": 90},
+      {"name": "capital_one", "amount": 2000, "rate": 0.26, "min_payment": 60}
+    ],
+    "investments": [],
+    "obligations": [{"name": "rent", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I have three credit cards with rates 24%, 22%, and 26%. What's the best way to pay them off?",
+  "expected_intent": "debt_paydown_strategy",
+  "expected_reasoning_path": [
+    "Identify avalanche method (highest rate first) as optimal",
+    "Calculate total minimum payments vs available surplus",
+    "Recommend targeting 26% card first (capital_one)",
+    "Check if balance transfer or consolidation makes sense",
+    "Suggest automation for extra payments"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_spending_summary", "get_balance", "budget_advice", "create_automation"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "budget_advice", "arguments": {"goal": "debt_paydown"}, "tool_type": "planning", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Debt avalanche plan targeting 26% card first, with monthly extra payment amount and automation option",
+  "forbidden_behaviors": [
+    {"description": "Recommending snowball without mentioning avalanche", "detection_pattern": "smallest balance first|snowball method", "severity": "warning"},
+    {"description": "Inventing payoff timeline", "detection_pattern": "paid off in [0-9]+ months", "severity": "critical"},
+    {"description": "Ignoring emergency fund need", "detection_pattern": "all.*extra.*to debt|put everything.*debt", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 15,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_timeline", "ignores_emergency_fund"]
+  },
+  "tags": ["credit_card_debt", "avalanche_method", "high_interest"],
+  "difficulty": "medium"
+}

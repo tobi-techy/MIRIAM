@@ -1,0 +1,61 @@
+{
+  "id": "RICH_LIFE_001",
+  "name": "Rich Life visioning - high earner who won't spend on what they love",
+  "category": "goals_financial_plans",
+  "description": "Based on Ramit Sethi's Conscious Spending Plan: User earns $280k but restricts spending on things they love due to scarcity mindset, like the Whole Foods shopper earning $250k+ who won't spend $150 on groceries. The goal: articulate what they truly love to spend on using Ramit's proven money dial methodology.",
+  "user_profile": {
+    "user_id": "benchmark_rich_life_001",
+    "name": "Sarah",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "conservative",
+    "financial_goals": ["enjoy money more", "stop restricting"],
+    "known_facts": {"income": 280000, "savings_rate": 0.45, "rich_life_block": "groceries_quality"}
+  },
+  "financial_state": {
+    "balances": {"spending": 8000, "stash": 150000, "investments": 400000},
+    "income": {"salary": {"amount": 23333, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 3500, "groceries": 400, "dining_out": 200, "transport": 500, "subscriptions": 200},
+    "debts": [],
+    "investments": [{"symbol": "VTI", "amount": 300000, "type": "etf"}, {"symbol": "VXUS", "amount": 100000, "type": "etf"}],
+    "obligations": [],
+    "missing_data": [],
+    "last_statement_date": "2026-08-15"
+  },
+  "conversation_history": [],
+  "user_request": "I make $280k but I still count prices at Whole Foods. I restrict myself on things I actually love. How do I stop?",
+  "expected_intent": "rich_life_visioning",
+  "expected_reasoning_path": [
+    "Acknowledge the disconnect between income ($280k) and behavior (counting prices at Whole Foods)",
+    "Ask 'What is your rich life?' to uncover the vision using Ramit's Money Dial methodology",
+    "Push for specificity: 'If you could shop at Whole Foods without looking at prices, what would your cart cost?'",
+    "Challenge the scarcity mindset: 'You make X hundred thousand dollars a year. Let's dream a little bigger.'",
+    "Identify money dials - what do they LOVE spending on? (books, appetizers, health, charity, travel)",
+    "Connect behavior to childhood money patterns if relevant",
+    "Create permission structure for guilt-free spending on money dials"
+  ],
+  "allowed_tools": ["get_financial_health", "get_balance"],
+  "required_tool_calls": [
+    {"tool_name": "get_financial_health", "arguments": {"period": "last_90_days"}, "tool_type": "analysis", "order": 1, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Rich Life vision articulated with specific money dials, permission to spend on what they love, and conscious spending plan allocation (50-60% fixed costs, 5-10% investments, 5-10% savings, 20-35% guilt-free spending)",
+  "forbidden_behaviors": [
+    {"description": "Telling them to just spend more without exploration", "detection_pattern": "just spend|spend more|loosen up", "severity": "critical"},
+    {"description": "Inventing their rich life for them", "detection_pattern": "your rich life is|you should want", "severity": "critical"},
+    {"description": "Therapist-style emotional processing", "detection_pattern": "how does that make you feel|what's coming up for you", "severity": "critical"},
+    {"description": "Generic budgeting advice", "detection_pattern": "you should budget|track your spending", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 25,
+    "tool_selection": 10,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 15,
+    "communication_quality": 10,
+    "critical_failures": ["prescribes_rich_life", "therapist_mode", "generic_advice", "no_vision_exploration"]
+  },
+  "tags": ["rich_life", "scarcity_mindset", "high_earner", "money_dials", "vision_first"],
+  "difficulty": "hard"
+}

@@ -1,0 +1,62 @@
+{
+  "id": "MON001",
+  "name": "Money moment opener - What's been on your mind about money lately?",
+  "category": "money_audit_coaching",
+  "description": "Based on the original onboarding scenario: User says \"What's been on your mind about money lately - I want the real stuff, not the polite version.\" This is the initial conversation in Miriam's onboarding process.",
+  "user_profile": {
+    "user_id": "benchmark_onboarding_001",
+    "name": "Alex",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["financial independence"],
+    "known_facts": {"first_message": "what_has_been_on_your_mind"}
+  },
+  "financial_state": {
+    "balances": {"spending": 2000, "stash": 8000},
+    "income": {"salary": {"amount": 6000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1500, "groceries": 600, "transport": 300, "subscriptions": 150},
+    "debts": [],
+    "investments": [{"symbol": "VTI", "amount": 10000, "type": "etf"}],
+    "obligations": [{"name": "rent", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "What's been on your mind about money lately - I want the real stuff, not the polite version.",
+  "expected_intent": "money_moment_interview",
+  "expected_reasoning_path": [
+    "Identify this as the opening money moment that starts the onboarding conversation",
+    "Look for substance behind the request for real stuff - what's the unspoken problem?",
+    "Probe for emotion beneath the statement: What does real stuff suggest they're tired of?",
+    "Connect to past experiences: Have they been ignored or dismissed about money?",
+    "Frame the response as an interview-like exploration, not advice-giving",
+    "Maintain the curiosity while respecting the demand for authenticity",
+    "Stay with the feeling - not the analysis - as they articulate it",
+    "Respond with something that validates they've asked the real question"
+  ],
+  "allowed_tools": ["get_financial_health", "get_balance"],
+  "required_tool_calls": [
+    {"tool_name": "get_financial_health", "arguments": {"period": "last_90_days"}, "tool_type": "analysis", "order": 1, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Response that validates their request for real talk about money, shows curiosity about the underlying emotion, and sets up authentic exploration without judgment or immediate advice",
+  "forbidden_behaviors": [
+    {"description": "Polite, vague response instead of real engagement", "detection_pattern": "I hear you|that's interesting", "severity": "critical"},
+    {"description": "Jumping to financial analysis", "detection_pattern": "based on your income|your situation", "severity": "critical"},
+    {"description": "Therapist-style interpretation", "detection_pattern": "how does that make you feel", "severity": "critical"},
+    {"description": "Generic money advice", "detection_pattern": "you should budget|track your spending", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 25,
+    "reasoning_quality": 20,
+    "tool_selection": 10,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 15,
+    "critical_failures": ["polite_response", "analysis_first", "therapist_mode", "generic_advice"]
+  },
+  "tags": ["money_moment", "onboarding", "authentic", "real_talk", "first_conversation"],
+  "difficulty": "easy"
+}

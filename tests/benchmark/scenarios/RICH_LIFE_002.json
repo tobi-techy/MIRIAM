@@ -1,0 +1,69 @@
+{
+  "id": "RICH_LIFE_002",
+  "name": "Couple money conversation - avoider/optimizer dynamic",
+  "category": "money_audit_coaching",
+  "description": "One partner (optimizer) handles all finances, other (avoider) disengages. Based on Grace/Chris episode - they spend 108% of income, never had substantive money conversation in 7 years",
+  "user_profile": {
+    "user_id": "benchmark_couple_001",
+    "name": "Grace",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["get partner engaged", "start family", "stop overspending"],
+    "known_facts": {"partner_name": "Chris", "years_together": 7, "married_months": 6, "partner_role": "avoider", "user_role": "optimizer", "kids_timeline": "within_year"}
+  },
+  "financial_state": {
+    "balances": {"spending": 7350, "stash": 0, "investments": 119000},
+    "income": {"salary_grace": {"amount": 10000, "frequency": "monthly", "volatility": "low"}, "salary_chris": {"amount": 4000, "frequency": "weekly", "volatility": "medium"}},
+    "expenses": {"fixed_costs_pct": 1.08, "groceries": 600, "dining_out": 800, "amazon": 500, "social": 400, "gas": 300},
+    "debts": [{"name": "tax_debt", "amount": 22000, "rate": 0, "min_payment": 0}],
+    "investments": [{"symbol": "VTI", "amount": 80000, "type": "etf"}, {"symbol": "VXUS", "amount": 39000, "type": "etf"}],
+    "obligations": [{"name": "property_tax", "amount": 1500, "cadence": "monthly"}],
+    "missing_data": ["chris_detailed_income", "joint_account_structure"],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [
+    {"role": "user", "content": "We spend 108% of what we make. I handle all the money but Chris won't engage.", "intent": "money_audit_coaching"},
+    {"role": "assistant", "content": "Whoa. What's that number?", "intent": "interview"}
+  ],
+  "user_request": "I feel like I'm crying for help on a sinking ship. I manage everything but Chris just says 'we'll figure it out later' and buys beers at baseball games. We want to start a family in a year.",
+  "expected_intent": "couple_money_dynamic",
+  "expected_reasoning_path": [
+    "Validate the crisis language: 'crying for help on a sinking ship'",
+    "Surface the dynamic: optimizer (Grace) vs avoider (Chris)",
+    "Ask for a specific recent money clash (the baseball game example)",
+    "Recreate the conversation: 'Hey, that's your fourth beer...' vs 'We'll figure it out later'",
+    "Expose the pattern: Chris says 'we'll figure it out' but Grace always figures it out",
+    "Challenge the gender role belief: 'What does a man do? What does a woman do?'",
+    "Use team metaphor: 'You're on a baseball team. She's playing shortstop. You say she can play whatever position she wants.'",
+    "Connect to childhood money patterns",
+    "Ask: 'When was the last substantive money conversation?' (Answer: never in 7 years)",
+    "Create urgency: 'Starting a family with this dynamic is not an option'",
+    "Set up monthly money meetings with structure"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "list_obligations", "create_automation"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Couple money dynamic diagnosed, avoider/optimizer pattern named, specific recent clash analyzed, commitment to weekly money meetings, urgency created for family planning",
+  "forbidden_behaviors": [
+    {"description": "Blaming one partner", "detection_pattern": "Chris is the problem|Grace is controlling", "severity": "critical"},
+    {"description": "Jumping to spreadsheet fixes", "detection_pattern": "here's a budget|let me make a spreadsheet", "severity": "critical"},
+    {"description": "Therapist-style processing", "detection_pattern": "how does that make you feel|explore your feelings", "severity": "critical"},
+    {"description": "Ignoring the 108% fixed costs crisis", "detection_pattern": "it's not that bad|you're doing fine", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 30,
+    "tool_selection": 10,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["blames_partner", "spreadsheet_first", "therapist_mode", "minimizes_crisis"]
+  },
+  "tags": ["couple_dynamic", "avoider_optimizer", "108_percent", "family_planning", "money_conversation_script"],
+  "difficulty": "hard"
+}

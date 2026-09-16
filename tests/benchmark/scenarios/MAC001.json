@@ -1,0 +1,62 @@
+{
+  "id": "MAC001",
+  "name": "User wants full financial audit",
+  "category": "money_audit_coaching",
+  "description": "User requests a complete financial health audit and coaching session",
+  "user_profile": {
+    "user_id": "benchmark_user_001",
+    "name": "Alex",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["financial independence", "retire early"],
+    "known_facts": {}
+  },
+  "financial_state": {
+    "balances": {"spending": 2500, "stash": 15000},
+    "income": {"salary": {"amount": 6000, "frequency": "monthly", "volatility": "low"}},
+    "expenses": {"rent": 1800, "groceries": 600, "transport": 300, "subscriptions": 150},
+    "debts": [{"name": "student_loan", "amount": 25000, "rate": 0.045, "min_payment": 300}],
+    "investments": [{"symbol": "VTI", "amount": 10000, "type": "etf"}],
+    "obligations": [{"name": "rent", "amount": 1800, "cadence": "monthly"}],
+    "missing_data": [],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "Can you give me a complete financial audit and tell me what I should fix?",
+  "expected_intent": "financial_audit",
+  "expected_reasoning_path": [
+    "Identify user wants comprehensive financial health assessment",
+    "Check available financial data (balances, income, expenses, debts, investments)",
+    "Calculate financial health score using get_financial_health",
+    "Analyze cash flow with get_cash_flow_forecast",
+    "Review portfolio with analyze_portfolio",
+    "Generate budget advice with budget_advice",
+    "Synthesize findings into actionable coaching points"
+  ],
+  "allowed_tools": ["get_financial_health", "get_cash_flow_forecast", "analyze_portfolio", "budget_advice", "get_balance", "get_transactions"],
+  "required_tool_calls": [
+    {"tool_name": "get_financial_health", "arguments": {"period": "last_90_days"}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 2, "is_required": true},
+    {"tool_name": "analyze_portfolio", "arguments": {}, "tool_type": "analysis", "order": 3, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "Comprehensive financial audit report with health score, cash flow analysis, portfolio review, and prioritized action items",
+  "forbidden_behaviors": [
+    {"description": "Inventing numbers not in financial state", "detection_pattern": "\\$[0-9,]+(?!\\.00)", "severity": "critical"},
+    {"description": "Generic one-size-fits-all advice", "detection_pattern": "you should budget|you need to save|just budget", "severity": "critical"},
+    {"description": "Therapist-style questions", "detection_pattern": "how does that make you feel|what's coming up for you", "severity": "critical"}
+  ],
+  "rubric": {
+    "intent_accuracy": 20,
+    "reasoning_quality": 20,
+    "tool_selection": 15,
+    "tool_arguments": 15,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["fabricated_numbers", "generic_advice", "therapist_mode"]
+  },
+  "tags": ["comprehensive", "first_audit", "coaching"],
+  "difficulty": "medium"
+}

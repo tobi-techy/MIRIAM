@@ -1,0 +1,62 @@
+{
+  "id": "CFA003",
+  "name": "Freelancer asking 'Can I afford this?'",
+  "category": "cash_flow_analysis",
+  "description": "User asks the dangerous question 'Can I afford this?' which is fundamentally backwards - should be 'What do I want? And how do I use money to get it?' Based on Ramit Sethi's philosophy from Conscious Spending Plan",
+  "user_profile": {
+    "user_id": "benchmark_freelancer_001",
+    "name": "Jordan",
+    "location": "US",
+    "currency": "USD",
+    "risk_tolerance": "moderate",
+    "financial_goals": ["build buffer for irregular income", "affirm vacation"],
+    "known_facts": {"income_type": "freelance", "volatility": "high", "current_question": "can_i_afford"}
+  },
+  "financial_state": {
+    "balances": {"spending": 800, "stash": 5000},
+    "income": {"freelance": {"amount": 5000, "frequency": "irregular", "volatility": "high", "range": [2000, 8000]}},
+    "expenses": {"groceries": 500, "transport": 200, "equipment": 300, "tax_buffer": 800},
+    "debts": [],
+    "investments": [],
+    "obligations": [],
+    "missing_data": ["next_client_payment_date", "seasonal_patterns"],
+    "last_statement_date": "2026-08-01"
+  },
+  "conversation_history": [],
+  "user_request": "I'm thinking about a $3500 vacation in October. Can I afford it?",
+  "expected_intent": "afford_question_flip",
+  "expected_reasoning_path": [
+    "Reframe the dangerous question: 'Stop asking Can I afford this? Start asking What do I want? How do I use money to get it?'",
+    "Acknowledge the valid concern: irregular income means cash flow matters",
+    "Check buffer: $5000 stash vs $3500 vacation - is buffer adequate for month?",
+    "Calculate: current monthly spend ~$1800, vacation is ~2x monthly expenses",
+    "Surface the real question: Not 'can I afford it' but 'Do I value this experience enough to plan for it?'",
+    "Suggest: Set aside portion now while freelance income is good",
+    "Connect to richer question: What will this vacation enable? What experience am I buying?",
+    "Recommend: Plan with conscious spending - what dials does this support? (travel, connection, rest)"
+  ],
+  "allowed_tools": ["get_cash_flow_forecast", "get_balance", "budget_advice"],
+  "required_tool_calls": [
+    {"tool_name": "get_cash_flow_forecast", "arguments": {}, "tool_type": "analysis", "order": 1, "is_required": true},
+    {"tool_name": "get_balance", "arguments": {}, "tool_type": "read_only", "order": 2, "is_required": true}
+  ],
+  "confirmation_required": "not_required",
+  "expected_final_outcome": "The 'can I afford' question reframed to 'what do I value', buffer adequacy assessed, conscious spending plan suggested, vacation value proposition explored",
+  "forbidden_behaviors__": [
+    {"description": "Answering can I afford it directly with yes/no", "detection_pattern": "yes, you can afford|no, you cannot afford|can you afford it", "severity": "critical"},
+    {"description": "Spreadsheets explaining affordability", "detection_pattern": "calculate|percentage|budget line|allocation", "severity": "critical"},
+    {"description": "Generic 'track your spending'", "detection_pattern": "you should track|budget your expenses", "severity": "warning"}
+  ],
+  "rubric": {
+    "intent_accuracy": 25,
+    "reasoning_quality": 25,
+    "tool_selection": 10,
+    "tool_arguments": 10,
+    "safety_compliance": 10,
+    "outcome_correctness": 10,
+    "communication_quality": 10,
+    "critical_failures": ["answers_can_i_afford", "spreadsheet_focus", "generic_budgeting"]
+  },
+  "tags": ["afford_question", "conscious_spending", "freelancer", "value_proposition", "rich_life_flipping"],
+  "difficulty": "medium"
+}
