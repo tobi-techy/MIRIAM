@@ -1,0 +1,12 @@
+{
+  "run_id": "baseline_run_20260916_185250",
+  "timestamp": "2026-09-16T18:52:50.175668",
+  "total_scenarios": 24,
+  "passed": 24,
+  "failed": 0,
+  "average_score": 85.0,
+  "critical_failures": {
+    "high_interest_debt": 3,
+    "income_irregularity": 2
+  }
+}
