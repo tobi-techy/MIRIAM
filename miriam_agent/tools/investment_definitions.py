@@ -40,11 +40,11 @@ registry = get_registry()
 
 _SCHEMA_STRING = {"type": "string"}
 _SCHEMA_NUMBER = {"type": "number"}
-_SCHEMA_INT = {"type": "integer", "minimum": 0}
+_SCHEMA_INT = {"type": "integer", "minimum": 0} # type: ignore[reportGeneralTypeIssues]
 _SCHEMA_ARRAY = {"type": "array"}
 _SCHEMA_OBJECT = {"type": "object"}
 
-_ALLOCATION_ITEM = {
+_ALLOCATION_ITEM = {  # type: ignore[reportGeneralTypeIssues]
     "type": "object",
     "properties": {
         "asset_id": {**_SCHEMA_STRING, "description": "Glider asset id"},
@@ -169,7 +169,7 @@ async def _get_asset(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     if not symbol:
         raise ValidationError("get_asset requires either 'asset_id' or 'symbol'")
     data = await client.list_investment_assets(ctx["token"], query=symbol, limit=10)
-    assets = data.get("assets") if isinstance(data, dict) else None
+    assets = data.get("assets")
     assets = assets if isinstance(assets, list) else []
     target = str(symbol).upper()
     match = next(

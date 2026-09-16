@@ -1,0 +1,10 @@
+{
+  "typeCheckingMode": "basic",
+  "include": ["miriam_agent/**"],
+  "pythonVersion": "3.11",
+  "reportUnknownVariableType": "off",
+  "reportUnknownMemberType": "off",
+  "reportUnknownParameterType": "off",
+  "reportUnknownArgumentType": "off",
+  "reportUnknownLambdaType": "off"
+}

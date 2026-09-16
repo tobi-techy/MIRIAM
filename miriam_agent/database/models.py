@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import JSON as SQLAlchemyJSON
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String, Text
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 Base = declarative_base()
 
@@ -13,7 +13,9 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     username = Column(String, unique=True, nullable=False)
     email = Column(String, unique=True, nullable=False)
     full_name = Column(String, nullable=False)
@@ -35,8 +37,8 @@ class FinancialProfile(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    monthly_income = Column(Float, nullable=False)
-    current_savings = Column(Float, default=0.0)
+    monthly_income: Mapped[float] = mapped_column(Float, nullable=False)
+    current_savings: Mapped[float] = mapped_column(Float, default=0.0)
     risk_tolerance = Column(String, default="medium")
     investment_goals = Column(SQLAlchemyJSON, default=list)
     financial_goals = Column(SQLAlchemyJSON, default=list)

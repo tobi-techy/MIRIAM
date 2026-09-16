@@ -53,7 +53,7 @@ class GoBackendClient:
         offset: int = 0,
         category: str | None = None,
     ) -> list[dict[str, Any]]:
-        params = {"limit": limit, "offset": offset}
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if category:
             # Go's handler filters on `type` (deposit, withdrawal, ...), not category.
             params["type"] = category
@@ -169,8 +169,7 @@ class GoBackendClient:
             obligations = await self.get_upcoming_bills(token)
         except IntegrationError:
             obligations = []
-        if isinstance(obligations, list):
-            snapshot["upcoming_obligations"] = obligations
+        snapshot["upcoming_obligations"] = obligations
         return snapshot
 
     async def _money_snapshot(self, token: str) -> dict[str, Any]:

@@ -445,6 +445,6 @@ def _flat_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Keep only string/number/bool values (Supermemory's metadata rule)."""
     out: dict[str, Any] = {}
     for key, value in metadata.items():
-        if isinstance(value, (str, int, float, bool)) and value is not None:
+        if isinstance(value, (str, int, float, bool)):
             out[key] = value
     return out

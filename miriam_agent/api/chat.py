@@ -579,7 +579,7 @@ async def _load_financial_plan(token: str) -> dict[str, Any] | None:
 
         client = get_go_client()
         plan = await client.get_financial_plan(token)
-        if isinstance(plan, dict) and plan:
+        if plan:
             return plan
     except Exception as e:
         logger.info("Financial plan unavailable (non-blocking): %s", e)

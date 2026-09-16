@@ -16,10 +16,13 @@ class AgentConfig(BaseModel):
     """Configuration for an agent."""
 
     name: str = Field(..., description="Agent name")
-    model: str = Field("gpt-4", description="Model to use")
-    temperature: float = Field(0.7, description="Temperature for generation")
-    max_tokens: int = Field(4096, description="Maximum tokens per response")
-    system_prompt: str | None = Field(None, description="System prompt")
+    # Plain defaults (not Field(default=...)): pyright/pylance do not infer
+    # defaults from pydantic's Field(..., default=...), which made every
+    # AgentConfig(...) call look like it was missing required arguments.
+    model: str = "gpt-4"
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list, description="Available tools")
     memory_types: list[str] = Field(
         default_factory=list, description="Memory types to use"

@@ -128,7 +128,7 @@ class Agent:
         llm_extra: list[ChatMessage] = []
         self._approved_actions = list(approved_actions or [])
         approved_lookup = {
-            self._signature(a.get("tool"), a.get("arguments", {})): True
+            self._signature(str(a.get("tool") or ""), a.get("arguments", {})): True
             for a in self._approved_actions
         }
 
@@ -137,7 +137,7 @@ class Agent:
         # an already-run money action (idempotency guard within the turn).
         executed_results: dict[str, dict[str, Any]] = {}
         for a in approved_actions or []:
-            tool_name = a.get("tool")
+            tool_name = str(a.get("tool") or "")
             args = a.get("arguments", {})
             sig = self._signature(tool_name, args)
             try:
@@ -332,15 +332,17 @@ class Agent:
         # the exact call. Narrate from the cached results instead.
         self._approved_actions = list(approved_actions or [])
         approved_lookup = {
-            self._signature(a.get("tool"), a.get("arguments", {})): True
+            self._signature(str(a.get("tool") or ""), a.get("arguments", {})): True
             for a in self._approved_actions
         }
         executed_results: dict[str, dict[str, Any]] = {}
         for a in approved_actions or []:
-            sig = self._signature(a.get("tool"), a.get("arguments", {}))
+            tool_name = str(a.get("tool") or "")
+            args = a.get("arguments", {})
+            sig = self._signature(tool_name, args)
             try:
                 result = await self._safe_execute(
-                    a.get("tool"), a.get("arguments", {}), ctx, user_id, None
+                    tool_name, args, ctx, user_id, None
                 )
                 executed_results[sig] = result
                 yield {
@@ -564,10 +566,8 @@ class Agent:
         exec_ctx = dict(ctx)
         # Deterministic per-(user, tool, args) idempotency key so a retried
         # money action cannot double-execute on the Go side.
-        if self.registry.get(name) is not None and (
-            self.registry.get(name).is_mutation
-            or self.registry.get(name).requires_approval
-        ):
+        _tool = self.registry.get(name)
+        if _tool is not None and (_tool.is_mutation or _tool.requires_approval):
             exec_ctx["idempotency_key"] = self._idempotency_key(
                 str(ctx.get("user_id", "")), name, args
             )
@@ -618,7 +618,7 @@ class Agent:
         replay_ctx = dict(exec_ctx)
         replay_ctx["confirmation_token"] = token
         replayed = await self.registry.execute(name, args, context=replay_ctx)
-        if isinstance(replayed, dict) and replayed.get("status") == "AWAITING_CONFIRMATION":
+        if replayed.get("status") == "AWAITING_CONFIRMATION":
             return {
                 **replayed,
                 "error": (
@@ -665,7 +665,7 @@ class Agent:
         """
         sig = self._signature(tool_name, args)
         return sig in {
-            self._signature(a.get("tool"), a.get("arguments", {}))
+            self._signature(str(a.get("tool") or ""), a.get("arguments", {}))
             for a in (self._approved_actions or [])
         }
 
