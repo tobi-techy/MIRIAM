@@ -1082,7 +1082,14 @@ class OnboardingService:
         main, extras = bubble_sets(reply)
         poll = None
         if outcome.suggested:
-            poll = {"title": main, "options": list(outcome.suggested)}
+            title = (main or reply).strip()
+            if not title:
+                # Never emit a poll with an empty title: spectrum-ts
+                # validates title >=1 and an empty poll would fail to cache
+                # (ZodError) and break subsequent votes.
+                title = clean_text(outcome.reply or "").strip() or "What's your pick?"
+            if title.strip():
+                poll = {"title": title.strip(), "options": list(outcome.suggested)}
         return OnboardingTurn(
             took_over=True,
             response=main,
