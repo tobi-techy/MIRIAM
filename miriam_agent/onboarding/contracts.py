@@ -81,7 +81,7 @@ class PresentPlanOutcome(BaseModel):
 
 
 class MoneyMomentMeta(BaseModel):
-    """spec §6: the structured read of the money moment, lifted from the
+    """spec v1.2 §6: the structured read of the money moment, lifted from the
     reserved fact keys. Persisted only when non-default (exclude_defaults)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -92,7 +92,7 @@ class MoneyMomentMeta(BaseModel):
 
 
 class GoalMeta(BaseModel):
-    """spec §7: the structured read of the goal, lifted from the reserved fact
+    """spec v1.2 §7: the structured read of the goal, lifted from the reserved fact
     keys. Persisted only when non-default (exclude_defaults)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -104,7 +104,7 @@ class GoalMeta(BaseModel):
 
 
 class ConversationState(BaseModel):
-    """spec §29: the deterministic, backend-owned read of where the
+    """spec v1.2 §29: the deterministic, backend-owned read of where the
     conversation is. Mirrors the state seeds in :mod:`state` plus the internal
     money script (for steering only, never shown)."""
 
@@ -134,7 +134,7 @@ class RecommendedAction(BaseModel):
 
 
 class FinancialInsight(BaseModel):
-    """spec §21: one structured financial insight per plan."""
+    """spec v1.2 §21: one structured financial insight per plan."""
 
     model_config = ConfigDict(extra="forbid")
 

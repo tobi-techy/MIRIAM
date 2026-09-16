@@ -24,7 +24,7 @@ Rules map 1:1 to spec sections:
         that reports a figure nobody said -- the classic injected/fabricated
         number -- is a hard safety violation. ``grounded`` empty means the rule
         is not scored (there is nothing to ground against).
-  R11 -- no parroting (spec v1.1 §6, §53): a reply must not lift a long clause
+  R11 -- no parroting (spec v1.2 §6, §53): a reply must not lift a long clause
         straight out of the previous user message ("quite a lot, and you don't
         want to go broke") and then append only a low-information,
         therapist-style tail ("what's making that feel real right now?") that
@@ -33,7 +33,7 @@ Rules map 1:1 to spec sections:
         stays silent. A mirror-plus-concrete-probe ("okay. but what does
         'going broke' actually look like for you?") is a compliant echo, not a
         parrot -- it substitutes real information for the empty tail.
-  R12 -- no therapist mode (spec v1.1 §9): a question that pushes today's
+  R12 -- no therapist mode (spec v1.2 §9): a question that pushes today's
         emotional processing back onto the user ("how does that make you feel?",
         "what's coming up for you?", "what is making that feel real right
         now?") instead of adding information. Conversation is where the

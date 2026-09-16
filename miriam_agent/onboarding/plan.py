@@ -88,7 +88,7 @@ _RETENTION_VETO = re.compile(
 # never be removed by a text note -- removing them would be a bad-money move.
 _IMMUTABLE_STEPS = frozenset({"buffer", "goal"})
 
-# spec §21: one structured insight per plan. state -> (category, title,
+# spec v1.2 §21: one structured insight per plan. state -> (category, title,
 # summary fragment, recommended-action type). The personality layer speaks it;
 # the backend keeps the structured understanding.
 _INSIGHT_RECIPES: dict[str, tuple[str, str, str, str]] = {
@@ -499,7 +499,7 @@ def _insight(
     evidence: list[str],
     document_summary: str | None,
 ) -> dict[str, Any]:
-    """spec §21: a single structured financial insight anchored by the
+    """spec v1.2 §21: a single structured financial insight anchored by the
     diagnostic. Deterministic, like the rest of the plan -- the numbers aren't
     real yet at onboarding (no account data), so impact stays null and the
     confidence reflects how grounded the read is."""

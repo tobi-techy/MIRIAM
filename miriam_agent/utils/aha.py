@@ -1,4 +1,4 @@
-"""Aha-moment detection (spec v1.1 §50-§51).
+"""Aha-moment detection (spec v1.2 §50-§51).
 
 The plan engine engineers the moment; this module detects when it *lands*.
 A reply like "damn, that's actually true" or "so that's why i never look at
