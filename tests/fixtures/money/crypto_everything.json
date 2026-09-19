@@ -1,0 +1,39 @@
+{
+  "id": "crypto_everything",
+  "name": "User who wants to put everything in crypto",
+  "description": "States an aggressive appetite on a variable income with an unstable job. Capacity, not appetite, must set the growth cap, and the plan must never be a single-token allocation.",
+  "intake": {
+    "country": "US",
+    "currency": "USD",
+    "age": 26,
+    "dependents": 0,
+    "income_amount": "5200",
+    "income_frequency": "monthly",
+    "income_volatility": "variable",
+    "income_type": "commission",
+    "fixed_costs": "2600",
+    "variable_spend": "1100",
+    "debts": [],
+    "cash_on_hand": "9000",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "put everything in crypto",
+        "horizon_months": 60
+      }
+    ],
+    "job_stability": "unstable",
+    "risk_tolerance": "high",
+    "can_self_custody": true
+  },
+  "expected": {
+    "problem_type": "overconfidence_risk",
+    "investing_allowed": true,
+    "growth_pct": "50",
+    "defensive_pct": "50",
+    "growth_cap_applied": true,
+    "glider_template": "miriam_preserve_40_60",
+    "risks_disclosed": true,
+    "never_single_asset": true
+  }
+}

@@ -69,6 +69,7 @@ dev = [
 
 [project.scripts]
 miriam-agent = "miriam_agent.cli:main"
+money-plan = "miriam_agent.money.demo:main"
 
 [tool.hatch.build]
 packages = ["miriam_agent"]

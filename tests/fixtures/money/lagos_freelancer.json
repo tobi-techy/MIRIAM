@@ -1,0 +1,49 @@
+{
+  "id": "lagos_freelancer",
+  "name": "Lagos freelancer, irregular naira income, no buffer, 35% APR debt",
+  "description": "The case the build is judged on. Irregular income, nothing set aside, and debt at 35% APR. No investment recommendation may appear anywhere in this plan.",
+  "intake": {
+    "country": "NG",
+    "currency": "NGN",
+    "age": 29,
+    "dependents": 2,
+    "income_amount": "450000",
+    "income_frequency": "monthly",
+    "income_volatility": "variable",
+    "income_type": "freelance",
+    "fixed_costs": "300000",
+    "variable_spend": "80000",
+    "debts": [
+      {
+        "label": "payday loan",
+        "balance": "600000",
+        "apr_pct": "35",
+        "minimum_monthly": "45000"
+      }
+    ],
+    "cash_on_hand": "0",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "school fees",
+        "target_amount": "400000",
+        "horizon_months": 10
+      }
+    ],
+    "job_stability": "unstable",
+    "risk_tolerance": "high",
+    "can_self_custody": false
+  },
+  "expected": {
+    "problem_type": "no_buffer",
+    "investing_allowed": false,
+    "book_gated": true,
+    "growth_pct": "0",
+    "surplus_monthly": "0",
+    "glider_kind": "none",
+    "buffer_target_months": "1",
+    "debt_band": "fire",
+    "debt_gets_extra": true,
+    "buffer_is_not_glider": true
+  }
+}

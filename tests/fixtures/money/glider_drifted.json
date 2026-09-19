@@ -1,0 +1,65 @@
+{
+  "id": "glider_drifted",
+  "name": "Existing Glider portfolio that has drifted from 70/30",
+  "description": "A live portfolio has run up in the growth sleeve and now sits at roughly 95/5. The pipeline must monitor it rather than recommend a new strategy, and must report the drift in points against the approved target.",
+  "intake": {
+    "country": "US",
+    "currency": "USD",
+    "age": 38,
+    "dependents": 1,
+    "income_amount": "12000",
+    "income_frequency": "monthly",
+    "income_volatility": "steady",
+    "fixed_costs": "5000",
+    "variable_spend": "2000",
+    "debts": [],
+    "cash_on_hand": "40000",
+    "existing_investments": "25000",
+    "goals": [
+      {
+        "label": "retirement",
+        "horizon_months": 240
+      }
+    ],
+    "job_stability": "stable",
+    "risk_tolerance": "medium",
+    "can_self_custody": true
+  },
+  "portfolio": {
+    "portfolioId": "a1b2c3d4",
+    "strategyId": "01JWZEE2MF30KVRMRX53N88VA4",
+    "strategyName": "Miriam Core 70/30",
+    "schedule": {
+      "status": "active",
+      "frequency": "monthly",
+      "intervalMs": 2592000000,
+      "nextDueAt": "2026-10-01T00:00:00.000Z",
+      "lastRebalanceAt": "2026-09-01T00:00:00.000Z"
+    },
+    "targetAllocation": {
+      "broad_equity_index": "eip155:8453/erc20:0x1111111111111111111111111111111111111111",
+      "tokenized_real_world_assets": "eip155:8453/erc20:0x2222222222222222222222222222222222222222",
+      "high_quality_stablecoin": "eip155:8453/erc20:0x3333333333333333333333333333333333333333",
+      "tokenized_short_duration_paper": "eip155:8453/erc20:0x4444444444444444444444444444444444444444"
+    }
+  },
+  "positions": [
+    {
+      "assetId": "eip155:8453/erc20:0x1111111111111111111111111111111111111111",
+      "symbol": "IDX",
+      "valueUsd": "9500.000000"
+    },
+    {
+      "assetId": "eip155:8453/erc20:0x3333333333333333333333333333333333333333",
+      "symbol": "USDC",
+      "valueUsd": "500.000000"
+    }
+  ],
+  "expected": {
+    "glider_kind": "monitor",
+    "portfolio_id": "a1b2c3d4",
+    "equity_overweight_points_above": 30,
+    "stablecoin_underweight": true,
+    "needs_rebalance": true
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "id": "invest_it_all",
+  "name": "Wants to invest it all in memecoins with no buffer",
+  "description": "A direct ask to put everything into crypto while sitting on an empty buffer. The answer is no, and the refusal must name the buffer as the reason rather than arguing about the asset.",
+  "intake": {
+    "country": "US",
+    "currency": "USD",
+    "age": 27,
+    "dependents": 0,
+    "income_amount": "6000",
+    "income_frequency": "monthly",
+    "income_volatility": "steady",
+    "income_type": "w2",
+    "fixed_costs": "3000",
+    "variable_spend": "1200",
+    "debts": [],
+    "cash_on_hand": "0",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "put everything in memecoins",
+        "horizon_months": 60
+      }
+    ],
+    "job_stability": "stable",
+    "risk_tolerance": "high",
+    "can_self_custody": true
+  },
+  "expected": {
+    "problem_type": "no_buffer",
+    "investing_allowed": false,
+    "book_gated": true,
+    "growth_pct": "0",
+    "surplus_monthly": "0",
+    "glider_kind": "none",
+    "refusal_names_the_buffer": true
+  }
+}

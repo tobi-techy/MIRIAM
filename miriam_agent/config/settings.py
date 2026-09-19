@@ -169,6 +169,36 @@ class Settings(BaseSettings):
     DOCUMENT_MIN_TEXT_QUALITY: int = Field(default=120)
     DOCUMENT_RECONCILIATION_TOLERANCE: str = Field(default="1.00")
 
+    # Money pipeline (deterministic planning engines under miriam_agent/money/).
+    # Thresholds live here rather than in the engines because a hardcoded limit
+    # that drifts from config was a finding in the production audit; the money
+    # engines read these instead. Glider is read/validate only -- the pipeline
+    # never moves money, and enrollment stays user-signed and two-stage.
+    MONEY_DEFAULT_COUNTRY: str = Field(default="NG")
+    MONEY_DEFAULT_CURRENCY: str = Field(default="NGN")
+    # Debt triage bands (MONEY-RULES.md §3). APR >= fire is attacked; APR in the
+    # judgment band is compared against the local risk-free rate from
+    # money/reference.py; below that, debt is kept.
+    MONEY_DEBT_FIRE_APR_PCT: float = Field(default=15.0)
+    MONEY_DEBT_JUDGMENT_APR_PCT: float = Field(default=8.0)
+    # How long investable money must stay untouched (R-HOUSEL-2). Money the user
+    # may need inside this window is never invested.
+    MONEY_INVESTABLE_HORIZON_FLOOR_MONTHS: int = Field(default=24)
+    # The drawdown the book must survive without the user selling (R-HOUSEL-1).
+    MONEY_DRAWDOWN_TOLERANCE_PCT: float = Field(default=40.0)
+
+    # Glider B2B API (https://docs.glider.fi/api-reference/v2-overview).
+    # Direct v2 access with an x-api-key. Reads, strategy validation and draft
+    # creation only -- no enrollment or withdrawal is ever agent-initiated.
+    GLIDER_API_BASE_URL: str = Field(default="https://api.glider.fi/v2")
+    GLIDER_API_KEY: str = Field(default="")
+    GLIDER_REQUEST_TIMEOUT: float = Field(default=20.0)
+    GLIDER_MAX_RETRIES: int = Field(default=2)
+    # Poll cadence for async operations (Glider asks for 2-5s; a dispatched
+    # operation has no SLA, so callers poll rather than assume settlement).
+    GLIDER_OPERATION_POLL_SECONDS: float = Field(default=3.0)
+    GLIDER_OPERATION_MAX_POLLS: int = Field(default=40)
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

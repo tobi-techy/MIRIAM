@@ -1,0 +1,37 @@
+{
+  "id": "fragile_long_horizon",
+  "name": "Fragile month with a long retirement date",
+  "description": "Variable income, an unstable job and two dependents, but a 25 year horizon. Time to recover does not help if next month is the problem, so capacity must floor at low and cap growth.",
+  "intake": {
+    "country": "GB",
+    "currency": "GBP",
+    "age": 38,
+    "dependents": 2,
+    "income_amount": "4000",
+    "income_frequency": "monthly",
+    "income_volatility": "variable",
+    "income_type": "contract",
+    "fixed_costs": "2000",
+    "variable_spend": "700",
+    "debts": [],
+    "cash_on_hand": "9000",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "retirement",
+        "horizon_months": 300
+      }
+    ],
+    "job_stability": "unstable",
+    "risk_tolerance": "high",
+    "can_self_custody": false
+  },
+  "expected": {
+    "investing_allowed": true,
+    "capacity_band": "low",
+    "growth_pct": "50",
+    "defensive_pct": "50",
+    "growth_cap_applied": true,
+    "glider_kind": "none"
+  }
+}
