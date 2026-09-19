@@ -6,6 +6,9 @@
 - Prefers feature flags to default to enabled (opt-out) rather than disabled (opt-in), with graceful fallback when the required credential/key is absent. Confidence: 0.7
 - Treats changes to criteria/policy as product changes: version them and re-evaluate against a frozen eval set. Confidence: 0.8
 - Values explicit non-goals and acceptance criteria to bound scope and define "done". Confidence: 0.8
+- Keeps diffs strictly scoped to the task: does not reformat unrelated lint debt and does not "fix" pre-existing test failures unless they block the task at hand. Confidence: 0.85
+- Wants a shippable end-to-end product path a person can actually run (one command or one API call producing a real result) rather than another design pass; distinguishes "product path, not just pytest". Confidence: 0.8
+- When resuming prior work, checks the previous status/report's claims against the actual code and reports what was wrong, missing, or newly true, rather than restating them. Confidence: 0.75
 - Does not assume US English: the product's users are often Nigeria/West Africa (pidgin/Naija English, Yoruba, Igbo, Hausa). Confidence: 0.8
 - Uses VS Code with Pylance and expects editor type-checking (Pylance/pyright) to resolve against the project's uv `.venv`, not just CLI checks passing. Confidence: 0.7
 - Reports honestly and without congratulation: never fabricates answers or metrics; stops and reports missing prerequisites (e.g. an API key) rather than inventing results; calls mediocre work mediocre. Confidence: 0.85
@@ -14,3 +17,5 @@
 - Reports top failures grouped by failure mode, each with product impact and a recommended fix (catalog/threshold/code). Confidence: 0.7
 - Sets a quantified completion target (e.g. 99% success rate) and iterates fix → full-suite rerun until it is met, rather than stopping at "no obvious errors". Confidence: 0.7
 - Bounds iteration on a fix: after the first full pass, at most one more criteria/threshold tweak and one more full rerun, then stop. Confidence: 0.7
+- Wants the domain rules specified as a reviewable artifact before code: a rule table of trigger / action / kill-condition plus the decision tree and schema, then implementation as a transcription of those rules. Explicitly "do not start with prompt poetry" — research outputs before code. Confidence: 0.85
+- Rejects US-centric defaults: advice and product rules must be adapted to the user's country, currency, inflation, and tax wrapper rather than imported unchanged (a US 401(k)/Roth rule is invalid for a Lagos cash earner). Confidence: 0.8
