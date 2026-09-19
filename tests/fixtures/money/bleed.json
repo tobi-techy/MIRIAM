@@ -1,0 +1,38 @@
+{
+  "id": "bleed",
+  "name": "Spending more than income",
+  "description": "The month does not close. Nothing else in the plan matters until it does, so there can be no book and no Glider action.",
+  "intake": {
+    "country": "GB",
+    "currency": "GBP",
+    "age": 33,
+    "dependents": 1,
+    "income_amount": "3000",
+    "income_frequency": "monthly",
+    "income_volatility": "steady",
+    "income_type": "salary",
+    "fixed_costs": "2400",
+    "variable_spend": "900",
+    "debts": [],
+    "cash_on_hand": "1500",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "get through the month",
+        "horizon_months": 6
+      }
+    ],
+    "job_stability": "stable",
+    "risk_tolerance": "medium",
+    "can_self_custody": false
+  },
+  "expected": {
+    "problem_type": "cashflow_bleed",
+    "investing_allowed": false,
+    "book_gated": true,
+    "growth_pct": "0",
+    "surplus_monthly": "0",
+    "glider_kind": "none",
+    "bleed_is_named": true
+  }
+}

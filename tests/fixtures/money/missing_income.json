@@ -1,0 +1,20 @@
+{
+  "id": "missing_income",
+  "name": "Missing income data",
+  "description": "No income and no cost figure. The pipeline must not compute a plan on zeros it invented: it produces a data_gap, asks for the two numbers, and recommends nothing.",
+  "intake": {
+    "country": "NG",
+    "currency": "NGN"
+  },
+  "expected": {
+    "problem_type": "data_gap",
+    "confidence": "low",
+    "investing_allowed": false,
+    "book_gated": true,
+    "growth_pct": "0",
+    "surplus_monthly": "0",
+    "glider_kind": "none",
+    "asks_for_the_missing_numbers": true,
+    "invents_no_figures": true
+  }
+}

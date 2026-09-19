@@ -1,10 +1,13 @@
 """Tool registry and definitions for Miriam Financial Agent."""
 
-# Imported for its registration side effects only: importing this module
-# registers the investment (Glider Agent API) tools on the shared singleton
-# registry.
+# Imported for their registration side effects only: importing these modules
+# registers the investment (Glider Agent API) tools and the money plan tool on
+# the shared singleton registry.
 from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry, get_registry
-from miriam_agent.tools import investment_definitions  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from miriam_agent.tools import (  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    investment_definitions,
+    money_definitions,
+)
 from miriam_agent.tools.definitions import build_tool_registry
 
 __all__ = [

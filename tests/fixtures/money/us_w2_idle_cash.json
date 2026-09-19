@@ -1,0 +1,43 @@
+{
+  "id": "us_w2_idle_cash",
+  "name": "US W2 earner, employer match available, idle cash, 10 year horizon",
+  "description": "The healthy case: buffer holds, no debt, a real surplus, and a long horizon. This is the only fixture that should reach a 70/30 book and a Glider recommendation.",
+  "intake": {
+    "country": "US",
+    "currency": "USD",
+    "age": 34,
+    "dependents": 0,
+    "income_amount": "9000",
+    "income_frequency": "monthly",
+    "income_volatility": "steady",
+    "income_type": "w2",
+    "fixed_costs": "4200",
+    "variable_spend": "1600",
+    "debts": [],
+    "cash_on_hand": "38000",
+    "existing_investments": "0",
+    "goals": [
+      {
+        "label": "retirement",
+        "horizon_months": 120
+      }
+    ],
+    "job_stability": "stable",
+    "risk_tolerance": "medium",
+    "can_self_custody": true
+  },
+  "expected": {
+    "problem_type": "idle_surplus",
+    "investing_allowed": true,
+    "book_gated": false,
+    "growth_pct": "70",
+    "defensive_pct": "30",
+    "rule_id": "R-BACH-2:7y-default",
+    "glider_kind": "draft",
+    "glider_template": "miriam_core_70_30",
+    "draft_weights_sum_to_100": true,
+    "draft_submitted": false,
+    "surplus_is_positive": true,
+    "confidence": "medium"
+  }
+}
