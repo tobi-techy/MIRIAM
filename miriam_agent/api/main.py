@@ -1,20 +1,28 @@
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from miriam_agent.api.chat import router as chat_router
 from miriam_agent.api.proactive import router as proactive_router
 from miriam_agent.observability.correlation import (
     TRACE_HEADER,
     bind_trace_id,
+    current_trace_id,
     new_trace_id,
     normalize_trace_id,
 )
 from miriam_agent.observability.logging import setup_logging
-from miriam_agent.observability.metrics import setup_metrics
+from miriam_agent.observability.metrics import (
+    REQUEST_COUNT,
+    REQUEST_LATENCY,
+    setup_metrics,
+)
 from miriam_agent.observability.tracing import setup_tracing
 
 
@@ -47,14 +55,37 @@ app = FastAPI(
     redoc_url="/redoc" if os.getenv("ENVIRONMENT") == "development" else None,
 )
 
-# CORS middleware
+def _cors_origins() -> list[str]:
+    """Parse ``ALLOWED_ORIGINS`` into a list of origins.
+
+    The raw value was used verbatim as a single origin, so a comma-separated
+    allowlist became one nonsense origin that no browser would ever match.
+    """
+    raw = os.getenv("ALLOWED_ORIGINS", "*") or "*"
+    return [origin.strip() for origin in raw.split(",") if origin.strip()] or ["*"]
+
+
+_cors_origins_list = _cors_origins()
+_cors_wildcard = "*" in _cors_origins_list
+
+# CORS middleware. A wildcard origin combined with `allow_credentials=True` is
+# rejected by browsers and, where it is honoured, lets any site make
+# credentialed calls. Credentials are therefore only enabled for an explicit
+# allowlist; with `*` the API stays readable cross-origin without carrying the
+# caller's session.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("ALLOWED_ORIGINS", "*")],
-    allow_credentials=True,
+    allow_origins=_cors_origins_list,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if _cors_wildcard:
+    logging.getLogger(__name__).warning(
+        "ALLOWED_ORIGINS is '*' -- CORS credentials are disabled and any "
+        "origin may read responses. Set an explicit allowlist in production."
+    )
 
 
 @app.middleware("http")
@@ -69,13 +100,41 @@ async def correlate_requests(request: Request, call_next):
     the response so a caller can correlate replies with its own records.
     """
     trace_id = normalize_trace_id(request.headers.get(TRACE_HEADER)) or new_trace_id()
+    endpoint = request.url.path
+    start = time.perf_counter()
     with bind_trace_id(trace_id) as bound:
         response = await call_next(request)
     response.headers[TRACE_HEADER] = bound
+    try:
+        REQUEST_COUNT.labels(
+            request.method, endpoint, str(response.status_code)
+        ).inc()
+        REQUEST_LATENCY.labels(endpoint).observe(time.perf_counter() - start)
+    except Exception:
+        pass
     return response
 
 
 # Add health check endpoint
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_with_trace(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """Return the standard error body with the request's trace id attached.
+
+    The middleware already echoes the id as a header, but a failed call (401,
+    404, 429) came back with no id in the body, so a client that only logs the
+    body could not join the failure to the server-side records.
+    """
+    trace_id = current_trace_id()
+    headers = {TRACE_HEADER: trace_id} if trace_id else None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "trace_id": trace_id},
+        headers=headers,
+    )
+
+
 @app.get("/")
 async def root():
     """Liveness landing page (AtlasFlow probes this path by default)."""

@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     JWT_SECRET: str = Field(default="change-me-in-production")
     JWT_ALGORITHM: str = Field(default="HS256")
     JWT_EXPIRATION_MINUTES: int = Field(default=60)
+    # Optional audience/issuer pinning. Left empty by default because the Go
+    # issuer does not set them; when set, decode_token enforces them instead
+    # of accepting any token signed with the shared secret.
+    JWT_AUDIENCE: str = Field(default="")
+    JWT_ISSUER: str = Field(default="")
 
     # CORS
     ALLOWED_ORIGINS: str = Field(default="*")
@@ -66,6 +71,12 @@ class Settings(BaseSettings):
     # Go Backend
     GRPC_ENDPOINT: str = Field(default="localhost:50051")
     GO_BACKEND_URL: str = Field(default="http://localhost:8080")
+    # Per-request timeout for the Go money authority, and how many times a
+    # *safe* call is retried (reads, and writes that carry an idempotency
+    # key). A single 15s timeout with no retries turned a transient blip into
+    # a hard failure the user saw as "couldn't do that".
+    GO_REQUEST_TIMEOUT: float = Field(default=15.0)
+    GO_MAX_RETRIES: int = Field(default=2)
 
     # Supermemory (long-term memory of the agent)
     # Leave empty to disable semantic memory (the agent degrades gracefully).
@@ -73,10 +84,6 @@ class Settings(BaseSettings):
     SUPERMEMORY_BASE_URL: str = Field(default="https://api.supermemory.ai")
     SUPERMEMORY_TIMEOUT: float = Field(default=20.0)
     SUPERMEMORY_MAX_RETRIES: int = Field(default=2)
-
-    # Vector Search
-    EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
-    EMBEDDING_DIMENSIONS: int = Field(default=1536)
 
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = Field(default=60)
@@ -86,6 +93,29 @@ class Settings(BaseSettings):
     MAX_DAILY_TRANSFER: float = Field(default=10000.0)
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
     AUTO_APPROVE_THRESHOLD: float = Field(default=100.0)
+    # Server-side pending-confirmation ledger values: money actions above this
+    # amount (in any of amount/amount_ngn/amount_usd) must be covered by a
+    # staged confirmation record before the Go side is ever asked to move money.
+    APPROVAL_REQUIRED_ABOVE: float = Field(default=2000.0)
+
+    # TypeSafe judgment layer (System One). A typed decision layer that runs
+    # in front of the generator: the ingress gate classifies the turn and
+    # short-circuits jailbreaks, PII pastes, and vague asks before the LLM ever
+    # sees them (tool/egress gates follow). Enabled by default; the layer only
+    # actually activates when TYPESAFE_API_KEY is also present, so a missing
+    # key keeps the agent on the old path without any further configuration.
+    TYPESAFE_ENABLED: bool = Field(default=True)
+    TYPESAFE_API_KEY: str = Field(default="")
+    TYPESAFE_MODEL: str = Field(default="jev-latest")
+    TYPESAFE_TIMEOUT: float = Field(default=10.0)
+    TYPESAFE_MAX_RETRIES: int = Field(default=3)
+    # G3: the ingress `exposes_pii` question can only work if TypeSafe sees the
+    # user's actual text, so the raw turn text is sent by default. Set this to
+    # true to run the deterministic card/NIN/credential redactor before the
+    # request (at the cost of that question's reach). The local PII
+    # short-circuit still refuses obvious secrets before TypeSafe is called
+    # either way, so this never disables `exposes_pii`.
+    TYPESAFE_REDACT_USER_TEXT: bool = Field(default=False)
 
     # Proactive analyst (24/7 money watch + private outreach). The Go reacher
     # worker (RAIL_BACKEND) calls POST /api/v1/proactive/analyze to ask whether
@@ -128,11 +158,51 @@ class Settings(BaseSettings):
     # Voice
     ELEVENLABS_API_KEY: str = Field(default="")
 
+    # Document intelligence (Stage 3: Python processing plane).
+    DOCUMENT_MAX_SIZE_MB: int = Field(default=20)
+    DOCUMENT_NATIVE_PDF_ENABLED: bool = Field(default=True)
+    DOCUMENT_OCR_ENABLED: bool = Field(default=True)
+    DOCUMENT_OCR_URL: str = Field(default="")
+    DOCUMENT_OCR_TIMEOUT_SECONDS: float = Field(default=60.0)
+    DOCUMENT_LLM_EXTRACTION_ENABLED: bool = Field(default=True)
+    DOCUMENT_LLM_TIMEOUT_SECONDS: float = Field(default=60.0)
+    DOCUMENT_MIN_TEXT_QUALITY: int = Field(default=120)
+    DOCUMENT_RECONCILIATION_TOLERANCE: str = Field(default="1.00")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
     }
+
+    @model_validator(mode="after")
+    def _guard_production_secrets(self):
+        """Refuse to run in production with placeholder/weak signing secrets.
+
+        The compose file ships ``ENVIRONMENT=production``; combined with the
+        ``change-me-in-production`` defaults this silently mints JWTs any
+        holder of the public repo can forge. In production, both the JWT
+        signing secret and the app secret key must be strong, real values.
+        Development is untouched so local runs and tests keep working.
+        """
+        if self.ENVIRONMENT != "production":
+            return self
+
+        weak = {"", "change-me-in-production"}
+        problems: list[str] = []
+        if self.JWT_SECRET in weak or len(self.JWT_SECRET) < 32:
+            problems.append(
+                "JWT_SECRET must be a strong, non-default value (>= 32 chars) "
+                "in production"
+            )
+        if self.SECRET_KEY in weak or len(self.SECRET_KEY) < 32:
+            problems.append(
+                "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
+                "in production"
+            )
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
 
 @lru_cache

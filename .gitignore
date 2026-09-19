@@ -98,3 +98,4 @@ covhtml/
 *.so
 *.pyd
 *.dylib
+.cube

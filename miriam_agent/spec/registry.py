@@ -180,6 +180,12 @@ TRANSACTION_CLASSES = {
         "risk_level": "high",
         "enforcement_site": "safety_policy",
     },
+    "send_money": {
+        "description": "Sending money to a person or merchant",
+        "confirmation_required": True,
+        "risk_level": "high",
+        "enforcement_site": "safety_policy",
+    },
     "withdrawal": {
         "description": "Taking funds out of an account",
         "confirmation_required": True,
@@ -217,6 +223,54 @@ TRANSACTION_CLASSES = {
         "enforcement_site": "safety_policy",
     },
 }
+
+# Per-tool transaction classes. Every tool that mutates backend state is named
+# here so this registry and the live tool registry can be compared directly
+# (tests/test_miriam_spec.py). Previously only the conceptual classes above
+# existed, and ``transfer_stash_to_spending``, ``pay_bill`` and the
+# record-keeping mutations had no coverage at all -- the drift the tests caught.
+_TOOL_TRANSACTION_CLASSES: dict[str, tuple[str, str]] = {
+    "send_money": ("Sending money to a person or merchant", "high"),
+    "transfer_stash_to_spending": (
+        "Moving funds from the yield stash to the spend wallet",
+        "high",
+    ),
+    "transfer_spending_to_stash": (
+        "Moving funds from the spend wallet to the yield stash",
+        "high",
+    ),
+    "pay_bill": ("Paying a bill (airtime, data, electricity, cable)", "high"),
+    "create_automation": ("Creating a lasting money rule", "high"),
+    "update_automation": ("Pausing, resuming or renaming an automation", "medium"),
+    "delete_automation": ("Deleting an automation", "medium"),
+    "create_scheduled_investment": ("Creating a recurring investment", "high"),
+    "pause_scheduled_investment": ("Pausing a recurring investment", "medium"),
+    "resume_scheduled_investment": ("Resuming a recurring investment", "medium"),
+    "create_obligation": ("Recording a tracked bill or debt", "medium"),
+    "mark_obligation_paid": ("Marking a tracked obligation paid", "medium"),
+    "save_bill_beneficiary": ("Saving a bill-payment beneficiary", "medium"),
+    "create_strategy": ("Creating an investment strategy", "high"),
+    "update_strategy": ("Publishing a new strategy version", "high"),
+    "enroll_strategy": ("Enrolling funds into a strategy", "high"),
+    "pause_strategy": ("Pausing a strategy", "medium"),
+    "resume_strategy": ("Resuming a strategy", "medium"),
+    "rebalance_strategy": ("Rebalancing a strategy", "high"),
+    "buy_asset": ("Buying an asset toward a target allocation", "high"),
+    "sell_asset": ("Selling an asset toward a target allocation", "high"),
+    "set_allocation": ("Setting a portfolio target allocation", "high"),
+}
+
+TRANSACTION_CLASSES.update(
+    {
+        name: {
+            "description": description,
+            "confirmation_required": True,
+            "risk_level": risk_level,
+            "enforcement_site": "safety_policy",
+        }
+        for name, (description, risk_level) in _TOOL_TRANSACTION_CLASSES.items()
+    }
+)
 
 # --- Reasoning order ---
 REASONING_ORDER = [

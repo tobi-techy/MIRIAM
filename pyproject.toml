@@ -49,6 +49,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "tiktoken>=0.6.0",
     "greenlet>=3.5.5",
+    "pypdf>=6.19.0",
+    "pytest-mock>=3.15.1",
+    "typesafe-sdk>=0.7.0",
 ]
 
 [project.optional-dependencies]
@@ -91,12 +94,14 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# These two files are dominated by long natural-language content (the
-# personality system prompt, and user-facing recommendation strings)
-# where hard-wrapping mid-sentence would hurt readability for no real
+# These files are dominated by long natural-language content (the personality
+# system prompt, user-facing recommendation strings, and the TypeSafe question
+# catalogs) where hard-wrapping mid-sentence would hurt readability for no real
 # benefit. Line length is still enforced everywhere else.
 "miriam_agent/agents/system_prompt.py" = ["E501"]
 "miriam_agent/financial/intelligence.py" = ["E501"]
+"miriam_agent/judgment/questions.py" = ["E501"]
+"eval/typesafe_deep_eval.py" = ["E501"]
 
 [tool.mypy]
 # Not 3.11 (matching requires-python's floor): the installed numpy's type

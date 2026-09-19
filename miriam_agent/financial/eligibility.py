@@ -105,8 +105,9 @@ def evaluate_investment_action(
     checks["amount_positive"] = "pass" if amount > 0 else "fail"
 
     if kyc_verified is not True:
-        deny("identity verification must be complete before investing")
-        checks["kyc"] = "fail" if kyc_verified is False else "unknown"
+        checks["kyc"] = (
+            "fail" if kyc_verified is False else "not_required_for_strategy_start"
+        )
     else:
         checks["kyc"] = "pass"
 

@@ -118,6 +118,39 @@ _HABIT_OR_FUTURE = re.compile(
 )
 
 
+# A question about the user's OWN data. The onboarding conductor has no tools,
+# so a request it cannot answer must never be absorbed into the interview:
+# chat-first users ask for real numbers constantly, and a swallowed request
+# reads as the product being broken. Requiring BOTH an interrogative opener and
+# a data noun keeps the interview's own questions ("what do you spend on?") and
+# the user's narrative answers ("I spend too much on food") in the flow.
+_DATA_READ_ASK = re.compile(
+    r"\b(what|how much|how many|show|list|tell me|do i|did i|have i|can i|"
+    r"where|when|which|any)\b",
+    re.IGNORECASE,
+)
+_DATA_DOMAIN = re.compile(
+    r"\b(transaction|transactions|spend|spends|spending|spent|purchase|"
+    r"purchases|payment|payments|bill|bills|subscription|subscriptions|"
+    r"portfolio|investment|investments|position|positions|income|salary|"
+    r"paid|earn|earnings?|balance|statement|card|cards|savings?|net worth|"
+    r"report|fee|fees|charge|charges|money|cash|funds?|afford)\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_own_data(text: str) -> bool:
+    """True when the user is asking a question about their own money data.
+
+    The onboarding conductor has no tool access, so a question it cannot answer
+    must be handed to the general agent rather than folded into the interview --
+    answering it and then resuming the flow is the whole point of chat-first
+    onboarding.
+    """
+    t = _lower(text)
+    return bool(_DATA_READ_ASK.search(t) and _DATA_DOMAIN.search(t))
+
+
 def _wants_money_action(text: str) -> bool:
     """True when the user is asking to move money *now* (or read a balance) --
     the one thing the onboarding flow must never swallow, so it hands off to
@@ -492,6 +525,19 @@ class OnboardingService:
                     stage=state.stage,
                 )
 
+        # Requests the onboarding conductor cannot serve are never absorbed,
+        # whatever stage we are at. This has to sit BEFORE the greeting handshake:
+        # at that stage "show me my transactions" was read as someone introducing
+        # themselves (the name came out as "Show Me"), so a whole class of real
+        # requests vanished into the interview. The conductor has no tools, so
+        # handing these to the agent and resuming afterwards is the only correct
+        # answer. Poll votes stay in the flow -- a tap on "Yes, send it now" is a
+        # statement answer, not a transfer.
+        if not is_poll_vote and (
+            _wants_money_action(text) or _asks_for_own_data(text)
+        ):
+            return OnboardingTurn(conversation_id=conversation_id)
+
         if state is None:
             # First message. Honored action intents skip the interview.
             if not is_poll_vote and _ACTION_INTENT.search(text):
@@ -532,13 +578,6 @@ class OnboardingService:
             self._emit(user.id, "interview_finished")
             return await self._present_plan(user.id, state, conversation_id)
 
-        # A money move (or balance read) is never absorbed into the plan chat,
-        # whatever state the interview is in: hand it to the agent un-taken-over
-        # so its own safety net decides. Poll votes stay in the flow -- a tap on
-        # "Yes, send it now" is a statement answer, not a transfer.
-        if not is_poll_vote and _wants_money_action(text):
-            return OnboardingTurn(conversation_id=conversation_id)
-
         if not text:
             return OnboardingTurn(conversation_id=conversation_id)
 
@@ -570,6 +609,10 @@ class OnboardingService:
         return get_llm_provider()
 
     async def _history(self, conversation_id: str) -> list[dict[str, Any]]:
+        # No user_id is passed because onboarding never accepts a conversation
+        # id from a client: it mints ``onboarding:{user.id}`` itself, so the id
+        # is already bound to the authenticated user. Client-supplied ids go
+        # through api.chat._require_owned_conversation instead.
         try:
             rows: list[dict[str, Any]] = await self._memory.get_conversation_history(
                 conversation_id
@@ -1479,7 +1522,7 @@ class OnboardingService:
             return reply[:400]
         if reply.casefold() in current.casefold():
             return current
-        return f"{current} — {reply}"[:400]
+        return f"{current}, {reply}"[:400]
 
     # -- completion ----------------------------------------------------------
 
@@ -1493,7 +1536,7 @@ class OnboardingService:
         self._emit(user_id, "completed_automated")
         plank = state.plan or {}
         bullets = [s["title"].lower() for s in plank.get("steps", [])][:4]
-        body = "Done - this is now how I work for you:\n"
+        body = "Done, this is now how I work for you:\n"
         for b in bullets:
             body += f"\u2022 {b} first\n"
         body += (

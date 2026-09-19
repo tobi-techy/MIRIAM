@@ -11,6 +11,7 @@ the ToolRegistry containing at minimum ``user_id`` and ``token``.
 from typing import Any
 
 from miriam_agent.agents.tools import RiskLevel, get_registry
+from miriam_agent.core.exceptions import ValidationError
 from miriam_agent.integrations.go_client import get_go_client
 
 T = Any  # placeholder, replaced with real Context protocol in wiring
@@ -19,6 +20,14 @@ _SCHEMA_STRING = {"type": "string"}
 _SCHEMA_NUMBER = {"type": "number"}
 _SCHEMA_INT = {"type": "integer", "minimum": 0}
 _SCHEMA_BOOL = {"type": "boolean"}
+# Money amounts must be strictly positive. Zero and negative amounts used to
+# pass schema validation untouched and were only ever caught (if at all) by
+# the Go ledger, so they are rejected here at the tool boundary.
+_SCHEMA_MONEY = {"type": "number", "exclusiveMinimum": 0}
+# Opaque backend identifiers. Constrained so an id can never be interpolated
+# into a Go URL path as a traversal (``../../admin``) or smuggle a query
+# separator; every id is embedded in a path by integrations/go_client.py.
+_SCHEMA_ID = {"type": "string", "pattern": "^(?=.*[A-Za-z0-9_:-])[A-Za-z0-9_.:-]{1,64}$"}
 
 registry = get_registry()
 
@@ -106,7 +115,7 @@ registry.register(
         "type": "object",
         "properties": {
             "document_id": {
-                **_SCHEMA_STRING,
+                **_SCHEMA_ID,
                 "description": "Go document ID from the upload response",
             },
         },
@@ -219,7 +228,7 @@ registry.register(
                 **_SCHEMA_STRING,
                 "description": "Recipient Rail tag, email, or phone",
             },
-            "amount": {**_SCHEMA_NUMBER, "description": "Amount in user's currency"},
+            "amount": {**_SCHEMA_MONEY, "description": "Amount in user's currency"},
             "message": {**_SCHEMA_STRING, "description": "Optional note"},
         },
         "required": ["to", "amount"],
@@ -249,7 +258,7 @@ registry.register(
     ),
     args_schema={
         "type": "object",
-        "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
+        "properties": {"amount": {**_SCHEMA_MONEY, "description": "Amount to move"}},
         "required": ["amount"],
     },
     category="action",
@@ -277,7 +286,7 @@ registry.register(
     ),
     args_schema={
         "type": "object",
-        "properties": {"amount": {**_SCHEMA_NUMBER, "description": "Amount to move"}},
+        "properties": {"amount": {**_SCHEMA_MONEY, "description": "Amount to move"}},
         "required": ["amount"],
     },
     category="action",
@@ -411,6 +420,53 @@ registry.register(
 )
 
 
+async def _get_transfer_status(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    """Recent P2P transfers and their status, straight from the Go ledger."""
+    client = get_go_client()
+    transfers = await client.get_p2p_transfers(
+        ctx["token"],
+        limit=args.get("limit", 20),
+        offset=args.get("offset", 0),
+    )
+    return {
+        "transfers": transfers,
+        "count": len(transfers),
+        "note": (
+            "Each record carries its own id, recipient, amount, created time "
+            "and status. Match the transfer the user is asking about by "
+            "recipient, amount or time, then report that record's status."
+        ),
+    }
+
+
+registry.register(
+    name="get_transfer_status",
+    description=(
+        "List the user's recent P2P transfers with their current status. Call "
+        "this whenever the user asks whether a transfer went through, where "
+        "their money is, whether a send arrived, or the state of a payment. "
+        "Read-only: it returns real transfer records, so never describe a "
+        "transfer's status without calling it first."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                **_SCHEMA_INT,
+                "maximum": 100,
+                "description": "Max transfers to return (default 20)",
+            },
+            "offset": {**_SCHEMA_INT, "description": "Pagination offset"},
+        },
+    },
+    category="history",
+    risk_level=RiskLevel.LOW,
+    handler=_get_transfer_status,
+)
+
+
 async def _list_automations(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
@@ -451,7 +507,14 @@ _WEEKDAYS = {
 
 
 def _automation_payload(args: dict[str, Any]) -> dict[str, Any]:
-    """Map chat-friendly args onto Go's CreateAutomationRequest."""
+    """Map chat-friendly args onto Go's CreateAutomationRequest.
+
+    The action is never guessed: a destination of "stash"/"spend" implies the
+    matching transfer, and anything else must come with an explicit
+    ``action_type``. Previously an unrecognised destination silently defaulted
+    to ``transfer_to_stash``, so "every Friday email me a summary" could be
+    scheduled as a recurring transfer the user never asked for.
+    """
     trigger_type = args.get("trigger_type") or "schedule"
     action_type = args.get("action_type")
     dest = str(args.get("to") or "").lower()
@@ -461,7 +524,12 @@ def _automation_payload(args: dict[str, Any]) -> dict[str, Any]:
         elif dest in {"spend", "spending"}:
             action_type = "transfer_to_spend"
         else:
-            action_type = "transfer_to_stash"
+            raise ValidationError(
+                "create_automation needs an explicit action_type unless the "
+                f"destination is 'stash' or 'spend' (got {dest!r}). Pass one of "
+                "transfer_to_stash, transfer_to_spend, notify, or ask the user "
+                "what the automation should do."
+            )
 
     trigger_config = args.get("trigger_config")
     if not isinstance(trigger_config, dict):
@@ -522,7 +590,7 @@ registry.register(
                 **_SCHEMA_STRING,
                 "description": "Human schedule, e.g. 'every Friday'",
             },
-            "amount": {**_SCHEMA_NUMBER, "description": "Amount for transfers"},
+            "amount": {**_SCHEMA_MONEY, "description": "Amount for transfers"},
             "from": {**_SCHEMA_STRING, "description": "Source wallet: spend or stash"},
             "to": {**_SCHEMA_STRING, "description": "Destination: spend or stash"},
             "trigger_type": {
@@ -564,7 +632,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "id": {**_SCHEMA_STRING, "description": "Automation id"},
+            "id": {**_SCHEMA_ID, "description": "Automation id"},
             "is_active": {**_SCHEMA_BOOL, "description": "false pauses, true resumes"},
             "name": {**_SCHEMA_STRING, "description": "New name"},
         },
@@ -591,7 +659,7 @@ registry.register(
     description="Delete an automation permanently. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {"id": {**_SCHEMA_STRING, "description": "Automation id"}},
+        "properties": {"id": {**_SCHEMA_ID, "description": "Automation id"}},
         "required": ["id"],
     },
     category="automation",
@@ -641,12 +709,15 @@ async def _create_obligation(
 
 registry.register(
     name="create_obligation",
-    description="Add a bill, debt, or other obligation Miriam should track.",
+    description=(
+        "Add a bill, debt, or other obligation Miriam should track. "
+        "Requires confirmation."
+    ),
     args_schema={
         "type": "object",
         "properties": {
             "name": {**_SCHEMA_STRING, "description": "Obligation name"},
-            "amount": {**_SCHEMA_NUMBER, "description": "Amount due"},
+            "amount": {**_SCHEMA_MONEY, "description": "Amount due"},
             "type": {**_SCHEMA_STRING, "description": "bill, debt, subscription, ..."},
             "cadence": {**_SCHEMA_STRING, "description": "monthly, weekly, once, ..."},
             "currency": {**_SCHEMA_STRING, "description": "USD, NGN, ..."},
@@ -656,7 +727,10 @@ registry.register(
         "required": ["name", "amount"],
     },
     category="planning",
-    risk_level=RiskLevel.LOW,
+    risk_level=RiskLevel.MEDIUM,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
     handler=_create_obligation,
 )
 
@@ -670,14 +744,19 @@ async def _mark_obligation_paid(
 
 registry.register(
     name="mark_obligation_paid",
-    description="Mark an obligation as paid.",
+    description="Mark an obligation as paid. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {"id": {**_SCHEMA_STRING, "description": "Obligation id"}},
+        "properties": {
+            "id": {**_SCHEMA_ID, "description": "Obligation id"}
+        },
         "required": ["id"],
     },
     category="planning",
-    risk_level=RiskLevel.LOW,
+    risk_level=RiskLevel.MEDIUM,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
     handler=_mark_obligation_paid,
 )
 
@@ -725,7 +804,7 @@ registry.register(
         "type": "object",
         "properties": {
             "symbol": {**_SCHEMA_STRING, "description": "Ticker, e.g. VOO"},
-            "amount": {**_SCHEMA_NUMBER, "description": "Dollar amount each run"},
+            "amount": {**_SCHEMA_MONEY, "description": "Dollar amount each run"},
             "frequency": {**_SCHEMA_STRING, "description": "daily, weekly, monthly"},
             "name": {**_SCHEMA_STRING, "description": "Optional label"},
             "day_of_week": {**_SCHEMA_INT, "description": "0=Sun .. 6=Sat"},
@@ -754,7 +833,7 @@ registry.register(
     description="Pause a recurring investment. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {"id": {**_SCHEMA_STRING, "description": "Schedule id"}},
+        "properties": {"id": {**_SCHEMA_ID, "description": "Schedule id"}},
         "required": ["id"],
     },
     category="investment",
@@ -778,7 +857,7 @@ registry.register(
     description="Resume a paused recurring investment. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {"id": {**_SCHEMA_STRING, "description": "Schedule id"}},
+        "properties": {"id": {**_SCHEMA_ID, "description": "Schedule id"}},
         "required": ["id"],
     },
     category="investment",
@@ -830,7 +909,10 @@ async def _save_bill_beneficiary(
 
 registry.register(
     name="save_bill_beneficiary",
-    description="Save a bill-payment beneficiary so future payments are one step.",
+    description=(
+        "Save a bill-payment beneficiary so future payments are one step. "
+        "Requires confirmation."
+    ),
     args_schema={
         "type": "object",
         "properties": {
@@ -847,8 +929,105 @@ registry.register(
         "required": ["category", "recipient"],
     },
     category="action",
-    risk_level=RiskLevel.LOW,
+    risk_level=RiskLevel.MEDIUM,
+    is_mutation=True,
+    requires_approval=True,
+    allow_auto_execute=False,
     handler=_save_bill_beneficiary,
+)
+
+
+async def _get_deposit_details(
+    args: dict[str, Any], ctx: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the user's Naira deposit / bank-transfer details.
+
+    Tries the NGN virtual account first (the account the user sends Naira
+    to), then falls back to the crypto deposit-address endpoint so the tool
+    always answers with real backend data. Tool errors surface as a
+    structured ``_tool_error`` payload (never a fake account), and the
+    handler raises nothing on its own: auth, transport, and backend-shape
+    failures are all reported, never hidden.
+    """
+    client = get_go_client()
+    token = ctx.get("token")
+    if not token:
+        return {
+            "_tool_error": "missing auth token",
+            "hint": "Sign in again, then ask for the deposit account.",
+        }
+    errors: list[str] = []
+    try:
+        ngn = await client.get_ngn_virtual_account(token)
+    except Exception as e:  # noqa: BLE001 - surfaced below, never swallowed
+        ngn = None
+        errors.append(f"naira account lookup failed: {e}")
+    if isinstance(ngn, dict):
+        account = ngn.get("virtual_account")
+        if isinstance(account, dict) and account:
+            return {
+                "currency": "NGN",
+                "rail": "bank_transfer",
+                "virtual_account": account,
+                "how_to_use": (
+                    "Send Naira to this account from any Nigerian bank app. "
+                    "It lands in your Rail balance."
+                ),
+            }
+        if ngn.get("_tool_error"):
+            errors.append(str(ngn["_tool_error"]))
+    crypto: dict[str, Any] | None = None
+    try:
+        crypto = await client.create_deposit_address(
+            token, chain=(args.get("chain") or "base"), currency="USDC"
+        )
+    except Exception as e:  # noqa: BLE001 - surfaced below, never swallowed
+        crypto = None
+        errors.append(f"crypto deposit lookup failed: {e}")
+    if isinstance(crypto, dict) and crypto.get("_tool_error"):
+        errors.append(str(crypto["_tool_error"]))
+    if isinstance(crypto, dict) and (crypto.get("address") or crypto.get("deposit_address")):
+        return {
+            "currency": crypto.get("currency") or "USDC",
+            "rail": "crypto",
+            "deposit": crypto,
+            "note": (
+                "No Naira bank-transfer account is available on this account "
+                "right now. This crypto deposit address works instead."
+            ),
+            **({"lookup_notes": errors} if errors else {}),
+        }
+    detail = "; ".join(errors) if errors else "no deposit details came back"
+    return {
+        "_tool_error": detail,
+        "hint": (
+            "The deposit service did not return an account. Try again in a "
+            "moment, or fund from the Rail app home screen."
+        ),
+    }
+
+
+registry.register(
+    name="get_deposit_details",
+    description=(
+        "Get the user's deposit details: their Naira bank-transfer virtual "
+        "account (bank name, account number, account name) and, as a "
+        "fallback, a crypto deposit address. Call whenever the user asks "
+        "how to deposit, fund, add money, or asks for the account to send "
+        "Naira to. Answers come from the live backend, never invented."
+    ),
+    args_schema={
+        "type": "object",
+        "properties": {
+            "chain": {
+                **_SCHEMA_STRING,
+                "description": "Crypto fallback chain (default base)",
+            },
+        },
+    },
+    category="action",
+    risk_level=RiskLevel.LOW,
+    handler=_get_deposit_details,
 )
 
 
@@ -929,12 +1108,56 @@ registry.register(
 
 async def _detect_network(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     client = get_go_client()
-    return await client.detect_network(ctx["token"], args["phone"])
+    token = ctx.get("token")
+    if not token:
+        return {
+            "_tool_error": "missing auth token",
+            "hint": "Sign in again, then retry the airtime lookup.",
+        }
+    phone = str(args.get("phone") or "").strip()
+    if not phone:
+        return {
+            "_tool_error": "phone is required",
+            "hint": "Ask the user for the phone number to top up.",
+        }
+    try:
+        result = await client.detect_network(token, phone)
+    except Exception as e:  # noqa: BLE001 - structured, never swallowed
+        return {
+            "_tool_error": f"network lookup failed: {e}",
+            "phone": phone,
+            "hint": (
+                "The bill service did not answer. The user can still pick "
+                "their network manually (MTN, Glo, 9mobile, Airtel)."
+            ),
+        }
+    if not isinstance(result, dict) or (
+        not result.get("network_id") and not result.get("network")
+    ):
+        if isinstance(result, dict) and result.get("_tool_error"):
+            return {**result, "phone": phone}
+        return {
+            "_tool_error": "network lookup returned no network",
+            "phone": phone,
+            "raw": result,
+            "hint": (
+                "The bill service returned nothing for that number. Ask the "
+                "user to pick their network manually."
+            ),
+        }
+    out = dict(result)
+    out.setdefault("phone", phone)
+    return out
 
 
 registry.register(
     name="detect_network",
-    description="Detect a phone number's mobile network (for airtime or data).",
+    description=(
+        "Detect a phone number's mobile network for airtime or data "
+        "(returns network_id and network name). Call this as soon as the "
+        "user gives a phone number for airtime or data, before asking for "
+        "the network or giving up."
+    ),
     args_schema={
         "type": "object",
         "properties": {
@@ -1022,7 +1245,7 @@ registry.register(
                 "description": "Phone, meter, or smartcard number to pay for",
             },
             "amount_ngn": {
-                **_SCHEMA_NUMBER,
+                **_SCHEMA_MONEY,
                 "description": "Face value in NGN",
             },
             "network_id": {

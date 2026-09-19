@@ -41,6 +41,19 @@ services:
       REDIS_URL: redis://miriam-redis:6379/0
       LOG_LEVEL: INFO
       ENVIRONMENT: production
+      # Signing secrets MUST be set in the host environment. Production
+      # refuses to boot with placeholders (config/settings.py) and compose
+      # never embeds real secrets -- leave these alone and export e.g.
+      #   JWT_SECRET=... SECRET_KEY=... ENCRYPTION_KEY=...
+      # before `docker compose up`.
+      JWT_SECRET: ${JWT_SECRET:-}
+      SECRET_KEY: ${SECRET_KEY:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # TypeSafe judgment layer (System One). On by default; activate it by
+      # exporting TYPESAFE_API_KEY on the host. Without a key the agent runs the
+      # pre-TypeSafe path unchanged.
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      TYPESAFE_ENABLED: ${TYPESAFE_ENABLED:-true}
     ports:
       - "8000:8000"
     depends_on:

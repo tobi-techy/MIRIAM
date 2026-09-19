@@ -28,7 +28,7 @@ from contextvars import ContextVar, Token
 TRACE_HEADER = "x-miriam-trace-id"
 """Inbound/outbound header carrying the id. Lowercase for ASGI header lookups."""
 
-MAX_TRACE_ID_LENGTH = 128
+MAX_TRACE_ID_LENGTH = 36
 _ID_PREFIX = "tr_"
 
 _trace_id: ContextVar[str | None] = ContextVar("miriam_trace_id", default=None)

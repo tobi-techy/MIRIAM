@@ -155,6 +155,7 @@ def test_guest_chat_reaches_onboarding_and_persists(
     handle.assert_awaited_once()
     assert handle.await_args.args[0].roles == ["guest"]
     assert handle.await_args.kwargs["is_poll_vote"] is is_poll_vote
-    # ensure_user + both interaction writes + history read use the real wrapper.
-    assert factory.call_count == 4
+    # ensure_user + ownership lookup + both interaction writes + history read
+    # use the real wrapper.
+    assert factory.call_count == 5
     assert session.commit.await_count == 3

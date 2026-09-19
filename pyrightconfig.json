@@ -1,6 +1,8 @@
 {
   "typeCheckingMode": "basic",
   "include": ["miriam_agent/**"],
+  "venvPath": ".",
+  "venv": ".venv",
   "pythonVersion": "3.11",
   "reportUnknownVariableType": "off",
   "reportUnknownMemberType": "off",

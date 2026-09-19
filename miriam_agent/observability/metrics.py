@@ -37,3 +37,24 @@ MIRIAM_AHA_DETECTED = Counter(
 def setup_metrics() -> None:
     """Initialize metrics (no-op for now, Prometheus scrapes /metrics)."""
     pass
+
+
+def record_llm_call(
+    model: str, status: str, latency_seconds: float | None = None
+) -> None:
+    """Increment the LLM call counters. Never raises: observability must not
+    break the request path it is observing."""
+    try:
+        LLM_CALLS.labels(model or "", status).inc()
+        if latency_seconds is not None:
+            LLM_LATENCY.labels(model or "").observe(latency_seconds)
+    except Exception:
+        pass
+
+
+def record_tool_execution(tool: str, status: str) -> None:
+    """Increment the tool-execution counters. Never raises."""
+    try:
+        TOOL_EXECUTIONS.labels(tool or "", status).inc()
+    except Exception:
+        pass

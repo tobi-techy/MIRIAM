@@ -25,6 +25,8 @@ services:
       REDIS_URL: redis://miriam-redis:6379/0
       LOG_LEVEL: DEBUG
       ENVIRONMENT: development
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      TYPESAFE_ENABLED: ${TYPESAFE_ENABLED:-true}
     ports:
       - "8000:8000"
       - "8001:8001"  # Hot reload port
