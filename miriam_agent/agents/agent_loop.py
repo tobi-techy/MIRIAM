@@ -25,9 +25,26 @@ from miriam_agent.agents.llm import ChatMessage, LLMProvider, get_llm_provider
 from miriam_agent.agents.system_prompt import build_system_prompt
 from miriam_agent.agents.tools import Tool, ToolRegistry
 from miriam_agent.integrations.go_client import GoBackendClient
+from miriam_agent.judgment.client import enabled as typesafe_enabled
+from miriam_agent.judgment.gates import (
+    EGRESS_DONT_KNOW,
+    EGRESS_REGENERATE_INSTRUCTION,
+    EgressBranch,
+    EgressDecision,
+    ToolBranch,
+    ToolDecision,
+    build_state,
+    egress_gate,
+    tool_gate,
+)
+from miriam_agent.judgment.schemas import ProposedTool
 from miriam_agent.observability.correlation import current_trace_id
+from miriam_agent.safety.confirmations import (
+    PendingConfirmationStore,
+    get_pending_confirmation_store,
+)
 from miriam_agent.safety.policy import SafetyPolicy
-from miriam_agent.utils.text import bubble_sets, lift_reaction
+from miriam_agent.utils.text import bubble_sets, clean_text, lift_reaction
 
 logger = logging.getLogger(__name__)
 
@@ -80,24 +97,29 @@ class Agent:
         safety_policy: SafetyPolicy | None = None,
         go_client: GoBackendClient | None = None,
         config: AgentConfig | None = None,
+        confirmation_store: PendingConfirmationStore | None = None,
     ):
         self.registry = registry
         self.provider = provider or get_llm_provider()
         self.safety_policy = safety_policy or SafetyPolicy()
         self.go_client = go_client
         self.config = config or AgentConfig(name="financial_agent")
+        self.confirmation_store = confirmation_store or get_pending_confirmation_store()
 
     def _decorate(self, result: AgentRunResult) -> AgentRunResult:
         """Project the chatty-turn affordances onto a finished result: split a
         wall-of-text reply into short bubbles and lift any whitelisted tapback.
         Confirmation requests stay bare -- a money decision must never be buried
-        under bubbly wrappers."""
+        under bubbly wrappers. Every user-facing response is scrubbed first so
+        no em/en dash the model emitted ever reaches the user."""
         if result.requires_confirmation:
+            result.response = clean_text(result.response or "")
             return result
-        main, extras = bubble_sets(result.response)
+        clean = clean_text(result.response or "")
+        main, extras = bubble_sets(clean)
         result.response = main
-        result.messages = extras
-        result.reaction = lift_reaction(result.response)
+        result.messages = [clean_text(m) for m in extras]
+        result.reaction = lift_reaction(clean)
         return result
 
     # ------------------------------------------------------------------
@@ -155,7 +177,7 @@ class Agent:
             sig = self._signature(tool_name, args)
             try:
                 result = await self._safe_execute(
-                    tool_name, args, ctx, user_id, user_context
+                    tool_name, args, ctx, user_id, user_context, approved=True
                 )
                 executed_results[sig] = result
                 confirmed_executions.append(
@@ -178,11 +200,20 @@ class Agent:
                 max_tokens=self.config.max_tokens,
             )
 
-            # No tools wanted -> final answer.
+            # No tools wanted -> final answer, gated before send.
             if not response.tool_calls:
+                reply = await self._apply_egress(
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    draft=response.content,
+                    llm_messages=llm_messages,
+                    tool_results=self._collect_tool_results(llm_extra),
+                )
                 return self._decorate(
                     AgentRunResult(
-                        response=response.content,
+                        response=reply,
                         conversation_id=conv_id,
                         tool_calls=tool_calls_made,
                         proposed_actions=proposed,
@@ -224,8 +255,40 @@ class Agent:
                     tool_calls_made.append(_tool_call_record(name, args))
                     continue
 
-                # Money movement -> stage for confirmation, never auto-run.
-                if tool.is_mutation or tool.requires_approval:
+                # TypeSafe tool gate: reject irrelevant/bad-arg calls and force
+                # confirmation for irreversible/costly actions before anything runs.
+                gate = await self._tool_gate_decision(
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    name=name,
+                    args=args,
+                )
+                if gate.branch is ToolBranch.REJECT:
+                    llm_extra.append(
+                        self._tool_message(
+                            call.get("id"),
+                            name,
+                            {
+                                "error": (
+                                    f"tool call rejected by judgment gate: "
+                                    f"{gate.reason or 'not relevant'}"
+                                )
+                            },
+                        )
+                    )
+                    tool_calls_made.append(_tool_call_record(name, args))
+                    continue
+
+                should_stage = (
+                    (tool.is_mutation or tool.requires_approval)
+                    or gate.branch in (ToolBranch.BLOCK, ToolBranch.CONFIRM)
+                )
+
+                # Money movement (or a blocked/confirm-required action) -> stage
+                # for confirmation, never auto-run.
+                if should_stage:
                     signature = self._signature(name, args)
                     if signature in approved_lookup and signature in executed_results:
                         # Already executed for an explicit approval; reuse the
@@ -240,7 +303,7 @@ class Agent:
                     ):
                         try:
                             result = await self._safe_execute(
-                                name, args, ctx, user_id, user_context
+                                name, args, ctx, user_id, user_context, approved=True
                             )
                             executed_results[signature] = result
                             llm_extra.append(
@@ -261,6 +324,12 @@ class Agent:
                             )
                         tool_calls_made.append(_tool_call_record(name, args))
                     else:
+                        # Stage the exact proposed action server-side so a
+                        # later approved_actions payload can be verified against
+                        # something real (and never forged).
+                        await self.confirmation_store.stage(
+                            user_id, self._signature(name, args)
+                        )
                         proposed.append(
                             ProposedAction(
                                 tool_name=name,
@@ -355,7 +424,7 @@ class Agent:
             sig = self._signature(tool_name, args)
             try:
                 result = await self._safe_execute(
-                    tool_name, args, ctx, user_id, None
+                    tool_name, args, ctx, user_id, user_context, approved=True
                 )
                 executed_results[sig] = result
                 yield {
@@ -432,7 +501,45 @@ class Agent:
                         "result": {"error": f"unknown tool {name}"},
                     }
                     continue
-                if tool.is_mutation or tool.requires_approval:
+
+                gate = await self._tool_gate_decision(
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    name=name,
+                    args=args,
+                )
+                if gate.branch is ToolBranch.REJECT:
+                    llm_extra.append(
+                        self._tool_message(
+                            call.get("id"),
+                            name,
+                            {
+                                "error": (
+                                    f"tool call rejected by judgment gate: "
+                                    f"{gate.reason or 'not relevant'}"
+                                )
+                            },
+                        )
+                    )
+                    yield {
+                        "type": "tool_result",
+                        "tool": name,
+                        "status": "error",
+                        "result": {
+                            "error": f"tool call rejected by judgment gate: "
+                            f"{gate.reason or 'not relevant'}"
+                        },
+                    }
+                    continue
+
+                should_stage = (
+                    (tool.is_mutation or tool.requires_approval)
+                    or gate.branch in (ToolBranch.BLOCK, ToolBranch.CONFIRM)
+                )
+
+                if should_stage:
                     signature = self._signature(name, args)
                     if signature in approved_lookup and signature in executed_results:
                         llm_extra.append(
@@ -453,7 +560,7 @@ class Agent:
                     ):
                         try:
                             result = await self._safe_execute(
-                                name, args, ctx, user_id, None
+                                name, args, ctx, user_id, user_context, approved=True
                             )
                             executed_results[signature] = result
                             llm_extra.append(
@@ -478,6 +585,9 @@ class Agent:
                                 "result": {"error": str(e)},
                             }
                     else:
+                        await self.confirmation_store.stage(
+                            user_id, self._signature(name, args)
+                        )
                         proposed = self._summarize_action(tool, args)
                         yield {
                             "type": "action_required",
@@ -488,7 +598,9 @@ class Agent:
                         stage_next = True
                     continue
                 try:
-                    result = await self._safe_execute(name, args, ctx, user_id, None)
+                    result = await self._safe_execute(
+                        name, args, ctx, user_id, user_context
+                    )
                     llm_extra.append(self._tool_message(call.get("id"), name, result))
                     yield {
                         "type": "tool_result",
@@ -548,6 +660,89 @@ class Agent:
         messages.append(ChatMessage(role="user", content=message))
         return messages
 
+    async def _tool_gate_decision(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        user_context: dict[str, Any] | None,
+        name: str,
+        args: dict[str, Any],
+    ) -> ToolDecision:
+        """Judge one proposed tool call before anything runs."""
+        if not typesafe_enabled():
+            return ToolDecision(branch=ToolBranch.ALLOW, degraded=True)
+        return await tool_gate(
+            build_state(
+                user_id=user_id,
+                message=message,
+                history=history,
+                user_context=user_context,
+                registry=self.registry,
+                proposed_tool=ProposedTool(name=name, args=args),
+            )
+        )
+
+    async def _apply_egress(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        user_context: dict[str, Any] | None,
+        draft: str,
+        llm_messages: list[ChatMessage],
+        tool_results: list[dict[str, Any]],
+    ) -> str:
+        """Run the egress gate on a draft and return the reply to send."""
+        if not typesafe_enabled():
+            return draft
+
+        async def _evaluate(text: str) -> EgressDecision:
+            return await egress_gate(
+                build_state(
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    registry=self.registry,
+                    draft_reply=text,
+                    tool_results=tool_results,
+                )
+            )
+
+        decision = await _evaluate(draft)
+        if decision.branch is EgressBranch.DISCARD:
+            return decision.reply or EGRESS_DONT_KNOW
+        if decision.branch is EgressBranch.REGENERATE:
+            try:
+                corrected = await self.provider.complete(
+                    messages=llm_messages
+                    + [ChatMessage(role="user", content=EGRESS_REGENERATE_INSTRUCTION)],
+                    tools=None,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                )
+                regenerated = corrected.content or ""
+            except Exception:
+                logger.warning("egress regeneration failed", exc_info=True)
+                return EGRESS_DONT_KNOW
+            second = await _evaluate(regenerated)
+            if second.branch is EgressBranch.SEND:
+                return regenerated
+            return EGRESS_DONT_KNOW
+        return draft
+
+    @staticmethod
+    def _collect_tool_results(llm_extra: list[ChatMessage]) -> list[dict[str, Any]]:
+        """Tool results from this turn, for the egress grounding check."""
+        return [
+            {"name": m.name or "tool", "result": m.content}
+            for m in llm_extra
+            if m.role == "tool"
+        ]
+
     async def _safe_execute(
         self,
         name: str,
@@ -555,8 +750,16 @@ class Agent:
         ctx: dict[str, Any],
         user_id: str,
         user_context: dict[str, Any] | None,
+        approved: bool = False,
     ) -> dict[str, Any]:
-        """Enforce RBAC, validate safety policy, then execute via the registry."""
+        """Enforce RBAC, validate safety policy, then execute via the registry.
+
+        ``approved`` is True only for money actions that came in through the
+        caller-supplied approved_actions set. Even then the action is only
+        executed if the server-side pending-confirmation ledger holds a record
+        staged for this exact (user, action) -- so a forged or replayed
+        "confirmation" can never move money.
+        """
         from miriam_agent.auth.rbac import require_tool_access
 
         roles = set((user_context or {}).get("roles") or ["guest"])
@@ -566,6 +769,11 @@ class Agent:
             arguments=args,
             user_id=user_id,
             financial_profile=user_context,
+            # The approval decision MUST reach the policy: it denies anything
+            # that requires approval when this is falsy. Omitting it silently
+            # denied every money action even after a valid, ledger-backed
+            # confirmation (see tests/test_money_path_integration.py).
+            approved=approved,
         )
         if not allowed:
             logger.info(
@@ -576,16 +784,62 @@ class Agent:
                 "error": f"'{name}' was blocked by safety checks. Nothing ran.",
                 "_blocked": True,
             }
+
+        _tool = self.registry.get(name)
+        is_mutation = _tool is not None and (
+            _tool.is_mutation or _tool.requires_approval
+        )
+
+        # Money actions never run because the LLM asked for them: they need an
+        # explicit prior confirmation, and that confirmation must be backed by
+        # a server-side staging record created when the proposal was returned.
+        signature = self._signature(name, args)
+        if is_mutation and not approved:
+            logger.warning(
+                "Refusing unapproved money action",
+                extra={"tool": name, "user_id": user_id},
+            )
+            return {
+                "error": (
+                    f"'{name}' was not approved. Nothing ran. Approve the "
+                    "proposed action to execute it."
+                ),
+                "_blocked": True,
+            }
+        if is_mutation and approved:
+            if not await self.confirmation_store.validate(user_id, signature):
+                logger.warning(
+                    "Approved money action has no matching pending confirmation",
+                    extra={"tool": name, "user_id": user_id},
+                )
+                return {
+                    "error": (
+                        f"'{name}' could not be verified against a pending "
+                        "confirmation. Re-request it to get a fresh "
+                        "confirmation, then approve it."
+                    ),
+                    "_blocked": True,
+                }
+
         exec_ctx = dict(ctx)
         # Deterministic per-(user, tool, args) idempotency key so a retried
         # money action cannot double-execute on the Go side.
-        _tool = self.registry.get(name)
-        if _tool is not None and (_tool.is_mutation or _tool.requires_approval):
+        if is_mutation:
             exec_ctx["idempotency_key"] = self._idempotency_key(
                 str(ctx.get("user_id", "")), name, args
             )
         result = await self.registry.execute(name, args, context=exec_ctx)
-        return await self._replay_staged_confirmation(name, args, exec_ctx, result)
+        result = await self._replay_staged_confirmation(name, args, exec_ctx, result)
+
+        # The confirmation record is spent only on success. On failure (backed
+        # down, still awaiting a passcode, never executed) it stays so the
+        # in-turn retry or a fresh Go attempt can still use it.
+        if is_mutation and approved and not self._is_failed_result(result):
+            try:
+                await self.confirmation_store.consume(user_id, signature)
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not consume confirmation record", exc_info=True)
+        return result
 
     async def _replay_staged_confirmation(
         self,
@@ -668,6 +922,24 @@ class Agent:
     def _signature(self, tool_name: str, args: dict[str, Any]) -> str:
         """Stable, type-tolerant signature for an action proposal."""
         return f"{tool_name}:{json.dumps(self._normalize(args), sort_keys=True)}"
+
+    @staticmethod
+    def _is_failed_result(result: Any) -> bool:
+        """Whether a tool result means the money action did NOT complete.
+
+        Used to decide if a pending confirmation may be consumed: once the Go
+        side actually executed (or told us it needs another passcode step) the
+        record is spent so the same confirmation cannot run twice. A result
+        still awaiting a follow-up step (or one that refused) must leave the
+        record in place for the retry/replay path.
+        """
+        if not isinstance(result, dict):
+            return False
+        if result.get("status") == "AWAITING_CONFIRMATION":
+            return True
+        if result.get("error"):
+            return True
+        return False
 
     def _matches_pending(self, tool_name: str, args: dict[str, Any]) -> bool:
         """Whether the proposed action matches an already-approved action.

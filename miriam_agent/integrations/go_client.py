@@ -9,6 +9,7 @@ using httpx. All calls carry the user's JWT so Go's auth middleware
 applies as-is.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,16 +20,40 @@ from miriam_agent.core.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
+# Statuses worth retrying: the request never reached the business logic, or
+# the backend was shedding load.
+_RETRYABLE_STATUS = {429, 502, 503, 504}
+
+
+def _assert_safe_path(path: str) -> None:
+    """Reject a constructed backend path that could escape its route.
+
+    Tool arguments are interpolated into several Go paths, so a value that
+    slipped past schema validation must not be able to traverse out of its
+    prefix (``/assets/..``) or smuggle a new request.
+    """
+    if ".." in path or "//" in path or "\n" in path or "\r" in path:
+        raise IntegrationError(f"Refusing to call a malformed backend path: {path!r}")
+
 
 class GoBackendClient:
     """HTTP client for the Go backend REST API."""
 
-    def __init__(self, base_url: str, timeout: float = 15.0):
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ):
+        settings = get_settings()
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else settings.GO_REQUEST_TIMEOUT
+        self.max_retries = (
+            max_retries if max_retries is not None else settings.GO_MAX_RETRIES
+        )
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=timeout,
+            timeout=self.timeout,
             headers={
                 "Content-Type": "application/json",
                 # Go's CSRFProtection accepts API clients that send this
@@ -126,6 +151,73 @@ class GoBackendClient:
         if items is None:
             items = data.get("obligations")
         return items if isinstance(items, list) else []
+
+    async def get_ngn_virtual_account(self, token: str) -> dict[str, Any]:
+        """The user's Naira bank-transfer account (Graph NGN named account).
+
+        Go answers 404 when no NGN account exists yet; that is an empty
+        result, not a failure, so it comes back as a structured
+        ``_tool_error`` payload the agent can explain honestly instead of an
+        exception that looks like the capability is missing.
+        """
+        try:
+            data = await self._token_get(
+                "/api/v1/funding/ngn/virtual-account", token
+            )
+        except IntegrationError as e:
+            message = str(e)
+            if "404" in message or "not_found" in message:
+                return {
+                    "_tool_error": (
+                        "no Naira deposit account exists for this user yet"
+                    ),
+                    "hint": (
+                        "Ask the user to complete Naira account setup in the "
+                        "Rail app, or fund with crypto instead."
+                    ),
+                }
+            raise
+        if isinstance(data, dict):
+            account: Any = data.get("virtual_account")
+            if account is None and isinstance(data.get("data"), dict):
+                account = data["data"].get("virtual_account")
+            if isinstance(account, dict) and account:
+                return {"virtual_account": account, "raw": data}
+            if data.get("_tool_error"):
+                return data
+            return {
+                "_tool_error": "naira deposit account response had no account",
+                "raw": data,
+            }
+        return {"_tool_error": "unexpected naira account response shape"}
+
+    async def create_deposit_address(
+        self,
+        token: str,
+        chain: str = "base",
+        currency: str = "USDC",
+    ) -> dict[str, Any]:
+        """A crypto deposit address for the user (fallback funding rail)."""
+        try:
+            data = await self._token_post(
+                "/api/v1/funding/deposit/address",
+                token,
+                {"chain": chain, "currency": currency},
+            )
+        except IntegrationError as e:
+            return {"_tool_error": str(e)}
+        if isinstance(data, dict):
+            address: Any = data.get("address") or data.get("deposit_address")
+            if address is None and isinstance(data.get("data"), dict):
+                address = data["data"].get("address")
+            if address:
+                out = dict(data)
+                out.setdefault("address", address)
+                return out
+            if data.get("_tool_error"):
+                return data
+            return {"_tool_error": "deposit address response had no address", "raw": data}
+        return {"_tool_error": "unexpected deposit address response shape"}
 
     async def get_user_profile(self, token: str) -> dict[str, Any]:
         # Go's GetProfile returns entities.UserInfo at /api/v1/users/me
@@ -489,6 +581,17 @@ class GoBackendClient:
     async def delete_automation(self, token: str, automation_id: str) -> dict[str, Any]:
         return await self._token_delete(f"/api/v1/automations/{automation_id}", token)
 
+    async def get_p2p_transfers(
+        self, token: str, *, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Recent P2P transfers, newest first, with their current status."""
+        data = await self._token_get(
+            "/api/v1/p2p/transfers",
+            token,
+            params={"limit": limit, "offset": offset},
+        )
+        return _as_list(data, "transfers")
+
     async def create_obligation(
         self, token: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -603,29 +706,74 @@ class GoBackendClient:
 
     # ---- internal helpers ----
 
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str,
+        params: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Perform an authenticated Go call, with bounded retries.
+
+        Retries are allowed for reads always, and for writes only when they
+        carry an idempotency key -- the Go ledger dedupes on that key, while
+        repeating an unkeyed write could move money twice. Previously nothing
+        was retried at all, so a transient blip surfaced to the user as a hard
+        failure.
+        """
+        _assert_safe_path(path)
+        retryable = method.upper() == "GET" or idempotency_key is not None
+        attempts = self.max_retries if retryable else 0
+        headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+
+        last_error: Exception | None = None
+        for attempt in range(attempts + 1):
+            try:
+                resp = await self._client.request(
+                    method, path, params=params, json=payload, headers=headers
+                )
+            except httpx.HTTPError as e:
+                last_error = e
+                if attempt < attempts:
+                    await asyncio.sleep(0.3 * (2**attempt))
+                    continue
+                logger.warning("Go backend %s %s unreachable: %s", method, path, e)
+                raise IntegrationError(
+                    f"Go backend {method} {path} unreachable: {e}"
+                ) from e
+
+            if resp.status_code in _RETRYABLE_STATUS and attempt < attempts:
+                await asyncio.sleep(0.3 * (2**attempt))
+                continue
+
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                logger.warning(
+                    "Go backend %s %s -> %d", method, path, resp.status_code
+                )
+                raise IntegrationError(
+                    f"Go backend {method} {path} failed: {resp.text[:200]}"
+                ) from e
+
+            if resp.content:
+                return resp.json()
+            return {"status": "ok"}
+
+        raise IntegrationError(f"Go backend {method} {path} failed: {last_error}")
+
     async def _token_get(
         self,
         path: str,
         token: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        try:
-            resp = await self._client.get(
-                path,
-                params=params,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as e:
-            logger.warning(
-                "Go backend %s %s -> %d", "GET", path, e.response.status_code
-            )
-            raise IntegrationError(
-                f"Go backend GET {path} failed: {e.response.text[:200]}"
-            )
-        except httpx.HTTPError as e:
-            raise IntegrationError(f"Go backend GET {path} unreachable: {e}")
+        return await self._request_json("GET", path, token=token, params=params)
 
     async def _token_post(
         self,
@@ -635,23 +783,13 @@ class GoBackendClient:
         *,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
-        if idempotency_key:
-            headers["Idempotency-Key"] = idempotency_key
-        try:
-            resp = await self._client.post(
-                path,
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as e:
-            raise IntegrationError(
-                f"Go backend POST {path} failed: {e.response.text[:200]}"
-            )
-        except httpx.HTTPError as e:
-            raise IntegrationError(f"Go backend POST {path} unreachable: {e}")
+        return await self._request_json(
+            "POST",
+            path,
+            token=token,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
 
     async def _token_patch(
         self, path: str, token: str, payload: dict[str, Any]
@@ -668,21 +806,9 @@ class GoBackendClient:
         token: str,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {token}"}
-        try:
-            resp = await self._client.request(
-                method, path, json=payload, headers=headers
-            )
-            resp.raise_for_status()
-            if resp.content:
-                return resp.json()
-            return {"status": "ok"}
-        except httpx.HTTPStatusError as e:
-            raise IntegrationError(
-                f"Go backend {method} {path} failed: {e.response.text[:200]}"
-            )
-        except httpx.HTTPError as e:
-            raise IntegrationError(f"Go backend {method} {path} unreachable: {e}")
+        return await self._request_json(
+            method, path, token=token, payload=payload
+        )
 
 
 def _with_confirmation(

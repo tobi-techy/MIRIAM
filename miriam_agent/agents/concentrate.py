@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -323,6 +324,9 @@ class ConcentrateProvider(LLMProvider):
         return AgentError(f"Concentrate API error {status}: {detail}")
 
     async def _request_json(self, body: dict[str, Any], stream: bool) -> httpx.Response:
+        from miriam_agent.observability.metrics import record_llm_call
+
+        start = time.perf_counter()
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             request = self._client.build_request(
@@ -339,9 +343,13 @@ class ConcentrateProvider(LLMProvider):
                 if attempt < self.max_retries:
                     await asyncio.sleep(self._backoff(attempt))
                     continue
+                record_llm_call(self.model, "error")
                 raise AgentError(f"Concentrate request failed: {e}") from e
 
             if resp.status_code == 200:
+                record_llm_call(
+                    self.model, "success", latency_seconds=time.perf_counter() - start
+                )
                 return resp
 
             if resp.status_code in RETRYABLE_STATUS and attempt < self.max_retries:
@@ -355,7 +363,9 @@ class ConcentrateProvider(LLMProvider):
             if stream:
                 await resp.aread()
                 await resp.aclose()
+            record_llm_call(self.model, "error")
             raise err
+        record_llm_call(self.model, "error")
         raise AgentError(  # pragma: no cover
             f"Concentrate request failed: {last_error}"
         )

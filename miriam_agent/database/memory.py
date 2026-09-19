@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from miriam_agent.core.exceptions import AuthorizationError
 from miriam_agent.database.models import (
     Base,
     Conversation,
@@ -18,6 +20,8 @@ from miriam_agent.database.models import (
     MemoryEntry,
     Message,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
@@ -67,21 +71,42 @@ class MemoryStore:
 
         The Go backend is the identity authority; this inserts (or no-ops on
         existing) the user row mirroring the JWT claims used for agent context.
+
+        Idempotent and race-safe: concurrent first-requests for the same user
+        collapse to one row via an IntegrityError catch (the row won via the
+        competing transaction). Database errors other than a duplicate-key
+        conflict are re-raised so callers never proceed as if the account
+        exists when persistence actually failed.
         """
+        from sqlalchemy.exc import IntegrityError
+
         from miriam_agent.database.models import User
 
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            raise ValueError("ensure_user requires a user with an id")
         async with self._session() as session:
-            existing = await session.get(User, user.id)
+            existing = await session.get(User, user_id)
             if existing is not None:
                 return
             row = User(
-                id=user.id,
+                id=user_id,
                 username=getattr(user, "username", "unknown") or "unknown",
                 email=getattr(user, "email", "") or "",
-                full_name=getattr(user, "full_name", user.id) or user.id,
+                full_name=getattr(user, "full_name", user_id) or user_id,
             )
             session.add(row)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                # Lost a race with another request creating the same user,
+                # or a conflicting unique username/email row. Roll back and
+                # re-check: if our id row now exists the account is usable.
+                await session.rollback()
+                existing = await session.get(User, user_id)
+                if existing is not None:
+                    return
+                raise
 
     async def store_interaction(
         self,
@@ -91,7 +116,12 @@ class MemoryStore:
         conversation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Store an interaction (user message or assistant response)."""
+        """Store an interaction (user message or assistant response).
+
+        Writing into an existing conversation is ownership-checked: without it
+        a caller could append messages into another user's conversation simply
+        by presenting its id.
+        """
         async with self._session() as session:
             try:
                 # Create or get conversation
@@ -107,6 +137,10 @@ class MemoryStore:
                         )
                         session.add(conversation)
                         await session.flush()
+                    elif conversation.user_id != user_id:
+                        raise AuthorizationError(
+                            "Conversation belongs to a different user"
+                        )
                 else:
                     # Create new conversation
                     title = f"Conversation {datetime.utcnow():%Y-%m-%d %H:%M}"
@@ -148,15 +182,51 @@ class MemoryStore:
                 await session.rollback()
                 raise e
 
+    async def get_conversation(self, conversation_id: str) -> Conversation | None:
+        """Fetch a conversation by id, regardless of owner."""
+        async with self._session() as session:
+            return await session.get(Conversation, conversation_id)
+
+    async def get_owned_conversation(
+        self, conversation_id: str, user_id: str
+    ) -> Conversation | None:
+        """Return the conversation only when it belongs to ``user_id``.
+
+        Returns ``None`` both for "does not exist" and "belongs to someone
+        else". Callers that must distinguish the two (the chat write path,
+        which creates a conversation on first use) use ``get_conversation``
+        and compare owners themselves.
+        """
+        conversation = await self.get_conversation(conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return None
+        return conversation
+
     async def get_conversation_history(
-        self, conversation_id: str
+        self, conversation_id: str, user_id: str | None = None
     ) -> list[dict[str, Any]]:
-        """Get conversation history."""
+        """Get conversation history, optionally scoped to its owner.
+
+        ``user_id`` is optional only for internal callers that minted the id
+        themselves for an already-authenticated user (onboarding); every
+        request-driven caller passes it. A mismatch returns no history rather
+        than another user's messages.
+        """
         async with self._session() as session:
             try:
                 # Get conversation
                 conversation = await session.get(Conversation, conversation_id)
                 if not conversation:
+                    return []
+
+                if user_id is not None and conversation.user_id != user_id:
+                    logger.warning(
+                        "Refusing cross-user conversation read",
+                        extra={
+                            "conversation_id": conversation_id,
+                            "requesting_user": user_id,
+                        },
+                    )
                     return []
 
                 # Get messages
@@ -368,10 +438,18 @@ class MemoryStore:
             except Exception as e:
                 raise e
 
-    async def get_conversation_messages(self, conversation_id: str) -> list[Message]:
-        """Get all messages for a conversation."""
+    async def get_conversation_messages(
+        self, conversation_id: str, user_id: str | None = None
+    ) -> list[Message]:
+        """Get all messages for a conversation, optionally owner-scoped."""
         async with self._session() as session:
             try:
+                if user_id is not None:
+                    if (
+                        await self.get_owned_conversation(conversation_id, user_id)
+                        is None
+                    ):
+                        return []
                 messages = await session.execute(
                     select(Message)
                     .where(Message.conversation_id == conversation_id)

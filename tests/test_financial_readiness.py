@@ -140,10 +140,10 @@ def test_volatile_income_wants_a_six_month_buffer():
     assert any("six-month" in b for b in verdict.blockers)
 
 
-def test_unknown_kyc_is_unverified_and_blocks():
+def test_unknown_kyc_does_not_block_strategy_start():
     verdict = assess_readiness(_healthy(), kyc_verified=False)
-    assert verdict.status == REVIEW_REQUIRED
-    assert verdict.recommended_next_step == "review_account"
+    assert verdict.status in (READY_TO_START, READY_TO_AUTOMATE)
+    assert verdict.recommended_next_step in ("investment_education", "set_up_the_investment")
 
 
 def test_unsupported_jurisdiction_blocks():
@@ -230,10 +230,10 @@ def test_unsupported_asset_is_denied():
     assert any("not tradable" in r for r in decision.reasons)
 
 
-def test_unknown_kyc_fails_closed():
+def test_unknown_kyc_is_advisory_not_blocking():
     decision = evaluate_investment_action(1_000, _LIMITS, kyc_verified=None)
-    assert decision.allowed is False
-    assert decision.checks["kyc"] == "unknown"
+    assert decision.allowed is True
+    assert decision.checks["kyc"] == "not_required_for_strategy_start"
 
 
 def test_missing_limits_fails_closed():
@@ -268,4 +268,9 @@ def test_negative_amount_is_denied_and_auditable():
     assert decision.allowed is False
     assert decision.checks["amount_positive"] == "fail"
     assert decision.checks["kyc"] == "fail"
-    assert decision.to_dict()["reasons"]
+
+
+def test_unverified_kyc_does_not_block_strategy_start():
+    decision = evaluate_investment_action(1_000, _LIMITS, kyc_verified=False)
+    assert decision.allowed is True
+    assert decision.checks["kyc"] == "fail"

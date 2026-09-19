@@ -13,6 +13,7 @@ Key production concerns handled here:
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ CHARS_PER_TOKEN = 4
 def count_tokens(text: str) -> int:
     """Count tokens for a text using tiktoken when available, else heuristic."""
     try:
-        import tiktoken
+        import tiktoken  # type: ignore[import]
 
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
@@ -219,6 +220,8 @@ class OpenAIProvider(LLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
+        from miriam_agent.observability.metrics import record_llm_call
+
         settings = get_settings()
         messages = trim_messages(messages)
         kwargs: dict[str, Any] = {
@@ -233,11 +236,14 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
 
+        start = time.perf_counter()
         try:
             response = await self.client.chat.completions.create(**kwargs)
         except Exception as e:
+            record_llm_call(self.model, "error")
             logger.error("OpenAI completion failed: %s", e)
             raise AgentError(f"LLM call failed: {e}")
+        record_llm_call(self.model, "success", time.perf_counter() - start)
 
         choice = response.choices[0]
         usage = response.usage
@@ -265,6 +271,8 @@ class OpenAIProvider(LLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        from miriam_agent.observability.metrics import record_llm_call
+
         settings = get_settings()
         messages = trim_messages(messages)
         kwargs: dict[str, Any] = {
@@ -280,31 +288,43 @@ class OpenAIProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
 
-        stream = await self.client.chat.completions.create(**kwargs)
+        start = time.perf_counter()
+        try:
+            stream = await self.client.chat.completions.create(**kwargs)
+        except Exception as e:  # noqa: BLE001
+            record_llm_call(self.model, "error")
+            logger.error("OpenAI streaming failed: %s", e)
+            raise AgentError(f"LLM call failed: {e}")
         tool_calls_buffer: dict[int, dict[str, Any]] = {}
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta is None:
-                continue
-            if delta.content:
-                yield {"type": "token", "content": delta.content}
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index if tc.index is not None else 0
-                    slot = tool_calls_buffer.setdefault(
-                        idx,
-                        {"id": None, "name": "", "arguments": ""},
-                    )
-                    if tc.id:
-                        slot["id"] = tc.id
-                    fn = tc.function
-                    if fn:
-                        if fn.name:
-                            slot["name"] += fn.name
-                        if fn.arguments:
-                            slot["arguments"] += fn.arguments
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                if delta.content:
+                    yield {"type": "token", "content": delta.content}
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index if tc.index is not None else 0
+                        slot = tool_calls_buffer.setdefault(
+                            idx,
+                            {"id": None, "name": "", "arguments": ""},
+                        )
+                        if tc.id:
+                            slot["id"] = tc.id
+                        fn = tc.function
+                        if fn:
+                            if fn.name:
+                                slot["name"] += fn.name
+                            if fn.arguments:
+                                slot["arguments"] += fn.arguments
+        except Exception as e:  # noqa: BLE001
+            record_llm_call(self.model, "error")
+            logger.error("OpenAI stream iteration failed: %s", e)
+            raise AgentError(f"LLM stream failed: {e}")
+        record_llm_call(self.model, "success", time.perf_counter() - start)
         if tool_calls_buffer:
             for slot in tool_calls_buffer.values():
                 if slot["name"]:

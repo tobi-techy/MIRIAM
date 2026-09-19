@@ -40,6 +40,10 @@ registry = get_registry()
 
 _SCHEMA_STRING = {"type": "string"}
 _SCHEMA_NUMBER = {"type": "number"}
+# Money amounts must be strictly positive (see tools/definitions.py).
+_SCHEMA_MONEY = {"type": "number", "exclusiveMinimum": 0}
+# Opaque backend ids, constrained so they cannot traverse a URL path.
+_SCHEMA_ID = {"type": "string", "pattern": "^(?=.*[A-Za-z0-9_:-])[A-Za-z0-9_.:-]{1,64}$"}
 _SCHEMA_INT = {"type": "integer", "minimum": 0} # type: ignore[reportGeneralTypeIssues]
 _SCHEMA_ARRAY = {"type": "array"}
 _SCHEMA_OBJECT = {"type": "object"}
@@ -47,7 +51,7 @@ _SCHEMA_OBJECT = {"type": "object"}
 _ALLOCATION_ITEM = {  # type: ignore[reportGeneralTypeIssues]
     "type": "object",
     "properties": {
-        "asset_id": {**_SCHEMA_STRING, "description": "Glider asset id"},
+        "asset_id": {**_SCHEMA_ID, "description": "Glider asset id"},
         "caip19": {**_SCHEMA_STRING, "description": "CAIP-19 asset identifier"},
         "symbol": {**_SCHEMA_STRING, "description": "Ticker symbol"},
         "weight": {**_SCHEMA_NUMBER, "description": "Target weight (0-1 or percent)"},
@@ -198,7 +202,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "asset_id": {**_SCHEMA_STRING, "description": "Glider asset id"},
+            "asset_id": {**_SCHEMA_ID, "description": "Glider asset id"},
             "caip19": {**_SCHEMA_STRING, "description": "CAIP-19 asset identifier"},
             "symbol": {**_SCHEMA_STRING, "description": "Ticker, e.g. AAPL"},
         },
@@ -255,7 +259,7 @@ registry.register(
     ),
     args_schema={
         "type": "object",
-        "properties": {"strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"}},
+        "properties": {"strategy_id": {**_SCHEMA_ID, "description": "Strategy id"}},
         "required": ["strategy_id"],
     },
     category="investment",
@@ -285,9 +289,9 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"},
+            "strategy_id": {**_SCHEMA_ID, "description": "Strategy id"},
             "amount_usd": {
-                **_SCHEMA_NUMBER,
+                **_SCHEMA_MONEY,
                 "description": "Optional cash amount to include in the rebalance",
             },
         },
@@ -368,7 +372,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "execution_id": {**_SCHEMA_STRING, "description": "Execution (order) id"}
+            "execution_id": {**_SCHEMA_ID, "description": "Execution (order) id"}
         },
         "required": ["execution_id"],
     },
@@ -403,7 +407,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "execution_id": {**_SCHEMA_STRING, "description": "Execution (order) id"}
+            "execution_id": {**_SCHEMA_ID, "description": "Execution (order) id"}
         },
         "required": ["execution_id"],
     },
@@ -493,7 +497,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "investor_id": {**_SCHEMA_STRING, "description": "Glider investor id"}
+            "investor_id": {**_SCHEMA_ID, "description": "Glider investor id"}
         },
         "required": ["investor_id"],
     },
@@ -522,7 +526,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "investor_id": {**_SCHEMA_STRING, "description": "Glider investor id"}
+            "investor_id": {**_SCHEMA_ID, "description": "Glider investor id"}
         },
         "required": ["investor_id"],
     },
@@ -627,7 +631,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"},
+            "strategy_id": {**_SCHEMA_ID, "description": "Strategy id"},
             "target_allocation": {
                 **_SCHEMA_ARRAY,
                 "items": _ALLOCATION_ITEM,
@@ -677,9 +681,9 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"},
+            "strategy_id": {**_SCHEMA_ID, "description": "Strategy id"},
             "amount_usd": {
-                **_SCHEMA_NUMBER,
+                **_SCHEMA_MONEY,
                 "description": "Optional amount to fund the enrollment",
             },
             "source": {
@@ -712,7 +716,7 @@ registry.register(
     ),
     args_schema={
         "type": "object",
-        "properties": {"strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"}},
+        "properties": {"strategy_id": {**_SCHEMA_ID, "description": "Strategy id"}},
         "required": ["strategy_id"],
     },
     category="investment_action",
@@ -737,7 +741,7 @@ registry.register(
     ),
     args_schema={
         "type": "object",
-        "properties": {"strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"}},
+        "properties": {"strategy_id": {**_SCHEMA_ID, "description": "Strategy id"}},
         "required": ["strategy_id"],
     },
     category="investment_action",
@@ -769,7 +773,7 @@ registry.register(
     args_schema={
         "type": "object",
         "properties": {
-            "strategy_id": {**_SCHEMA_STRING, "description": "Strategy id"},
+            "strategy_id": {**_SCHEMA_ID, "description": "Strategy id"},
             "reason": {**_SCHEMA_STRING, "description": "Optional reason"},
         },
         "required": ["strategy_id"],
@@ -827,9 +831,9 @@ registry.register(
                 **_SCHEMA_STRING,
                 "description": "Strategy whose allocation changes (optional)",
             },
-            "asset_id": {**_SCHEMA_STRING, "description": "Glider asset id"},
+            "asset_id": {**_SCHEMA_ID, "description": "Glider asset id"},
             "symbol": {**_SCHEMA_STRING, "description": "Ticker, e.g. AAPL"},
-            "amount_usd": {**_SCHEMA_NUMBER, "description": "Dollar amount to buy"},
+            "amount_usd": {**_SCHEMA_MONEY, "description": "Dollar amount to buy"},
         },
         "required": ["amount_usd"],
     },
@@ -866,9 +870,9 @@ registry.register(
                 **_SCHEMA_STRING,
                 "description": "Strategy whose allocation changes (optional)",
             },
-            "asset_id": {**_SCHEMA_STRING, "description": "Glider asset id"},
+            "asset_id": {**_SCHEMA_ID, "description": "Glider asset id"},
             "symbol": {**_SCHEMA_STRING, "description": "Ticker, e.g. AAPL"},
-            "amount_usd": {**_SCHEMA_NUMBER, "description": "Dollar amount to sell"},
+            "amount_usd": {**_SCHEMA_MONEY, "description": "Dollar amount to sell"},
         },
         "required": ["amount_usd"],
     },

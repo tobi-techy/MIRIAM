@@ -51,6 +51,40 @@ def test_clean_text_empty_pass_through():
     assert clean_text(None) is None  # type: ignore[arg-type]
 
 
+def test_agent_decorate_scrubs_em_dashes_from_response():
+    from miriam_agent.agents.agent_loop import Agent, AgentRunResult
+    from miriam_agent.agents.tools import get_registry
+
+    agent = Agent(registry=get_registry())
+    result = agent._decorate(
+        AgentRunResult(response="That went well—really well", conversation_id="c")
+    )
+    assert "—" not in result.response
+    assert all("—" not in m for m in result.messages)
+
+
+def test_agent_decorate_scrubs_confirmation_response():
+    from miriam_agent.agents.agent_loop import Agent, AgentRunResult
+    from miriam_agent.agents.tools import get_registry
+
+    agent = Agent(registry=get_registry())
+    result = agent._decorate(
+        AgentRunResult(
+            response="Confirm — send 5k",
+            conversation_id="c",
+            requires_confirmation=True,
+        )
+    )
+    assert "—" not in result.response
+
+
+def test_system_prompt_has_no_em_dash():
+    from miriam_agent.agents import system_prompt as sp
+
+    assert "—" not in sp.BASE_PROMPT
+    assert "NO EM DASHES" in sp.BASE_PROMPT
+
+
 # ----------------------------------------------------------------------
 # Reactions: the six universal tapbacks only
 # ----------------------------------------------------------------------

@@ -1,6 +1,8 @@
 import logging
 from typing import Any
 
+from miriam_agent.safety.money_tools import MONEY_TOOLS, TRANSFER_TOOLS
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,41 +53,71 @@ class SafetyPolicy:
         }
 
     def _load_suspicious_patterns(self) -> list[dict[str, Any]]:
-        """Load suspicious activity patterns."""
+        """Load suspicious activity patterns.
+
+        ``amount_floor`` is the per-transaction size that makes a transfer
+        "large" and ``threshold`` is how many of them constitute the pattern.
+        These used to be the same number, so the velocity check counted
+        transfers of >= $3 and fired after three ordinary sends.
+
+        ``severity`` separates the two jobs a heuristic can do:
+        - ``block``    genuinely anomalous velocity -> deny the action
+        - ``advisory`` worth a human look, but not grounds to refuse an
+          action the user has already explicitly approved. A first-time
+          transfer of $3,000 to a family member is exactly what this pattern
+          is *for*, and hard-denying it left no way to ever establish a
+          history with that recipient.
+        """
         return [
             {
                 "name": "rapid_large_transactions",
                 "pattern": "multiple_large_transfers_short_time",
-                "threshold": 3,
+                "threshold": 4,
+                "amount_floor": 2500.0,
+                "severity": "block",
                 "timeframe": "hour",
             },
             {
                 "name": "unusual_recipients",
                 "pattern": "new_beneficiary_unusual_amount",
                 "threshold": 2500.0,
+                "severity": "advisory",
                 "timeframe": "day",
             },
             {
                 "name": "speed_money",
                 "pattern": "immediate_large_transfer",
                 "threshold": 5000.0,
+                "severity": "advisory",
                 "timeframe": "hour",
             },
             {
                 "name": "round_number_amounts",
                 "pattern": "multiple_round_number_transfers",
                 "threshold": 5,
+                "amount_floor": 1000.0,
+                "severity": "advisory",
                 "timeframe": "day",
             },
         ]
 
     def _load_approval_workflow(self) -> dict[str, Any]:
-        """Load approval workflow configuration."""
+        """Load approval workflow configuration from the single source of truth.
+
+        Bug fix: these used to be hardcoded booleans that made
+        ``required_for_large_amounts`` a ``True`` (compared against an amount
+        with ``>`` ... a bool), and ``auto_approve_below_threshold`` was a
+        hardcoded ``100.0`` while ``settings.AUTO_APPROVE_THRESHOLD`` existed
+        unused. Now both are real numbers sourced from settings.
+        """
+        from miriam_agent.config.settings import get_settings
+
+        settings = get_settings()
         return {
             "required_for_high_risk": True,
-            "required_for_large_amounts": True,
+            "required_for_large_amounts": settings.APPROVAL_REQUIRED_ABOVE,
             "required_for_new_recipients": False,
-            "auto_approve_below_threshold": 100.0,
+            "auto_approve_below_threshold": settings.AUTO_APPROVE_THRESHOLD,
             "require_multiple_approvals_above": 5000.0,
         }
 
@@ -95,8 +127,17 @@ class SafetyPolicy:
         arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
+        approved: bool = False,
     ) -> bool:
-        """Validate if an action is safe to execute."""
+        """Validate if an action is safe to execute.
+
+        ``approved`` marks an action that carries an explicit, verified user
+        confirmation. When an action *requires* approval and ``approved`` is
+        not set, the action is **denied** -- the old behavior only logged the
+        requirement and let the action through, which made the approval policy
+        advisory. The agent loop stages every money action, so legitimate ones
+        always arrive with ``approved=True`` backed by the confirmation ledger.
+        """
         try:
             # Check if action is in allowlist
             if not await self._is_action_allowed(tool_name):
@@ -123,19 +164,32 @@ class SafetyPolicy:
             )
 
             if requires_approval:
-                logger.info(
-                    "Action requires approval",
-                    extra={
-                        "tool": tool_name,
-                        "user_id": user_id,
-                        "risk_level": risk_level,
-                    },
-                )
-                # In a real implementation, we would wait for user approval here
-                # For now, we'll log the approval requirement
-                await self._log_approval_required(
-                    tool_name, arguments, user_id, financial_profile, risk_level
-                )
+                if approved:
+                    await self._log_approval_required(
+                        tool_name,
+                        arguments,
+                        user_id,
+                        financial_profile,
+                        risk_level,
+                    )
+                    logger.info(
+                        "Action approved by staged confirmation",
+                        extra={
+                            "tool": tool_name,
+                            "user_id": user_id,
+                            "risk_level": risk_level,
+                        },
+                    )
+                else:
+                    logger.warning(
+                        "Action requires approval but was not approved; denied",
+                        extra={
+                            "tool": tool_name,
+                            "user_id": user_id,
+                            "risk_level": risk_level,
+                        },
+                    )
+                    return False
 
             # Check if action is blocked
             if await self._is_action_blocked(
@@ -162,35 +216,10 @@ class SafetyPolicy:
 
         The allowlist is derived from the live tool registry so it can never
         drift from what the server actually exposes. Read-only tools are
-        allowed. Money-movement tools are allowed only when they are one of the
-        real delegation tools wired to the Go REST money path -- anything else
-        is denied (the agent's own staging loop already gates when they run).
+        allowed. Money-movement tools are allowed only when they are named in
+        the canonical ``MONEY_TOOLS`` set -- anything else is denied (the
+        agent's own staging loop already gates when they run).
         """
-        # Money tools that delegate to Go's ledger and are gated by staged
-        # confirmation + idempotency + RBAC. Kept as a curated set so a stray
-        # mutation tool can never bypass policy just by being registered.
-        money_tools = {
-            "send_money",
-            "transfer_stash_to_spending",
-            "transfer_spending_to_stash",
-            "create_automation",
-            "update_automation",
-            "delete_automation",
-            "create_scheduled_investment",
-            "pause_scheduled_investment",
-            "resume_scheduled_investment",
-            "pay_bill",
-            "create_strategy",
-            "update_strategy",
-            "enroll_strategy",
-            "pause_strategy",
-            "resume_strategy",
-            "rebalance_strategy",
-            "buy_asset",
-            "sell_asset",
-            "set_allocation",
-        }
-
         try:
             from miriam_agent.tools import ensure_registered
 
@@ -200,7 +229,7 @@ class SafetyPolicy:
         if tool is None:
             return False
         if tool.is_mutation or tool.requires_approval:
-            return tool_name in money_tools
+            return tool_name in MONEY_TOOLS
         return bool(tool.allow_auto_execute)
 
     async def _check_safety_rules(
@@ -210,38 +239,63 @@ class SafetyPolicy:
         user_id: str,
         financial_profile: Any,
     ) -> bool:
-        """Check if action complies with safety rules."""
-        try:
-            # Check for suspicious patterns
-            if await self._detect_suspicious_patterns(
-                arguments, user_id, financial_profile
-            ):
-                logger.warning(
-                    "Suspicious pattern detected",
-                    extra={"tool": tool_name, "user_id": user_id},
-                )
-                return False
+        """Check if action complies with safety rules.
 
-            # Check limits
-            if not await self._check_limits(arguments, user_id, financial_profile):
-                logger.warning(
-                    "Limit exceeded",
-                    extra={"tool": tool_name, "user_id": user_id},
-                )
-                return False
+        Suspicious-pattern and limit checks are money controls: they only
+        gate actual money/mutation tools. Scoping them that way also means a
+        degraded audit trail never denies a *read* (they fail open for reads,
+        and fail closed for money -- the money records are what the strict
+        daily-cap check depends on).
+        """
+        try:
+            # Only money movement is subject to pattern/limit scrutiny.
+            try:
+                from miriam_agent.tools import ensure_registered
+
+                tool = ensure_registered().get(tool_name)
+            except Exception:  # noqa: BLE001
+                tool = None
+            is_money = tool is not None and (
+                tool.is_mutation or tool.requires_approval
+            )
+
+            if is_money:
+                # Velocity is a hard control: repeated large transfers inside
+                # a short window are refused outright.
+                if await self._blocking_pattern_fired(arguments, user_id):
+                    logger.warning(
+                        "Blocking fraud pattern detected",
+                        extra={"tool": tool_name, "user_id": user_id},
+                    )
+                    return False
+
+                # The remaining heuristics are advisory. They are recorded and
+                # logged but do not refuse an action the user has explicitly
+                # approved -- a first-time large transfer is the case they
+                # exist to notice, not one they should be able to veto
+                # forever.
+                if await self._detect_suspicious_patterns(
+                    arguments, user_id, financial_profile
+                ):
+                    logger.warning(
+                        "Advisory fraud pattern detected (not blocking)",
+                        extra={"tool": tool_name, "user_id": user_id},
+                    )
+
+                # Check limits
+                if not await self._check_limits(
+                    arguments, user_id, financial_profile
+                ):
+                    logger.warning(
+                        "Limit exceeded",
+                        extra={"tool": tool_name, "user_id": user_id},
+                    )
+                    return False
 
             # Check blocked categories
             if await self._check_blocked_categories(arguments):
                 logger.warning(
                     "Blocked category detected",
-                    extra={"tool": tool_name, "user_id": user_id},
-                )
-                return False
-
-            # Check time-based restrictions
-            if await self._check_time_based_restrictions(arguments, user_id):
-                logger.warning(
-                    "Time-based restriction violated",
                     extra={"tool": tool_name, "user_id": user_id},
                 )
                 return False
@@ -256,27 +310,60 @@ class SafetyPolicy:
             )
             return False
 
+    async def _fired_patterns(
+        self,
+        arguments: dict[str, Any],
+        user_id: str,
+        timeframe_hours: int = 24,
+    ) -> list[str]:
+        """Names of the fraud patterns that fire for this user right now."""
+        recent_activities = await self._get_recent_activities(
+            user_id, timeframe_hours=timeframe_hours
+        )
+        fired: list[str] = []
+        for pattern in self.suspicious_patterns:
+            if await self._check_pattern(pattern, arguments, recent_activities):
+                fired.append(str(pattern["name"]))
+        return fired
+
     async def _detect_suspicious_patterns(
         self,
         arguments: dict[str, Any],
         user_id: str,
         financial_profile: Any,
     ) -> bool:
-        """Detect suspicious activity patterns."""
+        """Detect suspicious activity patterns (advisory)."""
         try:
-            # Get user's recent activity
-            recent_activities = await self._get_recent_activities(user_id)
-
-            # Check each pattern
-            for pattern in self.suspicious_patterns:
-                if await self._check_pattern(pattern, arguments, recent_activities):
-                    return True
-
-            return False
-
+            return bool(await self._fired_patterns(arguments, user_id))
         except Exception:
             logger.error(
                 "Error detecting suspicious patterns",
+                exc_info=True,
+            )
+            return False
+
+    async def _blocking_pattern_fired(
+        self, arguments: dict[str, Any], user_id: str
+    ) -> bool:
+        """Whether a pattern with ``severity: block`` fires.
+
+        Only these may refuse an action on their own; advisory patterns are
+        logged and audited without denying. The fail-closed guarantee for
+        money lives in :meth:`_check_limits` (which raises once the audit
+        trail is unreadable), so this returns False on error rather than
+        duplicating that denial.
+        """
+        try:
+            fired = set(await self._fired_patterns(arguments, user_id, timeframe_hours=1))
+            blocking = {
+                str(p["name"])
+                for p in self.suspicious_patterns
+                if p.get("severity") == "block"
+            }
+            return bool(blocking & fired)
+        except Exception:
+            logger.error(
+                "Error checking blocking patterns",
                 exc_info=True,
             )
             return False
@@ -318,20 +405,24 @@ class SafetyPolicy:
         arguments: dict[str, Any],
         recent_activities: list[dict[str, Any]],
     ) -> bool:
-        """Check for multiple large transfers in short time."""
+        """Check for repeated large transfers inside the pattern's window.
+
+        ``threshold`` is the number of transfers; ``amount_floor`` is what
+        makes each one large. Previously both read ``threshold``, so three
+        ordinary $3 sends tripped the "rapid large transactions" alarm.
+        """
         try:
-            # Get transfers in the timeframe
-            threshold = pattern["threshold"]
+            count_threshold = int(pattern["threshold"])
+            amount_floor = float(pattern.get("amount_floor", 0.0))
 
             recent_transfers = [
                 activity
                 for activity in recent_activities
                 if activity.get("type") == "transfer"
-                and activity.get("amount", 0) >= threshold
+                and activity.get("amount", 0) >= amount_floor
             ]
 
-            # Check if there are enough transfers in the timeframe
-            return len(recent_transfers) >= threshold
+            return len(recent_transfers) >= count_threshold
 
         except Exception:
             logger.error(
@@ -354,8 +445,10 @@ class SafetyPolicy:
             if amount < threshold:
                 return False
 
-            # Check if beneficiary is new
-            beneficiary = arguments.get("destination_account")
+            # Check if beneficiary is new. send_money carries the recipient in
+            # ``to`` (not ``destination_account``), so read both -- the old
+            # check never fired on real sends.
+            beneficiary = arguments.get("destination_account") or arguments.get("to")
             if not beneficiary:
                 return False
 
@@ -415,15 +508,20 @@ class SafetyPolicy:
         arguments: dict[str, Any],
         recent_activities: list[dict[str, Any]],
     ) -> bool:
-        """Check for multiple round number transfers."""
-        try:
-            threshold = pattern["threshold"]
+        """Check for multiple round-number transfers.
 
-            # Count round number transfers
+        Round amounts are the norm in NGN (5,000 / 10,000 / 20,000), so the
+        count only counts transfers that are also above ``amount_floor``.
+        """
+        try:
+            threshold = int(pattern["threshold"])
+            amount_floor = float(pattern.get("amount_floor", 0.0))
+
             round_number_transfers = [
                 activity
                 for activity in recent_activities
                 if activity.get("type") == "transfer"
+                and activity.get("amount", 0) >= amount_floor
                 and self._is_round_number(activity.get("amount", 0))
             ]
 
@@ -478,8 +576,13 @@ class SafetyPolicy:
             if amount > transaction_limit:
                 return False
 
-            # Check daily limit against real last-24h activity.
-            recent_activities = await self._get_recent_activities(user_id)
+            # Check daily limit against real last-24h activity. Strict mode:
+            # if the audit trail cannot be read, we deny rather than treat the
+            # outage as "no activity today" (which would silently raise the
+            # effective cap).
+            recent_activities = await self._get_recent_activities(
+                user_id, strict=True
+            )
             today_total = sum(a.get("amount", 0) for a in recent_activities)
             if today_total + amount > daily_limit:
                 logger.warning(
@@ -526,23 +629,6 @@ class SafetyPolicy:
             )
             return False
 
-    async def _check_time_based_restrictions(
-        self, arguments: dict[str, Any], user_id: str
-    ) -> bool:
-        """Check time-based restrictions."""
-        try:
-            # Check if action is allowed during restricted hours
-            # This would require timezone handling
-            # For now, we'll return False (no restrictions)
-            return False
-
-        except Exception:
-            logger.error(
-                "Error checking time-based restrictions",
-                exc_info=True,
-            )
-            return False
-
     async def _assess_action_risk(
         self,
         tool_name: str,
@@ -558,8 +644,13 @@ class SafetyPolicy:
             tool_risk = self._get_tool_risk_level(tool_name)
             risk_score += tool_risk
 
-            # Additional risk based on arguments
-            amount = _to_money(arguments.get("amount"))
+            # Additional risk based on arguments (bill/strategy amounts live in
+            # amount_ngn/amount_usd, so read all three like the limit checks).
+            amount = (
+                _to_money(arguments.get("amount"))
+                or _to_money(arguments.get("amount_ngn"))
+                or _to_money(arguments.get("amount_usd"))
+            )
             if amount > 0:
                 if amount > 10000:
                     risk_score += 0.3
@@ -597,11 +688,29 @@ class SafetyPolicy:
         financial_profile: Any,
         risk_level: str,
     ) -> bool:
-        """Check if action requires approval."""
+        """Check if action requires approval.
+
+        Bug fixes: the old version compared ``required_for_large_amounts``
+        (a bool) against an amount, only ever read ``amount`` (never
+        ``amount_ngn``/``amount_usd``), and judged *every* tool -- including
+        read-only ones -- as requiring approval because the default tool risk
+        (0.5) plus the user baseline (0.4) pinned them at "critical". Approval
+        now only ever applies to actual money/mutation tools, amounts are read
+        from all three fields, and the large-amount threshold is a real number.
+        """
         try:
-            # Check if action is in approval workflow
-            if tool_name in self.approval_workflow.get("require_approval", []):
-                return True
+            from miriam_agent.tools import ensure_registered
+
+            try:
+                tool = ensure_registered().get(tool_name)
+            except Exception:  # noqa: BLE001
+                tool = None
+            is_money = tool is not None and (
+                tool.is_mutation or tool.requires_approval
+            )
+            # Read-only / auto-execute tools never need approval.
+            if not is_money:
+                return False
 
             # Check risk level
             if risk_level in ["high", "critical"] and self.approval_workflow.get(
@@ -610,24 +719,24 @@ class SafetyPolicy:
                 return True
 
             # Check amount
-            amount = _to_money(arguments.get("amount"))
-            if amount > self.approval_workflow.get("required_for_large_amounts", 0):
+            amount = (
+                _to_money(arguments.get("amount"))
+                or _to_money(arguments.get("amount_ngn"))
+                or _to_money(arguments.get("amount_usd"))
+            )
+            if amount > _to_money(
+                self.approval_workflow.get("required_for_large_amounts", 0)
+            ):
                 return True
 
             # Check if auto-approval is possible
-            if amount <= self.approval_workflow.get("auto_approve_below_threshold", 0):
+            if amount <= _to_money(
+                self.approval_workflow.get("auto_approve_below_threshold", 0)
+            ):
                 return False
 
-            # Default to requiring approval for money movement
-            if tool_name in [
-                "transfer_funds",
-                "withdraw_funds",
-                "deposit_funds",
-                "execute_strategy",
-            ]:
-                return True
-
-            return False
+            # Default to requiring approval for money movement.
+            return True
 
         except Exception:
             logger.error(
@@ -649,17 +758,8 @@ class SafetyPolicy:
             if user_id in self.blocked_addresses:
                 return True
 
-            # Check if action is globally blocked
-            blocked_tools = self.approval_workflow.get("blocked_tools", [])
-            if tool_name in blocked_tools:
-                return True
-
             # Check for suspicious activity
             if await self._is_user_suspicious(user_id):
-                return True
-
-            # Check for failed attempts
-            if await self._has_failed_attempts(user_id):
                 return True
 
             return False
@@ -672,22 +772,30 @@ class SafetyPolicy:
             return False
 
     def _get_tool_risk_level(self, tool_name: str) -> float:
-        """Get risk level for a tool."""
-        tool_risks = {
-            "analyze_portfolio": 0.1,
-            "generate_budget_plan": 0.1,
-            "analyze_transaction": 0.2,
-            "get_financial_advice": 0.1,
-            "get_balance": 0.1,
-            "get_transaction_history": 0.2,
-            "transfer_funds": 0.8,
-            "withdraw_funds": 0.7,
-            "deposit_funds": 0.6,
-            "execute_strategy": 0.9,
-            "get_payment_status": 0.3,
-        }
+        """Get the risk score for a tool from its declared registry metadata.
 
-        return tool_risks.get(tool_name, 0.5)
+        This used to be a hardcoded name->score map whose keys did not match a
+        single registered tool (``generate_budget_plan``, ``transfer_funds``,
+        ``withdraw_funds``, ...), so every real tool silently scored the 0.5
+        default and the per-tool risk tiers were unreachable. Reading
+        ``Tool.risk_level`` means the declaration at the registration site is
+        what actually drives policy.
+        """
+        from miriam_agent.tools import ensure_registered
+
+        scores = {
+            "low": 0.1,
+            "medium": 0.4,
+            "high": 0.7,
+            "critical": 0.9,
+        }
+        try:
+            tool = ensure_registered().get(tool_name)
+        except Exception:  # noqa: BLE001 - registry unavailable, stay neutral
+            tool = None
+        if tool is None:
+            return 0.5
+        return scores.get(str(tool.risk_level.value).lower(), 0.5)
 
     async def _get_user_risk_level(self, user_id: str) -> str:
         """Get user's fraud-risk tier (not to be confused with investment
@@ -714,26 +822,13 @@ class SafetyPolicy:
 
         return risk_scores.get(risk_level, 0.5)
 
-    # Tool names that represent real money movement, used to filter the
-    # audit log down to activity relevant for fraud/limit checks.
-    _MONEY_ACTIONS = frozenset(
-        {
-            "send_money",
-            "transfer_stash_to_spending",
-            "transfer_spending_to_stash",
-            "pay_bill",
-            "create_strategy",
-            "update_strategy",
-            "enroll_strategy",
-            "rebalance_strategy",
-            "buy_asset",
-            "sell_asset",
-            "set_allocation",
-        }
-    )
+    # Tools whose successful executions carry an amount that counts toward the
+    # daily transfer cap. Sourced from the canonical set (safety/money_tools.py)
+    # so it cannot drift from the audit observer that writes those amounts.
+    _MONEY_ACTIONS = TRANSFER_TOOLS
 
     async def _get_recent_activities(
-        self, user_id: str, timeframe_hours: int = 24
+        self, user_id: str, timeframe_hours: int = 24, strict: bool = False
     ) -> list[dict[str, Any]]:
         """Get the user's real recent money-movement activity.
 
@@ -744,10 +839,12 @@ class SafetyPolicy:
         log (populated by ``api/chat.py``'s audit observer, which records
         amount/recipient for every money-movement tool call).
 
-        Fail-open: any DB error here means pattern/limit checks skip this
-        round rather than blocking a user because of an infrastructure
-        problem -- consistent with how the rest of the app treats a
-        degraded dependency (Go backend down, Supermemory down, etc).
+        Failure mode: pattern checks (non-strict) fail open so a degraded
+        audit trail never *blocks* a user for an infrastructure problem,
+        consistent with how the rest of the app treats a degraded dependency.
+        The daily-limit check (``strict=True``) fails closed -- a money-control
+        check that cannot read its own inputs must deny rather than assume no
+        activity exists.
         """
         try:
             from datetime import datetime, timedelta
@@ -790,38 +887,21 @@ class SafetyPolicy:
             return activities
 
         except Exception as e:
+            if strict:
+                raise
             logger.warning("Recent-activity lookup failed, failing open: %s", e)
             return []
 
     async def _is_user_suspicious(self, user_id: str) -> bool:
-        """Check if user is suspicious."""
+        """Check if user is suspicious (blocking patterns only)."""
         try:
-            # Check against suspicious patterns
-            recent_activities = await self._get_recent_activities(user_id)
-
-            for pattern in self.suspicious_patterns:
-                if await self._check_pattern(pattern, {}, recent_activities):
-                    return True
-
-            return False
+            # Only blocking patterns may deny an action here; an advisory
+            # pattern in the user's history must not veto unrelated actions.
+            return await self._blocking_pattern_fired({}, user_id)
 
         except Exception:
             logger.error(
                 "Error checking if user is suspicious",
-                exc_info=True,
-            )
-            return False
-
-    async def _has_failed_attempts(self, user_id: str) -> bool:
-        """Check if user has failed attempts."""
-        try:
-            # This would check for failed authentication attempts
-            # For now, return False
-            return False
-
-        except Exception:
-            logger.error(
-                "Error checking failed attempts",
                 exc_info=True,
             )
             return False

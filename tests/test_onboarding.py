@@ -1715,3 +1715,67 @@ def test_invalid_meta_sanitized_instead_of_kept_raw(monkeypatch):
     assert "confidence" not in meta
     assert "money_moment_confidence" not in states.data["u-1"]["learned"]
     MoneyMomentMeta.model_validate(meta)
+
+
+# ------------------------------------------------------------------
+# A question about the user's own data must never be absorbed by the interview
+# ------------------------------------------------------------------
+
+
+def test_own_data_questions_are_recognised():
+    """The onboarding conductor has no tools, so anything it cannot answer has
+    to be handed to the general agent instead of being folded into the plan
+    chat. A swallowed "show me my transactions" reads as the product being
+    broken."""
+    from miriam_agent.onboarding.service import _asks_for_own_data
+
+    for text in [
+        "show me my transactions",
+        "what did I spend last month",
+        "how much did I spend on food",
+        "list my bills",
+        "what is my income",
+        "how much money do I have",
+        "can I afford a 200k laptop",
+        "show me my portfolio",
+        "tell me about my recent payments",
+        "what are my subscriptions",
+    ]:
+        assert _asks_for_own_data(text) is True, text
+
+
+def test_statements_and_interview_answers_stay_in_the_flow():
+    """The gate must not swallow the interview itself: narrative answers and the
+    interviewer's own question shapes must stay put, or onboarding can never
+    finish. This is why the gate needs BOTH a question opener and a data noun."""
+    from miriam_agent.onboarding.service import _asks_for_own_data
+
+    for text in [
+        "I spend too much on food",
+        "my goal is to save for a house",
+        "I want to put money in",
+        "what do you mean",
+        "I get paid on the 25th",
+        "my savings are small right now",
+        "yes",
+    ]:
+        assert _asks_for_own_data(text) is False, text
+
+
+def test_data_question_mid_interview_does_not_take_over(monkeypatch):
+    """End to end through handle_turn: a data question hands the turn to the
+    general agent, while a narrative answer keeps the interview."""
+    service, _, _, _ = _service(monkeypatch)
+    user = _user()
+    _run(service.handle_turn(user, message="hey"))
+
+    asked = _run(service.handle_turn(user, message="show me my transactions"))
+    assert asked.took_over is False, (
+        "a data question must not be answered by the tool-less onboarding conductor"
+    )
+
+    narrative = _run(service.handle_turn(user, message="I spend too much on food"))
+    assert narrative.took_over is True, (
+        "a narrative answer is interview material and must stay in the flow"
+    )
+

@@ -353,8 +353,12 @@ class _AllowAllPolicy:
 
 def _agent_with_allow_all_policy():
     from miriam_agent.agents.agent_loop import Agent
+    from miriam_agent.safety.confirmations import PendingConfirmationStore
 
-    agent = Agent(registry=build_tool_registry())
+    agent = Agent(
+        registry=build_tool_registry(),
+        confirmation_store=PendingConfirmationStore(redis_enabled=False),
+    )
     agent.safety_policy = _AllowAllPolicy()
     return agent
 
@@ -370,14 +374,24 @@ def test_agent_replays_the_staged_confirmation_token(monkeypatch):
     monkeypatch.setattr(inv, "get_go_client", lambda: fake)
     agent = _agent_with_allow_all_policy()
     context = _verified_context()
+    args = {"symbol": "AAPL", "amount_usd": 25}
+
+    # _safe_execute only runs approved money actions that have a server-side
+    # pending confirmation, so stage the proposal first.
+    _run(
+        agent.confirmation_store.stage(
+            "u1", agent._signature("buy_asset", args)
+        )
+    )
 
     result = _run(
         agent._safe_execute(
             "buy_asset",
-            {"symbol": "AAPL", "amount_usd": 25},
+            args,
             context,
             "u1",
             {"roles": ["verified"]},
+            approved=True,
         )
     )
 
@@ -394,14 +408,17 @@ def test_requires_authentication_is_never_auto_replayed(monkeypatch):
     fake = _StagedClient(verdict="REQUIRES_AUTHENTICATION")
     monkeypatch.setattr(inv, "get_go_client", lambda: fake)
     agent = _agent_with_allow_all_policy()
+    args = {"symbol": "AAPL", "amount_usd": 25}
+    _run(agent.confirmation_store.stage("u1", agent._signature("buy_asset", args)))
 
     result = _run(
         agent._safe_execute(
             "buy_asset",
-            {"symbol": "AAPL", "amount_usd": 25},
+            args,
             _verified_context(),
             "u1",
             {"roles": ["verified"]},
+            approved=True,
         )
     )
 

@@ -1,4 +1,7 @@
+import base64
+import hashlib
 import logging
+import os
 import re
 import time
 import uuid
@@ -10,6 +13,35 @@ from cryptography.fernet import Fernet
 from miriam_agent.core.exceptions import SecurityError
 
 logger = logging.getLogger(__name__)
+
+
+def _normalise_for_matching(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace.
+
+    Used for injection matching so spacing and punctuation cannot be used to
+    slip past a literal phrase.
+    """
+    collapsed = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+# Prompt-injection shapes, matched against normalised text. Each requires both
+# an action verb and its target, so ordinary financial conversation does not
+# trip them ("ignore my budget this month" has no instruction to override).
+_INJECTION_PATTERNS = (
+    r"\bignore\b(?:\s+\w+){0,4}\s+(?:previous|prior|earlier|above|system|all)\b"
+    r"(?:\s+\w+){0,2}\s+(?:instruction|prompt|rule|direction|message)s?\b",
+    r"\b(?:disregard|forget)\b(?:\s+\w+){0,4}\s+(?:previous|prior|earlier|above|"
+    r"system|your|all)\b(?:\s+\w+){0,2}\s+(?:instruction|prompt|rule|direction)s?\b",
+    r"\byou are now\b",
+    r"\b(?:act|behave|pretend)\b(?:\s+\w+){0,3}\s+as\b",
+    r"\b(?:reveal|show|print|repeat|output|expose|leak)\b(?:\s+\w+){0,4}\s+"
+    r"system prompt\b",
+    r"\bsystem prompt\b",
+    r"\bnew instructions?\b",
+    r"\b(?:skip|bypass|disable|override|circumvent)\b(?:\s+\w+){0,3}\s+"
+    r"(?:confirmation|safety|policy|security|approval|authentication)\b",
+)
 
 
 class InputValidator:
@@ -31,18 +63,43 @@ class InputValidator:
         self.blocked_keywords = self._load_blocked_keywords()
         self.allowed_characters = self._load_allowed_characters()
         self._redis: Any = None
+        # Instance copy so the configured chat limit is actually honoured:
+        # RATE_LIMIT_PER_MINUTE existed in settings but nothing read it, and
+        # the effective limit was the hardcoded class default.
+        self.RATE_LIMITS = dict(type(self).RATE_LIMITS)
+        try:
+            from miriam_agent.config.settings import get_settings
+
+            self.RATE_LIMITS["chat"] = (get_settings().RATE_LIMIT_PER_MINUTE, 60)
+        except Exception:  # pragma: no cover - settings must never block startup
+            pass
 
     def _get_encryption_key(self) -> str:
-        """Get encryption key from environment or generate one."""
-        # In production, this should come from a secure configuration
-        # For development, we'll generate a key
-        import os
+        """Resolve a Fernet key from configuration.
 
-        key = os.getenv("ENCRYPTION_KEY")
-        if not key:
-            # Generate a key for development
-            key = Fernet.generate_key().decode()
-        return key
+        ENCRYPTION_KEY is accepted either as a ready-made urlsafe-base64
+        Fernet key or as an arbitrary secret (a hex string, for instance),
+        which is hashed into one.
+
+        Previously any value that was present but not already a valid Fernet
+        key raised ``ValueError`` here -- and because ``InputValidator`` is
+        constructed at module import, that took the whole application (and the
+        test suite) down with a bare "Fernet key must be 32 url-safe
+        base64-encoded bytes". A *missing* key fell back gracefully; a
+        malformed one was fatal, which is exactly backwards.
+        """
+        raw = os.getenv("ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or ""
+        if not raw:
+            # No configured secret: generate an ephemeral key (development).
+            return Fernet.generate_key().decode()
+        try:
+            Fernet(raw.encode())
+            return raw
+        except Exception:
+            # Not a Fernet key: derive one deterministically so values
+            # encrypted in an earlier run stay decryptable.
+            digest = hashlib.sha256(raw.encode()).digest()
+            return base64.urlsafe_b64encode(digest).decode()
 
     def _load_validation_patterns(self) -> dict[str, Any]:
         """Load validation patterns for different input types."""
@@ -222,12 +279,29 @@ class InputValidator:
         return errors
 
     async def _check_blocked_keywords(self, text: str) -> bool:
-        """Check if text contains blocked keywords."""
-        text_lower = text.lower()
+        """Check if text contains blocked keywords or injection shapes.
+
+        Matched against a normalised projection of the text (lowercased,
+        punctuation stripped, whitespace collapsed) so trivial evasions stop
+        working: the literal list contains "ignore previous instructions" but
+        an attacker writes "Ignore  your system instructions!!" -- which the
+        previous raw-substring comparison let through.
+
+        This is defence in depth, not the control. What actually prevents an
+        injected instruction from moving money is that every money action must
+        be staged, approved, and backed by the server-side confirmation ledger.
+        Because of that, the patterns below are deliberately high-precision:
+        each needs an override or exfiltration verb *and* its target. Phrasings
+        that are legitimate in a conversation about automations ("I want it to
+        happen without asking me every time") are intentionally not blocked.
+        """
+        normalised = _normalise_for_matching(text)
         for keyword in self.blocked_keywords:
-            if keyword.lower() in text_lower:
+            if _normalise_for_matching(keyword) in normalised:
                 return True
-        return False
+        return any(
+            re.search(pattern, normalised) for pattern in _INJECTION_PATTERNS
+        )
 
     def _validate_amount(self, value: Any) -> list[str]:
         """Validate monetary amount."""
@@ -632,7 +706,10 @@ class InputValidator:
         Fails open: if Redis is unreachable, the request is allowed rather
         than blocking every user because of an infrastructure hiccup
         (consistent with how the rest of the app treats a degraded
-        dependency).
+        dependency). That is a deliberate availability trade-off, and it is
+        why rate limiting is not a money control -- moving money relies on
+        the staged confirmation ledger and the account limits instead, neither
+        of which degrades on a Redis outage.
         """
         limit, window = self.RATE_LIMITS.get(action, (60, 60))
         key = f"ratelimit:{user_id}:{action}"

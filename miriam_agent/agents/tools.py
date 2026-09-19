@@ -12,6 +12,7 @@ The registry serves three consumers:
   3. The audit system - every execution is logged.
 """
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from miriam_agent.core.exceptions import (
     ValidationError,
 )
 from miriam_agent.observability.correlation import current_trace_id
+from miriam_agent.observability.metrics import record_tool_execution
 
 
 class RiskLevel(StrEnum):
@@ -64,8 +66,24 @@ class Tool:
 
 
 def validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
-    """Validate tool arguments against the tool's JSON Schema."""
-    required = [r for r in tool.args_schema.get("required", []) if r not in args]
+    """Validate tool arguments against the tool's JSON Schema.
+
+    Enforces the subset of JSON Schema this codebase actually declares:
+    required presence (an explicit ``null`` counts as absent), type, ``enum``,
+    numeric bounds (``minimum`` / ``maximum`` / ``exclusiveMinimum`` /
+    ``exclusiveMaximum``), string length and ``pattern``.
+
+    None of this may be left to the model: a negative or zero transfer amount,
+    an invalid enum value, or a path-traversal string in an id used to pass
+    through untouched and reach the Go ledger. Everything declared at the
+    registration site is checked here, before the value can reach policy or an
+    HTTP call.
+    """
+    required = [
+        r
+        for r in tool.args_schema.get("required", [])
+        if r not in args or args.get(r) is None
+    ]
     properties = tool.args_schema.get("properties", {})
 
     if required:
@@ -74,7 +92,7 @@ def validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
         )
 
     for key, spec in properties.items():
-        if key not in args:
+        if key not in args or args[key] is None:
             continue
         value = args[key]
         expected = spec.get("type")
@@ -101,7 +119,53 @@ def validate_args(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
                 f"Argument '{key}' for '{tool.name}' must be type '{expected}', "
                 f"got '{type(value).__name__}'"
             )
+        _validate_constraints(tool.name, key, value, spec)
     return args
+
+
+def _validate_constraints(
+    tool_name: str, key: str, value: Any, spec: dict[str, Any]
+) -> None:
+    """Enforce the constraint keywords declared on a property schema."""
+    enum = spec.get("enum")
+    if enum is not None and value not in enum:
+        raise ValidationError(
+            f"Argument '{key}' for '{tool_name}' must be one of {list(enum)}, "
+            f"got '{value!r}'"
+        )
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        for keyword, ok in (
+            ("minimum", lambda v, b: v >= b),
+            ("maximum", lambda v, b: v <= b),
+            ("exclusiveMinimum", lambda v, b: v > b),
+            ("exclusiveMaximum", lambda v, b: v < b),
+        ):
+            bound = spec.get(keyword)
+            if bound is not None and not ok(value, bound):
+                raise ValidationError(
+                    f"Argument '{key}' for '{tool_name}' violates {keyword}="
+                    f"{bound} (got {value!r})"
+                )
+
+    if isinstance(value, str):
+        pattern = spec.get("pattern")
+        if pattern is not None and re.search(pattern, value) is None:
+            raise ValidationError(
+                f"Argument '{key}' for '{tool_name}' has an invalid format"
+            )
+        min_length = spec.get("minLength")
+        if min_length is not None and len(value) < min_length:
+            raise ValidationError(
+                f"Argument '{key}' for '{tool_name}' must be at least "
+                f"{min_length} characters"
+            )
+        max_length = spec.get("maxLength")
+        if max_length is not None and len(value) > max_length:
+            raise ValidationError(
+                f"Argument '{key}' for '{tool_name}' must be at most "
+                f"{max_length} characters"
+            )
 
 
 def _type_matches(value: Any, expected: str) -> bool:
@@ -141,39 +205,6 @@ class ToolRegistry:
             raise ValueError(f"Tool '{tool.name}' is already registered")
         self._tools[tool.name] = tool
         return tool
-
-    def register_decorator(
-        self,
-        name: str,
-        description: str,
-        args_schema: dict[str, Any],
-        category: str = "general",
-        risk_level: RiskLevel = RiskLevel.LOW,
-        is_mutation: bool = False,
-        requires_approval: bool = False,
-        allow_auto_execute: bool = True,
-        tags: list[str] | None = None,
-    ):
-        """Decorator for registering a handler function as a tool."""
-
-        def decorator(fn: Handler) -> Handler:
-            self.register(
-                Tool(
-                    name=name,
-                    description=description,
-                    args_schema=args_schema,
-                    handler=fn,
-                    category=category,
-                    risk_level=risk_level,
-                    is_mutation=is_mutation,
-                    requires_approval=requires_approval,
-                    allow_auto_execute=allow_auto_execute,
-                    tags=tags or [],
-                )
-            )
-            return fn
-
-        return decorator
 
     def get(self, name: str) -> Tool | None:
         """Look up a tool by name."""
@@ -271,9 +302,11 @@ class ToolRegistry:
                     "_args": args or {},
                 },
             )
+            record_tool_execution(name, "error")
             raise ToolExecutionError(f"Tool '{name}' failed: {e}")
 
         elapsed = time.perf_counter() - start
+        record_tool_execution(name, "success")
         if not isinstance(result, dict):
             result = {"result": result}
         result.setdefault("_tool_name", name)

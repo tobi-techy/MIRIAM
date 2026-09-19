@@ -98,8 +98,9 @@ def assess_readiness(
     """The investment verdict for this user, right now (spec §15).
 
     ``kyc_verified`` / ``jurisdiction`` / ``limits`` come from the Go backend
-    (identity and policy are Go's, never Miriam's). An unknown KYC state is
-    treated as *unverified* -- the gate fails closed, never open.
+    (identity and policy are Go's, never Miriam's). KYC is advisory only for
+    starting Glider strategies: an unverified identity is recorded in the
+    signals and blockers but never forces REVIEW_REQUIRED on its own.
     """
     income = profile.money("income_amount")
     essentials = profile.money("essential_expenses") or 0.0
@@ -154,14 +155,12 @@ def assess_readiness(
     if unsupported:
         blockers.append(f"jurisdiction {jurisdiction} is not supported")
     if kyc_verified is False:
-        blockers.append("identity verification is not complete")
+        blockers.append("identity verification is not complete (advisory only)")
 
     if contradictory:
         return verdict(REVIEW_REQUIRED, "this needs a human look before investing")
     if unsupported:
         return verdict(REVIEW_REQUIRED, "jurisdiction is not supported for investing")
-    if kyc_verified is False:
-        return verdict(REVIEW_REQUIRED, "finish identity verification before investing")
 
     # 2. Not ready: no surplus to invest.
     if not income or surplus_ratio is None or surplus_ratio <= 0:

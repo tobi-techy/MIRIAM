@@ -2,7 +2,7 @@
 
 The ``/chat`` endpoint runs the full agent loop. The ``/chat/stream``
 endpoint streams tokens via SSE. Money-movement tools are never executed
-here — they are returned as ``action_required`` payloads for the client
+here; they are returned as ``action_required`` payloads for the client
 to show to the user and re-submit with a confirmation.
 """
 
@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer
 
-from miriam_agent.agents.agent_loop import Agent
+from miriam_agent.agents.agent_loop import Agent, AgentRunResult
 from miriam_agent.agents.base import AgentConfig
 from miriam_agent.api.dependencies import (
     get_audit_system,
@@ -27,8 +27,10 @@ from miriam_agent.api.dependencies import (
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
 from miriam_agent.integrations.supermemory_client import container_tag_for
+from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
+from miriam_agent.safety.money_tools import MONEY_TOOLS
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.safety.validator import InputValidator
 from miriam_agent.tools import build_tool_registry
@@ -42,24 +44,11 @@ _audit_observer_installed = False
 _validator = InputValidator()
 
 # Mutation tools whose amount/recipient are worth recording in the audit
-# trail. Kept as an explicit set (rather than checking `_is_mutation` on the
-# result) so it's obvious at a glance which tools' arguments end up in a
-# durable log -- read-only tool arguments are never captured.
-_MONEY_TOOLS = {
-    "send_money",
-    "transfer_stash_to_spending",
-    "transfer_spending_to_stash",
-    "pay_bill",
-    "create_strategy",
-    "update_strategy",
-    "enroll_strategy",
-    "pause_strategy",
-    "resume_strategy",
-    "rebalance_strategy",
-    "buy_asset",
-    "sell_asset",
-    "set_allocation",
-}
+# trail. Sourced from the canonical set (safety/money_tools.py) rather than a
+# local copy: the automation and scheduled-investment mutations used to be
+# missing here, so their amounts never reached the audit log that the
+# daily-limit check reads. Read-only tool arguments are never captured.
+_MONEY_TOOLS = MONEY_TOOLS
 
 
 def _money_details(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -204,6 +193,14 @@ async def chat_with_agent(
     # Ensure a local user row exists (Go backend is the identity authority).
     await memory_store.ensure_user(user)
 
+    # A conversation id supplied by the client is untrusted: it must belong to
+    # the authenticated user. Previously any id was accepted, so presenting
+    # another user's conversation returned their messages (and appended this
+    # user's turns into their conversation).
+    conversation_id = await _require_owned_conversation(
+        memory_store, user, conversation_id
+    )
+
     # Conversational onboarding: while a user has an unfinished financial
     # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
     # instead of the general agent. Action intents and completed interviews pass
@@ -245,7 +242,7 @@ async def chat_with_agent(
     # Load user context (from Go backend when reachable; local memory otherwise)
     user_context = await _load_user_context(memory_store, user)
     history = (
-        await memory_store.get_conversation_history(conversation_id)
+        await memory_store.get_conversation_history(conversation_id, user.id)
         if conversation_id
         else []
     )
@@ -253,6 +250,39 @@ async def chat_with_agent(
         memory_store, user.id, query=message, supermemory_memory=supermemory_memory
     )
     financial_plan = await _load_financial_plan(token)
+
+    # TypeSafe ingress gate: classify the turn and short-circuit jailbreaks,
+    # PII pastes, and vague asks before the generator ever sees them.
+    # OTP-confirmed action replays skip the gate (the user already reviewed
+    # and proved the action), mirroring the onboarding skip above.
+    if not approved_actions:
+        try:
+            ingress_decision = await ingress_gate(
+                build_ingress_state(
+                    user_id=user.id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    registry=registry,
+                )
+            )
+        except Exception:
+            # A judgment-layer bug must never 500 a chat turn; fail open to the
+            # generator. Network errors are already handled (fail-closed) inside
+            # ingress_gate, so this only catches unexpected code paths.
+            logger.exception("ingress gate failed; failing open to generator")
+            ingress_decision = None
+        if ingress_decision is not None and ingress_decision.short_circuits:
+            return await _finalize_turn(
+                memory_store=memory_store,
+                supermemory_memory=supermemory_memory,
+                user=user,
+                message=message,
+                result=AgentRunResult(
+                    response=ingress_decision.reply or "",
+                    conversation_id=conversation_id or f"conv_{user.id}",
+                ),
+            )
 
     try:
         result = await agent.run(
@@ -274,39 +304,13 @@ async def chat_with_agent(
             detail=f"Error processing chat request: {str(e)}",
         )
 
-    # Persist the exchange.
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="user",
-        content=message,
-        conversation_id=result.conversation_id,
-        metadata={"channel": "api"},
+    return await _finalize_turn(
+        memory_store=memory_store,
+        supermemory_memory=supermemory_memory,
+        user=user,
+        message=message,
+        result=result,
     )
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="assistant",
-        content=result.response,
-        conversation_id=result.conversation_id,
-        metadata={
-            "channel": "api",
-            "requires_confirmation": result.requires_confirmation,
-        },
-    )
-
-    # Feed the turn into Supermemory's memory graph (fail-open, non-blocking).
-    await _ingest_to_supermemory(
-        supermemory_memory,
-        user.id,
-        conversation_id=result.conversation_id,
-        user_message=message,
-        assistant_message=result.response,
-    )
-
-    payload = _serialize_agent_result(result)
-    payload["conversation_history"] = await memory_store.get_conversation_history(
-        result.conversation_id
-    )
-    return payload
 
 
 @router.post("/chat/stream")
@@ -339,6 +343,12 @@ async def chat_stream(
         )
 
     await memory_store.ensure_user(user)
+
+    # Same untrusted-id rule as /chat: refuse a conversation that isn't the
+    # caller's before a single token is streamed.
+    conversation_id = await _require_owned_conversation(
+        memory_store, user, conversation_id
+    )
 
     # Conversational onboarding owns the turn here too, exactly as in /chat
     # (polls only render in the iMessage bridge; the web stream carries the text
@@ -408,7 +418,7 @@ async def chat_stream(
             )
             _install_audit_observer()
             history = (
-                await memory_store.get_conversation_history(conversation_id)
+                await memory_store.get_conversation_history(conversation_id, user.id)
                 if conversation_id
                 else []
             )
@@ -420,6 +430,52 @@ async def chat_stream(
                 supermemory_memory=supermemory_memory,
             )
             financial_plan = await _load_financial_plan(token)
+
+            # TypeSafe ingress gate, mirroring /chat. OTP-confirmed action
+            # replays skip it. A short-circuit streams the fixed reply instead
+            # of running the generator, so a jailbreak/PII/vague ask never
+            # reaches it here either.
+            if not approved_actions:
+                try:
+                    ingress_decision = await ingress_gate(
+                        build_ingress_state(
+                            user_id=user.id,
+                            message=message,
+                            history=history,
+                            user_context=user_context,
+                            registry=registry,
+                        )
+                    )
+                except Exception:
+                    logger.exception("ingress gate failed; failing open to generator")
+                    ingress_decision = None
+                if ingress_decision is not None and ingress_decision.short_circuits:
+                    conv_id = conversation_id or f"conv_{user.id}"
+                    reply = ingress_decision.reply or ""
+                    await memory_store.store_interaction(
+                        user_id=user.id,
+                        role="user",
+                        content=message,
+                        conversation_id=conv_id,
+                        metadata={"channel": "api"},
+                    )
+                    await memory_store.store_interaction(
+                        user_id=user.id,
+                        role="assistant",
+                        content=reply,
+                        conversation_id=conv_id,
+                        metadata={"channel": "api", "requires_confirmation": False},
+                    )
+                    await _ingest_to_supermemory(
+                        supermemory_memory,
+                        user.id,
+                        conversation_id=conv_id,
+                        user_message=message,
+                        assistant_message=reply,
+                    )
+                    yield _sse({"type": "token", "content": reply})
+                    yield _sse({"type": "done"})
+                    return
 
             async for event in agent.stream_run(
                 user_id=user.id,
@@ -512,10 +568,9 @@ async def get_conversation_messages(
     user: User = Depends(get_current_user),
     memory_store: MemoryStore = Depends(get_memory_store),
 ):
-    conversations = await memory_store.get_conversations(user.id)
-    if conversation_id not in {c.id for c in conversations}:
+    if await memory_store.get_owned_conversation(conversation_id, user.id) is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    messages = await memory_store.get_conversation_messages(conversation_id)
+    messages = await memory_store.get_conversation_messages(conversation_id, user.id)
     return {
         "messages": [
             {
@@ -533,6 +588,34 @@ async def get_conversation_messages(
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+async def _require_owned_conversation(
+    memory_store: MemoryStore, user: User, conversation_id: Any
+) -> str | None:
+    """Validate a client-supplied conversation id against its owner.
+
+    Returns the id when it is usable by this user, ``None`` when no id was
+    supplied, and raises 404 when the conversation exists and belongs to
+    someone else.
+
+    A conversation that does not exist yet is allowed through: the write path
+    creates it for the caller on first use, which is the behaviour clients
+    rely on when they start a session with their own id. The check is about
+    *ownership*, not existence. Every read and write on the chat path goes
+    through this: without it, presenting another user's conversation id
+    returned their messages and appended this user's turns into their
+    conversation.
+    """
+    if not conversation_id:
+        return None
+    candidate = str(conversation_id)
+    existing = await memory_store.get_conversation(candidate)
+    if existing is not None and existing.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
+    return candidate
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -577,7 +660,7 @@ async def _finish_onboarding_turn(
     )
     payload = onboarding.to_payload(conv_id)
     payload["conversation_history"] = await memory_store.get_conversation_history(
-        conv_id
+        conv_id, user.id
     )
     payload["trace_id"] = current_trace_id()
     return payload
@@ -686,3 +769,47 @@ async def _ingest_to_supermemory(
         )
     except Exception as e:
         logger.warning("Memorizing turn failed (non-blocking): %s", e)
+
+
+async def _finalize_turn(
+    *,
+    memory_store: MemoryStore,
+    supermemory_memory: Any,
+    user: User,
+    message: str,
+    result: AgentRunResult,
+) -> dict[str, Any]:
+    """Persist and serialize a finished turn (agent run or ingress short-circuit).
+
+    Shared by the normal path and the ingress gate so a refused/clarified turn
+    is recorded exactly like any other exchange.
+    """
+    await memory_store.store_interaction(
+        user_id=user.id,
+        role="user",
+        content=message,
+        conversation_id=result.conversation_id,
+        metadata={"channel": "api"},
+    )
+    await memory_store.store_interaction(
+        user_id=user.id,
+        role="assistant",
+        content=result.response,
+        conversation_id=result.conversation_id,
+        metadata={
+            "channel": "api",
+            "requires_confirmation": result.requires_confirmation,
+        },
+    )
+    await _ingest_to_supermemory(
+        supermemory_memory,
+        user.id,
+        conversation_id=result.conversation_id,
+        user_message=message,
+        assistant_message=result.response,
+    )
+    payload = _serialize_agent_result(result)
+    payload["conversation_history"] = await memory_store.get_conversation_history(
+        result.conversation_id, user.id
+    )
+    return payload

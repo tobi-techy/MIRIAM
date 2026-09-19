@@ -61,29 +61,22 @@ def test_trace_id_defaults_to_new_when_none_inbound():
     assert get_trace_id() is None
 
 
-def test_trace_id_binds_structlog_and_otel(mocker):
-    """Structlog and OTel should be bound by the same trace id (spot-checked)."""
-    mock_sl = mocker.MagicMock()
-    mock_span = mocker.MagicMock()
-    mock_sl.contextvars.bind_contextvars = mocker.MagicMock()
-    mock_otel_trace = mocker.MagicMock()
-    mock_otel_trace.get_current_span.return_value = mock_span
+def test_trace_id_binds_structlog_contextvars():
+    """The id is mirrored into structlog's contextvars so log lines carry it.
 
-    import miriam_agent.observability.correlation as corr
-    original_sl = corr.structlog
-    original_otel = corr.trace
-    corr.structlog = mock_sl
-    corr.trace = mock_otel_trace
+    Rewritten: the previous version reached for ``correlation.structlog`` and
+    ``correlation.trace`` module attributes that no longer exist (the
+    observers are imported lazily inside ``_bind_observers``), so it asserted
+    nothing about the current design.
+    """
+    structlog = pytest.importorskip("structlog")
 
-    try:
-        with bind_trace_id(new_trace_id()) as tid:
-            # Ensure the binding calls happened (we cannot assert exact calls
-            # because structlog binding side-effects are cheap and we rely on
-            # the test that the whole chain passes end-to-end).
-            pass
-    finally:
-        corr.structlog = original_sl
-        corr.otel_trace = original_otel
+    tid = new_trace_id()
+    with bind_trace_id(tid):
+        assert get_trace_id() == tid
+        assert structlog.contextvars.get_contextvars().get("trace_id") == tid
+
+    assert get_trace_id() is None
 
 
 def test_normalization_strict():
@@ -96,54 +89,39 @@ def test_normalization_strict():
 
 
 @pytest.mark.asyncio
-async def test_trace_id_flows_from_header_to_tool_result(mocker, monkeypatch):
-    """The header trace id must end up in tool execution records (via audit observer)."""
-    from miriam_agent.agents.tools import get_registry
-    from miriam_agent.api.chat import _install_audit_observer
+async def test_trace_id_flows_into_tool_result_and_observer():
+    """The bound trace id must reach the tool result and the audit observer.
 
-    # Install the audit observer (once) with a mocked audit store.
-    # The observer will call the audit store's log_action; we'll intercept it.
-    logged = []
-    async def mock_log_action(**kwargs):
-        logged.append(kwargs)
-    mock_store = mocker.MagicMock()
-    mock_store.__anext__ = mocker.AsyncMock(return_value=mock_store)
-    mock_store.log_action = mock_log_action
-    monkeypatch.setattr("miriam_agent.api.chat.get_audit_system", lambda: mock_store)
-    monkeypatch.setattr("miriam_agent.api.chat._install_audit_observer", lambda: None)
-    _install_audit_observer()
+    Rewritten: the previous version imported ``_observe`` from
+    ``api.chat`` (it is a nested closure now) and then skipped the actual
+    assertion. This drives the real registry instead.
+    """
+    from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry
 
-    # Simulate a tool execution via registry.execute with context.
-    from miriam_agent.agents.tools import ToolRegistry, Tool
-    from miriam_agent.agents.tools import RiskLevel
-    import asyncio
+    seen: list = []
 
-    reg = ToolRegistry()
-    # We need to use the real registry to hit the observer.
-    # Instead of mocking the registry, let's simulate the trace propagation.
-    # We'll set the contextvar and then read it.
-    from miriam_agent.observability.correlation import bind_trace_id
+    async def handler(args, ctx):  # noqa: ARG001
+        return {"ok": True}
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="probe",
+            description="trace probe",
+            args_schema={"type": "object", "properties": {}},
+            handler=handler,
+            risk_level=RiskLevel.LOW,
+        )
+    )
+    registry.add_observer(lambda name, payload: seen.append(payload))
+
     trace_id = new_trace_id()
     with bind_trace_id(trace_id):
-        # The registry's execute would normally log via observer.
-        # We'll just verify the observer sees the trace id.
-        # We'll inspect the registry's _observers (if we can get it).
-        # This is a bit invasive; we'll skip the low-level test and focus on
-        # integration: we'll make a real chat request and verify the trace id
-        # appears in the response and in audit logs.
-        pass
+        result = await registry.execute("probe", {}, context={"user_id": "u1"})
 
-    # Since integration test would require a real setup, we'll trust that
-    # the bound_trace_id works and the audit observer uses result.get('trace_id').
-    # We'll do a simpler unit test that the observer's payload includes trace_id.
-    # We'll simulate the _observe call.
-    from miriam_agent.api.chat import _observe
-    _observe("get_balance", {"trace_id": trace_id, "result": {"_tool_name": "test"}})
-    # The observer creates a background task; we'll skip due to async complexity.
-    # We'll rely on the end-to-end integration test below.
-
-    # Clean up.
-    monkeypatch.undo()
+    assert result["_trace_id"] == trace_id
+    assert seen, "the observer must be notified"
+    assert seen[0]["trace_id"] == trace_id
 
 
 def test_trace_id_in_response_and_header(client: TestClient):
@@ -195,65 +173,76 @@ def test_no_trace_id_leakage_between_requests():
 # ---- Integration-like end-to-end tests ----
 
 @pytest.mark.asyncio
-async def test_trace_id_propagates_through_agent_to_audit(mocker):
-    """Integration test for trace id propagation across the whole agent execution."""
-    # This test uses mocks to simulate the entire flow without external dependencies.
-    # We'll create a real Agent instance with mocked dependencies and verify
-    # that tool calls and audit logs include the trace id.
-    from miriam_agent.agents.agent_loop import Agent, ProposedAction
+async def test_trace_id_propagates_through_agent_to_tool_result():
+    """One id, from the bound request context through the agent loop into the
+    tool-call record and the ``AgentRunResult``.
 
-    # Mock the provider and registry
-    mock_provider = mocker.MagicMock()
-    mock_provider.complete = mocker.AsyncMock(
-        return_value=mocker.MagicMock(tool_calls=[], content="Done")
-    )
-    mock_registry = mocker.MagicMock()
-    mock_registry.list_names.return_value = ["get_balance"]
-    mock_registry.auto_execute_names.return_value = {"get_balance"}
-    mock_registry.stage_confirm_names.return_value = set()
-    mock_registry.llm_schemas.return_value = []
-    mock_registry.get.return_value = mocker.MagicMock(
-        is_mutation=False,
-        requires_approval=False,
-        handler=mocker.AsyncMock(return_value={"result": "balance"}),
-        risk_level=mocker.MagicMock(value="low"),
-    )
-    mock_registry.execute = mocker.AsyncMock(return_value={"result": "balance"})
-    mock_registry.add_observer = mocker.MagicMock()
+    Rewritten: the previous version mocked a provider that never emitted a
+    tool call, so ``registry.execute`` was never reached and ``call_args`` was
+    ``None``; it also asserted the id travelled inside the ``context`` dict,
+    which it does not -- it travels in the contextvar.
+    """
+    from miriam_agent.agents.llm import LLMResponse
+    from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry
 
-    # Set a trace id in the context
+    class _Provider:
+        model = "mock-v1"
+
+        def __init__(self):
+            self._used = False
+
+        async def complete(
+            self, messages, tools=None, temperature=None, max_tokens=None
+        ):
+            if not self._used:
+                self._used = True
+                return LLMResponse(
+                    content="",
+                    model=self.model,
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "probe", "arguments": "{}"},
+                        }
+                    ],
+                )
+            return LLMResponse(content="Done.", model=self.model)
+
+    async def handler(args, ctx):  # noqa: ARG001
+        return {"ok": True}
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="probe",
+            description="trace probe",
+            args_schema={"type": "object", "properties": {}},
+            handler=handler,
+            risk_level=RiskLevel.LOW,
+        )
+    )
+
+    class _AllowAllPolicy:
+        async def validate_action(self, **kwargs):  # noqa: ARG002
+            return True
+
+    agent = Agent(
+        registry=registry, provider=_Provider(), safety_policy=_AllowAllPolicy()
+    )
+
     trace_id = new_trace_id()
     with bind_trace_id(trace_id):
-        agent = Agent(registry=mock_registry, provider=mock_provider)
-        # Mock the tool call to include trace_id
-        mock_registry.execute = mocker.AsyncMock(
-            return_value={"result": "balance", "_tool_name": "get_balance", "_risk_level": "low", "_is_mutation": False}
-        )
-        # Mock the tool handler
-        mock_registry.get.return_value.handler = mocker.AsyncMock(
-            return_value={"result": "balance", "_tool_name": "get_balance", "_risk_level": "low", "_is_mutation": False}
-        )
-
-        # Run the agent
         result = await agent.run(
-            user_id="test_user",
-            token="test_token",
-            message="What's my balance?",
+            user_id="u1",
+            token="t",
+            message="balance?",
+            user_context={"roles": ["user"]},
         )
 
-        # Verify the result includes trace_id
-        assert hasattr(result, "trace_id")
-        assert result.trace_id == trace_id
-
-        # Verify the tool registry's execute was called with trace_id in context
-        call_args = mock_registry.execute.call_args
-        assert call_args is not None
-        context = call_args.kwargs.get("context", {})
-        assert context.get("trace_id") == trace_id
-
-    # Verify the audit observer's _notify captured the trace_id
-    observer_calls = mock_registry.add_observer.call_args_list
-    assert len(observer_calls) > 0
+    assert result.trace_id == trace_id
+    assert result.tool_calls, "the probe tool must have run"
+    assert result.tool_calls[0]["trace_id"] == trace_id
 
 
 if __name__ == "__main__":
