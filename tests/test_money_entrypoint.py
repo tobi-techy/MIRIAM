@@ -255,6 +255,39 @@ def test_get_money_plan_tool_refuses_for_the_lagos_profile():
     assert "buffer" in result["spoken"].casefold()
 
 
+def test_the_ledger_currency_travels_with_the_ledger_cash(monkeypatch):
+    """A ledger cash figure is denominated in the ledger's currency.
+
+    When the model states a different currency, the plan must not interpret the
+    ledger balance as that stated currency; the connected currency wins with the
+    connected cash.
+    """
+    from miriam_agent.tools import build_tool_registry, money_definitions
+
+    async def fake_balances(_ctx):
+        return {"cash": "5000000", "currency": "NGN", "source": "ledger"}
+
+    monkeypatch.setattr(money_definitions, "_connected_balances", fake_balances)
+
+    tool = build_tool_registry().get("get_money_plan")
+    result = _run(
+        tool.handler(
+            {
+                "profile": {
+                    "country": "NG",
+                    "currency": "USD",
+                    "income_amount": "9000",
+                    "fixed_costs": "4200",
+                    "cash_on_hand": "1000",
+                }
+            },
+            {"token": "tok"},
+        )
+    )
+    assert result["plan"]["currency"] == "NGN"
+    assert result["plan"]["buffer"]["current_amount"] == "5000000"
+
+
 def test_get_money_plan_tool_survives_no_input():
     """A missing profile is a data gap, not a crash and not a fabricated plan."""
     from miriam_agent.tools import build_tool_registry

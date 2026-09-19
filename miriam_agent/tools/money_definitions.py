@@ -79,7 +79,7 @@ def _merge_accounts(supplied: Any, connected: dict[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = dict(supplied) if isinstance(supplied, dict) else {}
     merged["cash"] = connected.get("cash")
     merged["source"] = connected.get("source", "ledger")
-    if connected.get("currency") and not merged.get("currency"):
+    if connected.get("currency"):
         merged["currency"] = connected["currency"]
     return merged
 
@@ -93,7 +93,7 @@ async def _get_money_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     connected = await _connected_balances(ctx)
     if connected:
         accounts = _merge_accounts(accounts, connected)
-        if connected.get("currency") and not profile.get("currency"):
+        if connected.get("currency"):
             profile["currency"] = connected["currency"]
 
     glider_state = None
