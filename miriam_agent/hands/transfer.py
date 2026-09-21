@@ -392,6 +392,11 @@ async def execute_transfer(
         )
 
     before = sleeves_snapshot(ledger.sleeves)
+    # The pre-debit ledger, for the rollback path below. Without it a failed
+    # commit has nothing correct to persist: the rail is reversed, so the debit
+    # must not survive, and retrying the save on the mutated ledger would either
+    # fight the CAS or, if it won, record a debit the rail already took back.
+    pre_rail = ledger.model_copy(deep=True)
     try:
         ledger.debit(action.sleeve, amount)
         ledger.record_movement(
@@ -426,8 +431,13 @@ async def execute_transfer(
     except Exception as exc:  # noqa: BLE001 - compensate rather than drift
         logger.error("ledger commit failed after a successful rail call: %s", exc)
         reversal = await rail.reverse(instruction, outcome.reference)
+        # Rebuild from the pre-rail state: the rail has been reversed, so the
+        # debit must not be in what gets persisted, and the ROLLBACK receipt has
+        # to be, or the incident is invisible and a later turn re-sends against a
+        # ledger that never heard about it.
+        rolled_back = pre_rail
         receipt = _rejected(
-            ledger=ledger,
+            ledger=rolled_back,
             action="transfer",
             reasons=["ROLLBACK"],
             amount=amount,
@@ -440,12 +450,28 @@ async def execute_transfer(
                 f"asked to reverse it ({'ok' if reversal.ok else reversal.error})"
             ),
         )
+        # Keep the rail reference on the receipt, not only in a log line: this is
+        # the object the caller returns, audits and can reconcile from.
+        receipt.rail_reference = outcome.reference
+        rolled_back.remember_receipt(receipt)
+        try:
+            # Guarded: this is a second write to a store that just failed, so a
+            # failure here is expected rather than exceptional.
+            await store.save(rolled_back)
+        except Exception as save_exc:  # noqa: BLE001 - reconciliation, not a bug
+            logger.error(
+                "could not persist the rollback for %s (rail reference %s): %s. "
+                "The rail was asked to reverse it; reconcile from the reference.",
+                ledger.user_id,
+                outcome.reference,
+                save_exc,
+            )
         return TransferOutcome(
             receipt=receipt,
-            ledger=ledger,
+            ledger=rolled_back,
             audit=[
                 _audit(
-                    ledger=ledger,
+                    ledger=rolled_back,
                     receipt=receipt,
                     decision_id=decision_id,
                     trigger="system",

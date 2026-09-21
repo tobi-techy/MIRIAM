@@ -25,7 +25,7 @@ any other and settles nothing.
 import json
 import logging
 from collections.abc import AsyncGenerator
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -720,13 +720,31 @@ async def money_inflow(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="amount is required",
         )
+    # A payload that cannot be parsed is the caller's error, not ours. Without
+    # this it reached ``money`` inside the try below, raised InvalidOperation and
+    # came back as a 500 — which tells the rail the server failed and invites a
+    # retry of a payload that can never succeed.
+    try:
+        parsed_amount = money(amount)
+    except (InvalidOperation, TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="amount must be a number",
+        )
+    # A credit of nothing, or of a negative amount, is not a credit: it still
+    # wrote an executed receipt and skewed the 30-day inflow figure.
+    if not parsed_amount.is_finite() or parsed_amount <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="amount must be a positive number",
+        )
 
     orchestrator = _orchestrator_for(token)
     try:
         result = await orchestrator.handle_inflow(
             user.id,
             payment_id=payment_id,
-            amount=money(amount),
+            amount=parsed_amount,
             source_raw=source_raw,
         )
     except InsufficientState as exc:

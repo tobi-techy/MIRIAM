@@ -214,7 +214,14 @@ class Orchestrator:
             return await self.handle(
                 Event(type="confirm", user_id=user_id, confirm_id=confirm_id)
             )
-        return await self._decline_challenge(user_id, confirm_id)
+        # A decline goes through the ledger too, so it needs the same typed
+        # refusal as the rest: without this a ledger outage answered a tap with a
+        # 500 (and leaked the exception text down the SSE stream).
+        try:
+            return await self._decline_challenge(user_id, confirm_id)
+        except LedgerUnavailable:
+            logger.error("ledger unavailable for %s; refusing the decline", user_id)
+            return TurnResult(narration=UNAVAILABLE_LINE)
 
     # -- inflow -----------------------------------------------------------
 

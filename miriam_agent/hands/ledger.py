@@ -327,10 +327,12 @@ class InMemoryLedgerStore:
         return stored.model_copy(deep=True) if stored is not None else None
 
     async def save(self, ledger: Ledger) -> None:
+        # Equality, not "strictly newer": two writers can hold the same version,
+        # and a `>` check lets both through, so the second overwrites the first.
         stored = self._ledgers.get(ledger.user_id)
-        if stored is not None and stored.version > ledger.version:
+        if stored is not None and stored.version != ledger.version:
             raise LedgerConflictError(
-                f"ledger {ledger.user_id} moved on (stored v{stored.version} > "
+                f"ledger {ledger.user_id} moved on (stored v{stored.version} != "
                 f"v{ledger.version}); reload and retry"
             )
         ledger.touch()
@@ -413,21 +415,58 @@ class RedisLedgerStore:
             return await self._fallback.load(user_id)
         return Ledger.model_validate_json(raw)
 
+    # Compare-and-set, run by Redis as one atomic script.
+    #
+    # A GET-then-SET from the client is not enough: two writers can both read
+    # version N, both pass the check, and the later SET silently overwrites the
+    # earlier one — movements and idempotency keys included. This writes only
+    # when the stored version still equals the one the caller loaded, and returns
+    # the stored version when it does not (-1 means the write landed).
+    #
+    # A missing key counts as version 0, so two writers racing to create the same
+    # ledger cannot both win either.
+    _CAS = """
+local raw = redis.call('GET', KEYS[1])
+local stored_version = 0
+if raw then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if not ok or type(decoded) ~= 'table' or decoded.version == nil then
+    return -2
+  end
+  stored_version = tonumber(decoded.version) or 0
+end
+local expected = tonumber(ARGV[2])
+if stored_version ~= expected then
+  return stored_version
+end
+redis.call('SET', KEYS[1], ARGV[1])
+return -1
+"""
+
     async def save(self, ledger: Ledger) -> None:
         try:
             client = await self._client()
             key = f"{self._KEY}{ledger.user_id}"
-            raw = await client.get(key)
-            if raw is not None:
-                stored = Ledger.model_validate_json(raw)
-                if stored.version > ledger.version:
-                    raise LedgerConflictError(
-                        f"ledger {ledger.user_id} moved on (stored v"
-                        f"{stored.version} > v{ledger.version}); reload and retry"
-                    )
-            ledger.touch()
-            await client.set(key, ledger.model_dump_json())
+            expected = ledger.version
+            candidate = ledger.model_copy(update={"version": expected + 1})
+            stored_version = await client.eval(
+                self._CAS, 1, key, candidate.model_dump_json(), str(expected)
+            )
+            if stored_version == -2:
+                raise LedgerUnavailable(
+                    f"ledger {ledger.user_id} is stored in a form this code "
+                    "cannot read; refusing to overwrite it"
+                )
+            if stored_version != -1:
+                raise LedgerConflictError(
+                    f"ledger {ledger.user_id} moved on (stored v{stored_version} "
+                    f"!= v{expected}); reload and retry"
+                )
+            # Only now, once the write is known to have landed.
+            ledger.version = candidate.version
         except LedgerConflictError:
+            raise
+        except LedgerUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 - availability, not correctness
             if self.single_process:

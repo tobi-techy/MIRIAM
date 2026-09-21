@@ -21,6 +21,7 @@ import pathlib
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from layer_fakes import FakeProvider, jev, judge_of
 
@@ -564,3 +565,97 @@ def test_an_inflow_webhook_fails_retryably_when_the_ledger_is_unreachable(monkey
     )
     assert response.status_code == 503
     assert "unavailable" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# The inflow amount is a client-input boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["abc", {}, True, "nan", "1e400", 0, -5, "-100", []],
+    ids=[
+        "text",
+        "object",
+        "bool",
+        "nan",
+        "overflow",
+        "zero",
+        "negative",
+        "neg-str",
+        "list",
+    ],
+)
+def test_the_inflow_endpoint_rejects_an_amount_it_cannot_trust(monkeypatch, bad):
+    """A payload that cannot be parsed is the caller's error, not a 500.
+
+    A 500 tells the rail the server failed and invites it to retry a payload
+    that can never succeed. It also used to accept the classes that do not raise
+    on parse (``nan``) and the ones that are not a credit at all (zero, negative),
+    which still wrote an executed receipt.
+    """
+    ledger = _ledger(spendable="0")
+    _store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/money/inflow",
+        headers={"Authorization": "Bearer test-token"},
+        json={"payment_id": "pay_bad", "amount": bad},
+    )
+
+    assert response.status_code == 400, response.text
+    assert "amount" in response.json()["detail"]
+    assert rail.moves == []
+
+
+def test_a_good_amount_still_splits(monkeypatch):
+    """The guard must not have closed the door on a real credit."""
+    ledger = _ledger(spendable="0", rent_required="150000")
+    _store, _rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/money/inflow",
+        headers={"Authorization": "Bearer test-token"},
+        json={"payment_id": "pay_ok", "amount": "420000"},
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_a_missing_amount_is_still_its_own_error(monkeypatch):
+    """The original message survives: absent is not the same as unparseable."""
+    ledger = _ledger(spendable="0")
+    _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/money/inflow",
+        headers={"Authorization": "Bearer test-token"},
+        json={"payment_id": "pay_missing"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "amount is required"
+
+
+# ---------------------------------------------------------------------------
+# A decline needs the same typed refusal as everything else
+# ---------------------------------------------------------------------------
+
+
+def test_a_declined_tap_says_so_when_the_ledger_is_unreachable(monkeypatch):
+    """A decline touches the ledger, so an outage must not become a 500.
+
+    ``handle_confirm(yes=False)`` does not go through ``handle``, so it missed
+    the typed handling; the exception escaped as a 500 on /chat and as the raw
+    exception text in the stream's error frame.
+    """
+    _wire_unavailable_ledger(monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    payload = _post(client, {"confirm_id": "confirm_x", "yes": False, "message": ""})
+
+    assert payload["response"] == "I could not complete that. Try again."
+    assert payload["receipt"] is None
+    assert payload["confirm_id"] == ""

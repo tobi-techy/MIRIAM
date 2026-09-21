@@ -427,7 +427,15 @@ async def test_a_failed_commit_is_compensated_by_a_rail_reversal():
     assert outcome.receipt.status == "rejected"
     assert "ROLLBACK" in outcome.receipt.reasons
     assert rail.reversals, "the rail was asked to put the money back"
-    assert (await store.load("u1")).sleeves["spendable"] == money(50000)
+
+    # The persisted ledger must be the pre-rail state: the debit was taken back
+    # by the rail, so recording it would be a lie, and the ROLLBACK receipt must
+    # be there or the incident is invisible to a later turn.
+    persisted = await store.load("u1")
+    assert persisted.sleeves["spendable"] == money(50000)
+    assert persisted.receipts, "the rollback must be persisted, not just returned"
+    assert persisted.receipts[-1].reasons == ["ROLLBACK"]
+    assert persisted.receipt_for(outcome.receipt.idempotency_key) is not None
 
 
 async def test_the_ledger_rejects_a_stale_write():
@@ -530,3 +538,56 @@ def test_the_single_process_flag_defaults_off():
     settings = Settings(_env_file=None)
     assert settings.MONEY_SINGLE_PROCESS is False
     assert RedisLedgerStore().single_process is False
+
+
+async def test_two_writers_holding_the_same_version_cannot_both_win():
+    """A `>` check let both through, so the second save silently overwrote the
+    first -- movements and idempotency keys included. The guard is equality."""
+    store = await _seeded(ledger_with(spendable=1000))
+    first = await store.load("u1")
+    second = await store.load("u1")  # same version, before either writes
+
+    first.credit("spendable", money(500))
+    await store.save(first)
+
+    second.credit("spendable", money(1))
+    with pytest.raises(LedgerConflictError):
+        await store.save(second)
+
+    # The loser's write is not in the ledger.
+    assert (await store.load("u1")).sleeves["spendable"] == money(1500)
+
+
+async def test_a_write_that_lands_advances_the_callers_version():
+    """The caller's version moves only once the CAS has succeeded, so the next
+    save from the same object is not rejected as stale."""
+    store = await _seeded(ledger_with(spendable=1000))
+    ledger = await store.load("u1")
+
+    await store.save(ledger)
+    before = ledger.version
+
+    ledger.credit("spendable", money(10))
+    await store.save(ledger)  # must not conflict with its own last write
+
+    assert ledger.version == before + 1
+    assert (await store.load("u1")).sleeves["spendable"] == money(1010)
+
+
+async def test_the_rollback_receipt_carries_the_rail_reference():
+    """Reconciliation needs to name the rail movement that was reversed."""
+    ledger = ledger_with(spendable=50000)
+    store = _SaveFailsOnCommit()
+    store.seed(ledger)
+    rail = InMemoryRail()
+    state, _action = _authorised(ledger, "1500")
+
+    store.fail_next = True
+    outcome = await execute_transfer(
+        store=store, ledger=ledger, state=state, policy=POLICY, rail=rail
+    )
+
+    assert outcome.receipt.rail_reference, "the rollback must name the rail move"
+    # The same reference the rail was asked to reverse, so the reversed movement
+    # can be found on the rail's side.
+    assert outcome.receipt.rail_reference in rail.reversals
