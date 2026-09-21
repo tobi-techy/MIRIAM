@@ -70,11 +70,12 @@ def test_registry_builds():
     assert len(reg) > 0
     names = reg.list_names()
     assert "get_balance" in names
-    assert "send_money" in names
-    assert "pay_bill" in names
     assert len(reg.auto_execute_names()) > 0
-    assert len(reg.stage_confirm_names()) > 0
-    assert "pay_bill" in reg.stage_confirm_names()
+    # No money tool, and therefore nothing to stage: moving money is not a tool
+    # call any more, it goes through orchestrator -> hands.
+    assert "send_money" not in names
+    assert "pay_bill" not in names
+    assert reg.stage_confirm_names() == set()
 
 
 def test_registry_validates_required_args():
@@ -87,10 +88,10 @@ def test_registry_validates_required_args():
 
     async def _():
         try:
-            await reg.execute("send_money", {"to": "bob"})
+            await reg.execute("get_document_result", {})
             assert False, "should have raised"
         except ValidationError as e:
-            assert "amount" in str(e).lower()
+            assert "document_id" in str(e).lower()
 
     asyncio.get_event_loop().run_until_complete(_())
 
@@ -141,13 +142,18 @@ def test_agent_returns_final_answer_when_no_tools_called():
     async def _():
         result = await agent.run(user_id="u1", token="fake", message="how am I doing?")
         assert result.response == "Your balance looks solid."
-        assert result.requires_confirmation is False
         assert len(result.tool_calls) == 0
 
     asyncio.get_event_loop().run_until_complete(_())
 
 
-def test_agent_stages_money_action():
+def test_agent_cannot_stage_or_run_a_money_action():
+    """A model that asks for send_money is refused, and nothing is proposed.
+
+    This replaces the old staging test. The loop used to stage a money action and
+    wait for an approval; it now has no money tool to find and no approval path
+    to reach, so the only outcome is a refusal the model can answer around.
+    """
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.agents.llm import LLMResponse
     from miriam_agent.tools import build_tool_registry
@@ -170,6 +176,7 @@ def test_agent_stages_money_action():
                     }
                 ],
             ),
+            LLMResponse(content="I can't move money from chat.", model="mock"),
         ]
     )
     agent = Agent(registry=reg, provider=provider)
@@ -178,15 +185,16 @@ def test_agent_stages_money_action():
         result = await agent.run(
             user_id="u1", token="fake", message="send $150 to alice"
         )
-        assert result.requires_confirmation is True
-        assert len(result.proposed_actions) == 1
-        assert result.proposed_actions[0].tool_name == "send_money"
-        assert "150" in result.proposed_actions[0].display_summary
+        assert result.response == "I can't move money from chat."
+        # It was refused as a tool call, so it was recorded, and it never ran.
+        assert [c["name"] for c in result.tool_calls] == ["send_money"]
+        assert not hasattr(result, "requires_confirmation")
+        assert not hasattr(result, "proposed_actions")
 
     asyncio.get_event_loop().run_until_complete(_())
 
 
-def test_agent_stages_bill_payment():
+def test_agent_refuses_a_bill_payment_without_running_it():
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.agents.llm import LLMResponse
     from miriam_agent.tools import build_tool_registry
@@ -213,6 +221,7 @@ def test_agent_stages_bill_payment():
                     }
                 ],
             ),
+            LLMResponse(content="That needs the ledger, not a tool.", model="mock"),
         ]
     )
     agent = Agent(registry=reg, provider=provider)
@@ -221,11 +230,7 @@ def test_agent_stages_bill_payment():
         result = await agent.run(
             user_id="u1", token="fake", message="buy 1000 naira airtime"
         )
-        assert result.requires_confirmation is True
-        assert len(result.proposed_actions) == 1
-        assert result.proposed_actions[0].tool_name == "pay_bill"
-        summary = result.proposed_actions[0].display_summary
-        assert "airtime" in summary and "1000" in summary
+        assert [c["name"] for c in result.tool_calls] == ["pay_bill"]
 
     asyncio.get_event_loop().run_until_complete(_())
 
@@ -262,7 +267,6 @@ def test_agent_executes_readonly_tool_then_returns_answer():
         assert "$2,500" in result.response
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["name"] == "get_balance"
-        assert result.requires_confirmation is False
 
     asyncio.get_event_loop().run_until_complete(_())
 
@@ -321,15 +325,21 @@ def test_jwt_expiration_rejects():
         pass
 
 
-def test_rbac_blocks_mutation():
+def test_rbac_denies_an_unregistered_money_tool_to_every_role():
+    """`send_money` is not registered, so no role can reach it.
+
+    This used to assert that only a verified user could execute it. It is now
+    stronger: the tool is not in the registry at all, so RBAC has nothing to
+    grant, and even a verified caller is refused.
+    """
     from miriam_agent.auth.rbac import can_execute, require_tool_access
     from miriam_agent.core.exceptions import AuthorizationError
 
     assert can_execute({"user"}, "get_balance") is True
     assert can_execute({"user"}, "send_money") is False
-    assert can_execute({"verified"}, "send_money") is True
+    assert can_execute({"verified"}, "send_money") is False
     try:
-        require_tool_access({"user"}, "send_money")
+        require_tool_access({"verified"}, "send_money")
         assert False, "should have raised"
     except AuthorizationError:
         pass

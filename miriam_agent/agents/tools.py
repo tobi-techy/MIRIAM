@@ -206,6 +206,15 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         return tool
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool. Returns whether one was there.
+
+        Used to take money tools out of the live registry: the only writer of a
+        balance is ``miriam_agent.hands``, so a tool that calls a rail has no
+        business being reachable from a chat turn.
+        """
+        return self._tools.pop(name, None) is not None
+
     def get(self, name: str) -> Tool | None:
         """Look up a tool by name."""
         return self._tools.get(name)
@@ -223,7 +232,14 @@ class ToolRegistry:
         include_only: list[str] | None = None,
         exclude: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Return LLM-ready function schemas, optionally filtered."""
+        """Return LLM-ready function schemas, optionally filtered.
+
+        Read-only tools only, always. A mutation is never offered to a model,
+        regardless of what the registry happens to hold: the model's only job is
+        to answer, and ``hands/`` is the only thing that moves money. Filtering
+        here means a tool that writes a sleeve cannot be called even if someone
+        registers one by mistake.
+        """
         exclude = set(exclude or [])
         result = []
         for name in sorted(self._tools):
@@ -231,7 +247,10 @@ class ToolRegistry:
                 continue
             if name in exclude:
                 continue
-            result.append(self._tools[name].to_llm_schema())
+            tool = self._tools[name]
+            if tool.is_mutation or tool.requires_approval:
+                continue
+            result.append(tool.to_llm_schema())
         return result
 
     def auto_execute_names(self) -> set[str]:

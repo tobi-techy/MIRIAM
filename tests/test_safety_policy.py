@@ -1,13 +1,14 @@
-"""Regression tests for miriam_agent.safety.policy.SafetyPolicy.
+"""Tests for the read-tool boundary in ``miriam_agent.safety.policy``.
 
-Before this pass, `_get_recent_activities` always returned `[]`, which
-silently disabled every pattern check (multiple large transfers, new
-beneficiary, round-number transfers) and made real daily-limit enforcement
-impossible (there was nothing to sum). These tests prove those checks are
-now reachable and behave correctly, without requiring a real database --
-`_get_recent_activities` is monkeypatched directly so the tests stay fast
-and hermetic (the real audit-log wiring is exercised by running the app
-end-to-end, not by unit tests).
+This file used to cover the money allowlist, the daily and per-transaction
+limits, the fraud-pattern heuristics and the approval workflow. All of it is
+deleted, and so are those tests: the rules they covered were unreachable (the
+registry holds no money tool) and ``hands/limits.py`` owns the ceilings now. A
+test of a rule nobody enforces is a test that keeps dead code alive.
+
+What is left to test is what the policy actually does: it decides whether a read
+the agent loop wants to run is allowed, using the registry as the source of
+truth, and it refuses anything that writes.
 """
 
 from __future__ import annotations
@@ -15,317 +16,159 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
+
+# A mutation the live registry never holds, standing in for the money tools that
+# used to be registered here. The boundary denies a *registered* mutation, so
+# testing that needs one to deny. Deliberately not named like a real money tool:
+# ``build_tool_registry`` strips those by name.
+SYNTHETIC_MUTATION = "probe_mutation"
 
 
 def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-def test_limits_are_sourced_from_settings_not_hardcoded():
-    """Regression: limits used to be a separate hardcoded dict, disconnected
-    from config/settings.py."""
-    from miriam_agent.config.settings import get_settings
-    from miriam_agent.safety.policy import SafetyPolicy
+@contextmanager
+def synthetic_mutation() -> Iterator[None]:
+    """Register a mutation for the duration of a test, then remove it again.
 
-    settings = get_settings()
-    policy = SafetyPolicy()
-
-    assert policy.money_movement_limits["daily_limit"] == settings.MAX_DAILY_TRANSFER
-    assert (
-        policy.money_movement_limits["transaction_limit"]
-        == settings.MAX_TRANSACTION_AMOUNT
-    )
-
-
-def test_normal_single_transfer_is_allowed(monkeypatch):
-    """Regression guard: the new daily-limit math must not block ordinary,
-    low-volume activity."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    monkeypatch.setattr(policy, "_get_recent_activities", _fake_activities([]))
-
-    allowed = _run(
-        policy._check_limits({"amount": 50.0}, "u-1", financial_profile=None)
-    )
-    assert allowed is True
-
-
-def test_daily_limit_blocks_when_todays_total_would_be_exceeded(monkeypatch):
-    """A user who already moved close to their daily cap today must be
-    blocked from pushing over it, even though this single transaction is
-    well under the per-transaction limit."""
-    from miriam_agent.config.settings import get_settings
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    daily_limit = get_settings().MAX_DAILY_TRANSFER
-    already_spent_today = daily_limit - 10.0  # $10 of headroom left today
-    monkeypatch.setattr(
-        policy,
-        "_get_recent_activities",
-        _fake_activities([{"type": "transfer", "amount": already_spent_today}]),
-    )
-
-    allowed = _run(
-        policy._check_limits({"amount": 100.0}, "u-1", financial_profile=None)
-    )
-    assert allowed is False
-
-
-def test_multiple_large_transfers_pattern_now_fires(monkeypatch):
-    """Regression: with real recent activity, the rapid-large-transactions
-    pattern (previously permanently dead since recent_activities was always
-    []) must actually detect repeated large transfers.
-
-    The count and the size are separate knobs: the pattern needs
-    ``threshold`` transfers that are each at or above ``amount_floor``.
+    The registry is a process-wide singleton, so this restores it on the way out
+    rather than leaving a mutation behind for a later test to trip over.
     """
-    from miriam_agent.safety.policy import SafetyPolicy
+    from miriam_agent.agents.tools import RiskLevel, Tool, get_registry
 
-    policy = SafetyPolicy()
-    pattern = next(
-        p for p in policy.suspicious_patterns if p["name"] == "rapid_large_transactions"
-    )
-    count = int(pattern["threshold"])
-    floor = float(pattern["amount_floor"])
-    large_activities = [
-        {"type": "transfer", "amount": floor, "beneficiary": "x"} for _ in range(count)
-    ]
-    monkeypatch.setattr(
-        policy, "_get_recent_activities", _fake_activities(large_activities)
-    )
+    registry = get_registry()
 
-    detected = _run(
-        policy._detect_suspicious_patterns({}, "u-1", financial_profile=None)
-    )
-    assert detected is True
+    async def _handler(args, ctx):  # noqa: ANN001, ANN202
+        return {"ok": True}
 
-    # ...and it is the one pattern that may refuse an action outright.
-    blocking = _run(policy._blocking_pattern_fired({}, "u-1"))
-    assert blocking is True
-
-
-def test_ordinary_small_transfers_never_trip_the_velocity_pattern(monkeypatch):
-    """Regression: ``threshold`` doubled as the per-transfer size floor, so
-    three ordinary $3 sends read as "rapid large transactions" and denied the
-    user's next send. Small transfers must never be suspicious on size alone.
-    """
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    small_activities = [
-        {"type": "transfer", "amount": 3.0, "beneficiary": "x"} for _ in range(20)
-    ]
-    monkeypatch.setattr(
-        policy, "_get_recent_activities", _fake_activities(small_activities)
-    )
-
-    assert _run(policy._blocking_pattern_fired({}, "u-1")) is False
-    assert _run(policy._is_user_suspicious("u-1")) is False
-
-
-def test_new_beneficiary_pattern_is_advisory_not_blocking(monkeypatch):
-    """A first-time $3,000 transfer to a new recipient is what the pattern is
-    for -- it must be noticed, not hard-denied (that left no way to ever
-    establish a history with the recipient)."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    monkeypatch.setattr(policy, "_get_recent_activities", _fake_activities([]))
-
-    fired = _run(
-        policy._fired_patterns({"to": "new@rail.io", "amount": 3000.0}, "u-1")
-    )
-    assert "unusual_recipients" in fired
-    assert _run(policy._blocking_pattern_fired({"to": "new@rail.io", "amount": 3000.0}, "u-1")) is False
-
-
-def test_no_recent_activity_means_no_pattern_detected(monkeypatch):
-    """Regression guard: an empty (or unreachable-audit-log) history must
-    never itself be treated as suspicious."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    monkeypatch.setattr(policy, "_get_recent_activities", _fake_activities([]))
-
-    detected = _run(
-        policy._detect_suspicious_patterns({}, "u-1", financial_profile=None)
-    )
-    assert detected is False
-
-
-def test_pay_bill_allowed_and_uses_amount_ngn_for_limits(monkeypatch):
-    """The bill-pay door must be an approved money tool, and its NGN face
-    value must count toward per-transaction/daily caps like any other move."""
-    from miriam_agent.config.settings import get_settings
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    daily_limit = get_settings().MAX_DAILY_TRANSFER
-    already_paid = daily_limit - 10.0
-    monkeypatch.setattr(
-        policy,
-        "_get_recent_activities",
-        _fake_activities([{"type": "transfer", "amount": already_paid}]),
-    )
-
-    allowed = _run(policy._is_action_allowed("pay_bill"))
-    assert allowed is True
-
-    # A large payment that pushes over the daily cap is blocked even though
-    # its amount lives in amount_ngn, not amount.
-    blocked = _run(
-        policy._check_limits({"amount_ngn": 100.0}, "u-1", financial_profile=None)
-    )
-    assert blocked is False
-
-    # A small payment stays under the cap.
-    monkeypatch.setattr(policy, "_get_recent_activities", _fake_activities([]))
-    ok = _run(policy._check_limits({"amount_ngn": 50.0}, "u-1", financial_profile=None))
-    assert ok is True
-
-
-def _fake_activities(activities):
-    async def _fake(user_id, timeframe_hours=24, strict=False):
-        return activities
-
-    return _fake
-
-
-# -------------------------------------------------------------------------
-# Approval workflow + strict fail-closed limits
-# -------------------------------------------------------------------------
-
-
-def test_approval_workflow_thresholds_are_numeric_and_settings_sourced():
-    """Regression: required_for_large_amounts used to be the boolean True and
-    auto_approve was hardcoded (100.0) while settings.AUTO_APPROVE_THRESHOLD
-    went unused."""
-    from miriam_agent.config.settings import get_settings
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    settings = get_settings()
-    policy = SafetyPolicy()
-
-    assert (
-        policy.approval_workflow["required_for_large_amounts"]
-        == settings.APPROVAL_REQUIRED_ABOVE
-    )
-    assert (
-        policy.approval_workflow["auto_approve_below_threshold"]
-        == settings.AUTO_APPROVE_THRESHOLD
-    )
-    assert isinstance(
-        policy.approval_workflow["required_for_large_amounts"], (int, float)
-    )
-    assert not isinstance(
-        policy.approval_workflow["required_for_large_amounts"], bool
-    )
-
-
-def test_readonly_tool_never_requires_approval():
-    """Read-only tools used to be flagged "requires approval" because the
-    default tool risk (0.5) + user baseline (0.4) pinned them at critical."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-
-    requires = _run(
-        policy._requires_approval("get_balance", {}, "u-1", None, "critical")
-    )
-    assert requires is False
-
-
-def test_money_tool_requires_approval_from_amount_ngn():
-    """Bill pay carries its face value in amount_ngn; a large payment must be
-    flagged even with risk_level forced low."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-
-    requires = _run(
-        policy._requires_approval(
-            "pay_bill", {"amount_ngn": 5000.0}, "u-1", None, "low"
+    added = registry.get(SYNTHETIC_MUTATION) is None
+    if added:
+        registry.register(
+            Tool(
+                name=SYNTHETIC_MUTATION,
+                description="test-only mutation",
+                args_schema={"type": "object", "properties": {}},
+                handler=_handler,
+                category="test",
+                risk_level=RiskLevel.MEDIUM,
+                is_mutation=True,
+                requires_approval=True,
+                allow_auto_execute=False,
+            )
         )
-    )
-    assert requires is True
+    try:
+        yield
+    finally:
+        if added:
+            registry.unregister(SYNTHETIC_MUTATION)
 
 
-def test_validate_action_denies_unapproved_money_and_allows_approved(monkeypatch):
-    """The approval policy used to only log and still let the action through;
-    now an action that requires approval is denied without an approved flag."""
+# ---------------------------------------------------------------------------
+# Reads are allowed
+# ---------------------------------------------------------------------------
+
+
+def test_a_registered_read_is_allowed():
     from miriam_agent.safety.policy import SafetyPolicy
 
     policy = SafetyPolicy()
-    monkeypatch.setattr(policy, "_get_recent_activities", _fake_activities([]))
+    for name in ("get_balance", "get_transactions", "get_money_plan"):
+        assert _run(policy.validate_action(name, {}, "u-1")) is True, name
 
-    denied = _run(
-        policy.validate_action(
-            tool_name="send_money",
-            arguments={"to": "alice@rail.io", "amount": 10.0},
-            user_id="u-1",
-            financial_profile=None,
-        )
-    )
-    assert denied is False
 
+def test_the_full_call_signature_is_accepted():
+    """The agent loop passes user_id and financial_profile; both must be fine."""
+    from miriam_agent.safety.policy import SafetyPolicy
+
+    policy = SafetyPolicy()
     allowed = _run(
-        policy.validate_action(
-            tool_name="send_money",
-            arguments={"to": "alice@rail.io", "amount": 10.0},
-            user_id="u-1",
-            financial_profile=None,
-            approved=True,
-        )
-    )
-    assert allowed is True
-
-    # Read-only tools stay allowed without approval.
-    read_ok = _run(
         policy.validate_action(
             tool_name="get_balance",
             arguments={},
             user_id="u-1",
-            financial_profile=None,
+            financial_profile={"name": "Test"},
         )
     )
-    assert read_ok is True
+    assert allowed is True
 
 
-def test_daily_limit_fails_closed_when_activity_lookup_fails(monkeypatch):
-    """If the audit trail cannot be read, the daily-limit check must DENY
-    (fail-closed) rather than treat the outage as "no activity today"."""
+# ---------------------------------------------------------------------------
+# Anything that writes is refused
+# ---------------------------------------------------------------------------
+
+
+def test_an_unregistered_tool_is_refused():
     from miriam_agent.safety.policy import SafetyPolicy
 
     policy = SafetyPolicy()
-
-    async def _boom(user_id, timeframe_hours=24, strict=False):
-        raise RuntimeError("audit db down")
-
-    monkeypatch.setattr(policy, "_get_recent_activities", _boom)
-
-    allowed = _run(policy._check_limits({"amount": 10.0}, "u-1", None))
-    assert allowed is False
+    assert _run(policy.validate_action("nonexistent_tool", {}, "u-1")) is False
 
 
-def test_new_beneficiary_pattern_fires_for_send_money_to_field():
-    """send_money carries the recipient in `to`, not destination_account; the
-    pattern check must see it or the safeguard never fires on real sends."""
+def test_a_money_tool_is_refused_by_absence():
+    """No money tool is registered, so the boundary has nothing to allow."""
+    from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
     from miriam_agent.safety.policy import SafetyPolicy
 
     policy = SafetyPolicy()
-    pattern = next(
-        p for p in policy.suspicious_patterns if p["name"] == "unusual_recipients"
-    )
-    detected = _run(
-        policy._check_new_beneficiary_unusual_amount(
-            pattern,
-            {"to": "new@rail.io", "amount": 3000.0},
-            [],
+    for name in sorted(MONEY_TOOL_NAMES):
+        assert _run(policy.validate_action(name, {}, "u-1")) is False, name
+
+
+def test_a_registered_mutation_is_refused():
+    """Broader than the name list: a tool that writes is refused however named."""
+    from miriam_agent.safety.policy import SafetyPolicy
+
+    policy = SafetyPolicy()
+    with synthetic_mutation():
+        assert _run(policy.validate_action(SYNTHETIC_MUTATION, {}, "u-1")) is False
+
+
+# ---------------------------------------------------------------------------
+# Blocked content in a read's arguments
+# ---------------------------------------------------------------------------
+
+
+def test_blocked_content_in_arguments_is_refused():
+    from miriam_agent.safety.policy import SafetyPolicy
+
+    policy = SafetyPolicy()
+    for arguments in (
+        {"description": "pay a scam invoice"},
+        {"category": "fraud"},
+        {"description": "something ILLEGAL"},
+    ):
+        allowed = _run(policy.validate_action("get_balance", arguments, "u-1"))
+        assert allowed is False, arguments
+
+
+def test_ordinary_arguments_are_not_blocked():
+    from miriam_agent.safety.policy import SafetyPolicy
+
+    policy = SafetyPolicy()
+    allowed = _run(
+        policy.validate_action(
+            "get_transactions", {"category": "groceries", "limit": 20}, "u-1"
         )
     )
-    assert detected is True
+    assert allowed is True
+
+
+def test_the_policy_holds_no_money_data():
+    """The lists it used to load are gone; only content policy remains."""
+    from miriam_agent.safety.policy import BLOCKED_CATEGORIES, SafetyPolicy
+
+    policy = SafetyPolicy()
+    assert policy.blocked_categories == BLOCKED_CATEGORIES
+    for gone in (
+        "money_movement_limits",
+        "suspicious_patterns",
+        "approval_workflow",
+        "risk_scores",
+    ):
+        assert not hasattr(policy, gone), gone

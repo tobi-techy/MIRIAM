@@ -1,86 +1,135 @@
-"""The canonical money-tool set must stay in sync with the tool registry.
+"""The live registry must hold no writer of a balance, and no money rule may
+live anywhere but ``hands/``.
 
-``safety/money_tools.py`` is the single source of truth that the safety policy
-allowlist, the audit-detail filter and the daily-limit filter all read. It is
-curated rather than derived (so a newly registered mutation cannot silently
-inherit money-movement privileges), which means the two can drift -- and they
-did: the automation and scheduled-investment mutations were gated for approval
-but missing from the audit and limit lists, so their amounts were never
-recorded.
+``safety/money_tools.py`` is the single source of truth for one narrow question:
+"is this tool name one of the money family?" The answer is used to strip those
+names out of the live registry and to refuse one a model asks for.
 
-These tests make that drift impossible in either direction.
+Money is not a tool. ``hands/`` is the only writer of a balance and
+``orchestrator.py`` is the only way in, so the tests here enforce absence, which
+is the strongest form available.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-import sys
+import pathlib
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
+import pytest
 
-from miriam_agent.safety.money_tools import MONEY_TOOLS, TRANSFER_TOOLS  # noqa: E402
-from miriam_agent.tools import build_tool_registry  # noqa: E402
+from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES, is_money_tool
+from miriam_agent.tools import build_tool_registry
 
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+ROOT = pathlib.Path(__file__).resolve().parents[1] / "miriam_agent"
 
 
-def _registered_mutations() -> set[str]:
+# ---------------------------------------------------------------------------
+# The registry
+# ---------------------------------------------------------------------------
+
+
+def test_the_live_registry_holds_no_money_tool():
+    """The strongest statement of the invariant: they are not there to call."""
     registry = build_tool_registry()
-    return {
+    assert sorted(set(registry.list_names()) & MONEY_TOOL_NAMES) == []
+
+
+def test_the_live_registry_holds_no_mutation_at_all():
+    """Broader than the name list: nothing that writes backend state is offered."""
+    registry = build_tool_registry()
+    mutations = [
         tool.name for tool in registry if tool.is_mutation or tool.requires_approval
-    }
+    ]
+    assert mutations == []
 
 
-def test_canonical_set_matches_the_registry_exactly():
-    """A new mutation tool with no entry here (or a stale entry) fails the suite."""
-    registered = _registered_mutations()
-    assert registered == set(MONEY_TOOLS), (
-        f"missing from MONEY_TOOLS: {sorted(registered - set(MONEY_TOOLS))}; "
-        f"not registered: {sorted(set(MONEY_TOOLS) - registered)}"
-    )
-
-
-def test_every_canonical_tool_is_fully_gated():
-    """Being in MONEY_TOOLS means: staged, approval-required, never auto-run."""
+def test_no_mutation_is_ever_offered_to_a_model():
+    """``llm_schemas`` is the model's whole surface, so this is the real check."""
     registry = build_tool_registry()
-    for name in sorted(MONEY_TOOLS):
+    offered = {schema["function"]["name"] for schema in registry.llm_schemas()}
+    assert offered & MONEY_TOOL_NAMES == set()
+    for name in offered:
         tool = registry.get(name)
-        assert tool is not None, f"{name} is not registered"
-        assert tool.is_mutation, f"{name} must be marked a mutation"
-        assert tool.requires_approval, f"{name} must require approval"
-        assert not tool.allow_auto_execute, f"{name} must never auto-execute"
-        assert tool.risk_level.value in {"medium", "high", "critical"}, name
+        assert tool is not None
+        assert not tool.is_mutation and not tool.requires_approval, name
 
 
-def test_transfer_tools_are_a_subset_of_money_tools():
-    """Anything counted toward transfer limits must also be gated."""
-    assert TRANSFER_TOOLS <= MONEY_TOOLS
-
-
-def test_every_canonical_tool_passes_the_policy_allowlist():
-    """The policy allowlist reads MONEY_TOOLS, so none may be denied outright."""
-    from miriam_agent.safety.policy import SafetyPolicy
-
-    policy = SafetyPolicy()
-    for name in sorted(MONEY_TOOLS):
-        assert _run(policy._is_action_allowed(name)) is True, name
-
-
-def test_read_only_tools_are_not_in_the_canonical_set():
-    """The gate must not spread to reads (that would need approval to check a
-    balance)."""
+def test_read_only_tools_are_still_offered():
+    """The filter must not have removed the reads the agent answers from."""
     registry = build_tool_registry()
-    read_only = {
-        tool.name
-        for tool in registry
-        if not tool.is_mutation and not tool.requires_approval
-    }
-    assert not (read_only & set(MONEY_TOOLS))
+    offered = {schema["function"]["name"] for schema in registry.llm_schemas()}
+    assert {"get_balance", "get_transactions"} <= offered
+    # The money *plan* is a read: it computes advice and calls no rail.
+    assert "get_money_plan" in offered
+
+
+def test_the_forbidden_set_covers_the_names_the_design_names():
+    """A regression guard on the list itself, so a rename cannot slip past it."""
+    for name in (
+        "send_money",
+        "transfer",
+        "split",
+        "invest",
+        "unlock",
+        "lock",
+        "change_track",
+    ):
+        assert is_money_tool(name), name
+
+
+# ---------------------------------------------------------------------------
+# The rules live in one place
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["safety/policy.py", "agents/agent_loop.py", "api/chat.py"],
+)
+def test_no_money_rule_survives_outside_hands(module):
+    """No limits, no allowlist, no approval step, outside ``hands/``.
+
+    The second implementation is what drifts. ``hands/limits.py`` owns the
+    ceilings, ``hands/ledger.py`` owns the balances, and every other module
+    either routes to them or reads the result.
+    """
+    source = (ROOT / module).read_text()
+    for rule in (
+        "MAX_DAILY_TRANSFER",
+        "MAX_TRANSACTION_AMOUNT",
+        "money_movement_limits",
+        "approval_workflow",
+        "requires_approval(",
+        "suspicious_patterns",
+    ):
+        assert rule not in source, f"{module} still holds {rule}"
+
+
+def test_the_policy_module_holds_no_money_vocabulary():
+    """The one file this PR gutted, checked for the words it used to hold."""
+    source = (ROOT / "safety" / "policy.py").read_text()
+    for gone in (
+        "MONEY_TOOLS",
+        "TRANSFER_TOOLS",
+        "high_risk_daily_limit",
+        "daily_limit",
+        "transaction_limit",
+        "amount_ngn",
+        "suspicious",
+    ):
+        assert gone not in source, gone
+
+
+def test_no_module_outside_hands_decides_a_limit():
+    """``hands/limits.py`` is the only place a cap is computed."""
+    offenders = []
+    for path in ROOT.rglob("*.py"):
+        if "hands" in path.parts or "money" in path.parts:
+            continue
+        source = path.read_text()
+        if "affordable_cap" in source or "evaluate_limits" in source:
+            offenders.append(str(path.relative_to(ROOT)))
+    # The orchestrator and the API may route to Hands, but must not compute one.
+    for name in offenders:
+        source = (ROOT / name).read_text()
+        assert "def affordable_cap" not in source, name
+        assert "daily_limit" not in source, name

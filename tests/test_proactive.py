@@ -1,8 +1,7 @@
 """Tests for the proactive analyst and the tool-loop safety fix.
 
 Covered:
-  - SafetyPolicy allowlist matches the LIVE registry (phantom legacy names
-    are rejected, real money tools allowed)
+  - SafetyPolicy allows every live read and no money tool)
   - The agent loop's _safe_execute passes financial_profile and honors the
     policy boolean (no more TypeError on every tool call)
   - Analyst JSON parsing / normalization
@@ -34,80 +33,31 @@ def _run(coro):
 # -----------------------------------------------------------------------
 
 
-def test_safety_policy_allowlist_matches_live_registry():
+def test_safety_policy_allows_every_read_and_no_money_tool():
+    """The boundary, against the live registry.
+
+    The policy used to hold the money allowlist. It does not any more: it decides
+    whether a read may run, and it refuses anything that is not a registered
+    read. So the assertion is two-sided: every read-only tool is allowed, and no
+    money tool is.
+    """
+    from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
     from miriam_agent.safety.policy import SafetyPolicy
     from miriam_agent.tools import build_tool_registry
 
     registry = build_tool_registry()
-    registry_names = set(registry.list_names())
     policy = SafetyPolicy()
 
     async def allowed(name: str) -> bool:
-        return await policy._is_action_allowed(name)
+        return await policy.validate_action(name, {}, "u-1")
 
-    # Every read-only live tool is allowed.
-    read_only = {
-        "get_balance",
-        "get_transactions",
-        "get_spending_summary",
-        "analyze_portfolio",
-        "get_financial_plan",
-        "budget_advice",
-        "search_memory",
-        "lookup_recipient",
-        "list_automations",
-        "list_obligations",
-        "list_scheduled_investments",
-        "list_bill_beneficiaries",
-        "get_cash_flow_forecast",
-        "get_financial_health",
-        "get_portfolio",
-        "get_positions",
-        "get_asset",
-        "search_assets",
-        "get_strategy",
-        "list_strategies",
-        "get_rebalance_preview",
-        "get_investment_limits",
-        "list_executions",
-        "get_execution",
-        "get_execution_status",
-        "list_audit_events",
-        "get_investor",
-        "get_investor_activity",
-        "list_investors",
-    }
-    assert read_only <= registry_names
-    for name in read_only:
-        assert _run(allowed(name)) is True, name
+    for tool in registry:
+        assert _run(allowed(tool.name)) is True, tool.name
 
-    # Live money / lasting-behavior tools are allowed (staged + idempotent + RBAC).
-    for name in {
-        "send_money",
-        "transfer_stash_to_spending",
-        "transfer_spending_to_stash",
-        "create_automation",
-        "update_automation",
-        "delete_automation",
-        "create_scheduled_investment",
-        "pause_scheduled_investment",
-        "resume_scheduled_investment",
-        "create_obligation",
-        "mark_obligation_paid",
-        "save_bill_beneficiary",
-        "create_strategy",
-        "update_strategy",
-        "enroll_strategy",
-        "pause_strategy",
-        "resume_strategy",
-        "rebalance_strategy",
-        "buy_asset",
-        "sell_asset",
-        "set_allocation",
-    }:
-        assert _run(allowed(name)) is True, name
+    for name in sorted(MONEY_TOOL_NAMES):
+        assert _run(allowed(name)) is False, name
 
-    # Legacy phantom names must be denied (they don't exist anymore).
+    # Legacy phantom names were never registered and stay denied.
     for name in (
         "transfer_funds",
         "withdraw_funds",
@@ -116,7 +66,6 @@ def test_safety_policy_allowlist_matches_live_registry():
     ):
         assert _run(allowed(name)) is False, name
 
-    # Unknown tools are denied.
     assert _run(allowed("nonexistent_tool")) is False
 
 
@@ -226,7 +175,8 @@ def test_agent_loop_runs_readonly_tool_without_typeerror(monkeypatch):
         )
 
     result = _run(run())
-    assert not result.requires_confirmation
+    # Nothing about this turn can be a confirmation: the loop has no money path.
+    assert result.tool_calls
     # The money of the test: the tool ran (its result was fed back) rather
     # than erroring with TypeError inside _safe_execute or being blocked by
     # the safety policy. A blocked call would never reach the handler.
