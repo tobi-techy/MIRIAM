@@ -374,11 +374,12 @@ class OnboardingTurn:
     share: dict[str, Any] | None = None
 
     def to_payload(self, conversation_id: str) -> dict[str, Any]:
+        # No `requires_confirmation` and no `cards`: that approval-card protocol
+        # is deleted, and onboarding never moved money anyway. A money turn is a
+        # different response shape entirely (see api/chat._serialize_money_result).
         return {
             "response": self.response,
             "conversation_id": self.conversation_id or conversation_id,
-            "requires_confirmation": False,
-            "cards": [],
             "poll": self.poll,
             "onboarding": {
                 "stage": self.stage,
@@ -533,9 +534,7 @@ class OnboardingService:
         # handing these to the agent and resuming afterwards is the only correct
         # answer. Poll votes stay in the flow -- a tap on "Yes, send it now" is a
         # statement answer, not a transfer.
-        if not is_poll_vote and (
-            _wants_money_action(text) or _asks_for_own_data(text)
-        ):
+        if not is_poll_vote and (_wants_money_action(text) or _asks_for_own_data(text)):
             return OnboardingTurn(conversation_id=conversation_id)
 
         if state is None:
@@ -1138,7 +1137,10 @@ class OnboardingService:
             if title.strip():
                 # Log for debugging empty title issues
                 import logging as _logging
-                _logging.getLogger(__name__).info("poll created title=%r options=%r", title, list(outcome.suggested))
+
+                _logging.getLogger(__name__).info(
+                    "poll created title=%r options=%r", title, list(outcome.suggested)
+                )
                 poll = {"title": title.strip(), "options": list(outcome.suggested)}
         return OnboardingTurn(
             took_over=True,

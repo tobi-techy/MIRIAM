@@ -92,11 +92,23 @@ class Settings(BaseSettings):
     # Safety
     MAX_DAILY_TRANSFER: float = Field(default=10000.0)
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
-    AUTO_APPROVE_THRESHOLD: float = Field(default=100.0)
-    # Server-side pending-confirmation ledger values: money actions above this
-    # amount (in any of amount/amount_ngn/amount_usd) must be covered by a
-    # staged confirmation record before the Go side is ever asked to move money.
-    APPROVAL_REQUIRED_ABOVE: float = Field(default=2000.0)
+    # The ceiling above which a money movement needs the user's confirmation.
+    # Read by ``hands/limits.Policy.from_settings`` as max_auto; it is the only
+    # consumer. There is no client-side or tool-side approval step.
+    #
+    # Zero, deliberately, and it should stay zero until the inflow webhook has
+    # been right in production for a while: at zero nothing moves without a tap,
+    # because every movement is above the ceiling and so becomes a challenge.
+    # Raise it once Miriam's ledger has been shown to track Go's credits exactly,
+    # since the ceiling is what lets her act on her own.
+    APPROVAL_REQUIRED_ABOVE: float = Field(default=0.0)
+
+    # Whether this deployment runs exactly one process. Money turns read the
+    # ledger from Redis; with more than one worker, falling back to process
+    # memory during an outage would give the same user two ledgers. Leave this
+    # off unless the service really is a single instance, in which case a Redis
+    # outage degrades to an in-process ledger instead of refusing every turn.
+    MONEY_SINGLE_PROCESS: bool = Field(default=False)
 
     # TypeSafe judgment layer (System One). A typed decision layer that runs
     # in front of the generator: the ingress gate classifies the turn and
@@ -125,6 +137,15 @@ class Settings(BaseSettings):
     PROACTIVE_MIN_INTERVAL_HOURS: float = Field(default=12.0)
     PROACTIVE_MAX_TOKENS: int = Field(default=700)
     PROACTIVE_TEMPERATURE: float = Field(default=0.4)
+
+    # Miriam's three money layers (hands -> judgment -> voice), reached through
+    # orchestrator.py. On means a money turn is routed to the orchestrator
+    # instead of the agent loop, which is the only path that can move money.
+    #
+    # Turning this off does NOT restore the old writer: the money tools are not
+    # in the live registry either way, so the agent loop cannot reach a rail
+    # whichever way the flag is set. The flag decides routing, never authority.
+    MONEY_LAYERS_ENABLED: bool = Field(default=True)
 
     # Conversational onboarding: the LLM-led financial interview the Python
     # brain runs before the general agent. Miriam (the LLM) carries the whole

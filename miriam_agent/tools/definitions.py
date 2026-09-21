@@ -1,8 +1,13 @@
 """Tool definitions for Miriam Financial Agent.
 
-Each tool maps to a capability the agent exposes. Read-only tools fetch
-data (from Go backend) and analyze it (in Python). Money-movement tools
-delegate to the Go backend after staged confirmation.
+Each tool maps to a capability the agent exposes. Read-only tools fetch data
+(from Go backend) and analyze it (in Python).
+
+The money-movement tools at the bottom are registered here and then removed
+again by ``build_tool_registry``, because nothing may reach a rail from a chat
+turn. They are kept as the definition site of the names that
+``safety/money_tools.py`` forbids, so a reader can see what is being denied and
+find the Go endpoint it used to call. Nothing executes them.
 
 Handlers receive their declared args plus a ``_context`` dict injected by
 the ToolRegistry containing at minimum ``user_id`` and ``token``.
@@ -13,6 +18,7 @@ from typing import Any
 from miriam_agent.agents.tools import RiskLevel, get_registry
 from miriam_agent.core.exceptions import ValidationError
 from miriam_agent.integrations.go_client import get_go_client
+from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
 
 T = Any  # placeholder, replaced with real Context protocol in wiring
 
@@ -27,7 +33,10 @@ _SCHEMA_MONEY = {"type": "number", "exclusiveMinimum": 0}
 # Opaque backend identifiers. Constrained so an id can never be interpolated
 # into a Go URL path as a traversal (``../../admin``) or smuggle a query
 # separator; every id is embedded in a path by integrations/go_client.py.
-_SCHEMA_ID = {"type": "string", "pattern": "^(?=.*[A-Za-z0-9_:-])[A-Za-z0-9_.:-]{1,64}$"}
+_SCHEMA_ID = {
+    "type": "string",
+    "pattern": "^(?=.*[A-Za-z0-9_:-])[A-Za-z0-9_.:-]{1,64}$",
+}
 
 registry = get_registry()
 
@@ -200,7 +209,7 @@ registry.register(
 
 
 # ---------------------------------------------------------------------------
-# Money movement (staged for confirmation)
+# Money movement. Registered, then stripped: see build_tool_registry.
 # ---------------------------------------------------------------------------
 
 
@@ -747,9 +756,7 @@ registry.register(
     description="Mark an obligation as paid. Requires confirmation.",
     args_schema={
         "type": "object",
-        "properties": {
-            "id": {**_SCHEMA_ID, "description": "Obligation id"}
-        },
+        "properties": {"id": {**_SCHEMA_ID, "description": "Obligation id"}},
         "required": ["id"],
     },
     category="planning",
@@ -986,7 +993,9 @@ async def _get_deposit_details(
         errors.append(f"crypto deposit lookup failed: {e}")
     if isinstance(crypto, dict) and crypto.get("_tool_error"):
         errors.append(str(crypto["_tool_error"]))
-    if isinstance(crypto, dict) and (crypto.get("address") or crypto.get("deposit_address")):
+    if isinstance(crypto, dict) and (
+        crypto.get("address") or crypto.get("deposit_address")
+    ):
         return {
             "currency": crypto.get("currency") or "USDC",
             "rail": "crypto",
@@ -1344,5 +1353,18 @@ registry.register(
 
 
 def build_tool_registry() -> Any:
-    """Return the fully-populated default registry."""
+    """Return the live registry: read-only tools only.
+
+    Every money tool is removed here, after the definition modules have
+    registered it. The only thing that moves money is ``miriam_agent.hands``,
+    reached through ``orchestrator.py``; a chat turn must not be able to reach a
+    rail at all, so the tool that would call one is not in the registry the
+    agent loop reads from.
+
+    ``miriam_agent/tools/__init__.py`` imports the definition modules for their
+    registration side effects, so the removal has to happen after that import
+    rather than by not importing.
+    """
+    for name in sorted(MONEY_TOOL_NAMES):
+        registry.unregister(name)
     return registry

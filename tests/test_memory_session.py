@@ -150,8 +150,9 @@ def test_guest_chat_reaches_onboarding_and_persists(
     payload = response.json()
     assert payload["response"] == turn.response
     assert payload["onboarding"]["stage"] == "interview"
-    assert payload["cards"] == []
-    assert payload["requires_confirmation"] is False
+    # The approval-card protocol is deleted; onboarding carries neither key.
+    assert "cards" not in payload
+    assert "requires_confirmation" not in payload
     handle.assert_awaited_once()
     assert handle.await_args.args[0].roles == ["guest"]
     assert handle.await_args.kwargs["is_poll_vote"] is is_poll_vote

@@ -299,9 +299,7 @@ class InputValidator:
         for keyword in self.blocked_keywords:
             if _normalise_for_matching(keyword) in normalised:
                 return True
-        return any(
-            re.search(pattern, normalised) for pattern in _INJECTION_PATTERNS
-        )
+        return any(re.search(pattern, normalised) for pattern in _INJECTION_PATTERNS)
 
     def _validate_amount(self, value: Any) -> list[str]:
         """Validate monetary amount."""
@@ -708,8 +706,8 @@ class InputValidator:
         (consistent with how the rest of the app treats a degraded
         dependency). That is a deliberate availability trade-off, and it is
         why rate limiting is not a money control -- moving money relies on
-        the staged confirmation ledger and the account limits instead, neither
-        of which degrades on a Redis outage.
+        ``hands/`` instead, which reads the ledger, checks the limits and needs a
+        typed decision, and does not consult this limiter at all.
         """
         limit, window = self.RATE_LIMITS.get(action, (60, 60))
         key = f"ratelimit:{user_id}:{action}"

@@ -51,11 +51,27 @@ def test_clean_text_empty_pass_through():
     assert clean_text(None) is None  # type: ignore[arg-type]
 
 
+class _StubProvider:
+    """A provider that is never called. Constructing a real one needs an API key,
+    which these tests do not exercise."""
+
+    model = "stub"
+
+    async def complete(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("the decorator tests must not call a model")
+
+    async def stream(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("the decorator tests must not call a model")
+
+    def cost_estimate(self, usage):  # noqa: ANN001, ANN202
+        return 0.0
+
+
 def test_agent_decorate_scrubs_em_dashes_from_response():
     from miriam_agent.agents.agent_loop import Agent, AgentRunResult
     from miriam_agent.agents.tools import get_registry
 
-    agent = Agent(registry=get_registry())
+    agent = Agent(registry=get_registry(), provider=_StubProvider())
     result = agent._decorate(
         AgentRunResult(response="That went well—really well", conversation_id="c")
     )
@@ -63,19 +79,20 @@ def test_agent_decorate_scrubs_em_dashes_from_response():
     assert all("—" not in m for m in result.messages)
 
 
-def test_agent_decorate_scrubs_confirmation_response():
+def test_agent_decorate_scrubs_em_dashes_from_a_long_reply():
+    """A wall of text is split into bubbles, and every bubble is scrubbed."""
     from miriam_agent.agents.agent_loop import Agent, AgentRunResult
     from miriam_agent.agents.tools import get_registry
 
-    agent = Agent(registry=get_registry())
+    agent = Agent(registry=get_registry(), provider=_StubProvider())
     result = agent._decorate(
         AgentRunResult(
-            response="Confirm — send 5k",
+            response="Rent is due—soon. Here is the rest—of it.",
             conversation_id="c",
-            requires_confirmation=True,
         )
     )
     assert "—" not in result.response
+    assert all("—" not in m for m in result.messages)
 
 
 def test_system_prompt_has_no_em_dash():
