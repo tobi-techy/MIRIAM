@@ -20,6 +20,12 @@ from miriam_agent.core.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
+# Settlement binding headers. Persisted on every Python receipt and sent with
+# every rail mutation, so Go can enforce confirm_id binding without another
+# Python rewrite even if it is not ready to check them yet.
+CONFIRM_ID_HEADER = "X-Miriam-Confirm-Id"
+RECEIPT_ID_HEADER = "X-Miriam-Receipt-Id"
+
 # Statuses worth retrying: the request never reached the business logic, or
 # the backend was shedding load.
 _RETRYABLE_STATUS = {429, 502, 503, 504}
@@ -302,6 +308,8 @@ class GoBackendClient:
         amount: float,
         message: str | None = None,
         idempotency_key: str | None = None,
+        confirm_id: str | None = None,
+        receipt_id: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "identifier": recipient,
@@ -309,18 +317,37 @@ class GoBackendClient:
             "note": message,
             "idempotencyKey": idempotency_key,
         }
+        if confirm_id:
+            payload["confirm_id"] = confirm_id
+        if receipt_id:
+            payload["receipt_id"] = receipt_id
         return await self._token_post(
-            "/api/v1/p2p/send", token, payload, idempotency_key=idempotency_key
+            "/api/v1/p2p/send",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=_binding_headers(confirm_id, receipt_id),
         )
 
     async def transfer_to_stash(
-        self, token: str, amount: float, idempotency_key: str | None = None
+        self,
+        token: str,
+        amount: float,
+        idempotency_key: str | None = None,
+        confirm_id: str | None = None,
+        receipt_id: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if confirm_id:
+            payload["confirm_id"] = confirm_id
+        if receipt_id:
+            payload["receipt_id"] = receipt_id
         return await self._token_post(
             "/api/v1/funding/stash/from-spending",
             token,
-            {"amount": str(amount)},
+            payload,
             idempotency_key=idempotency_key,
+            extra_headers=_binding_headers(confirm_id, receipt_id),
         )
 
     async def transfer_to_spending(
@@ -619,6 +646,7 @@ class GoBackendClient:
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Perform an authenticated Go call, with bounded retries.
 
@@ -634,6 +662,8 @@ class GoBackendClient:
         headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if extra_headers:
+            headers.update(extra_headers)
 
         last_error: Exception | None = None
         for attempt in range(attempts + 1):
@@ -684,6 +714,7 @@ class GoBackendClient:
         payload: dict[str, Any],
         *,
         idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         return await self._request_json(
             "POST",
@@ -691,6 +722,7 @@ class GoBackendClient:
             token=token,
             payload=payload,
             idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
         )
 
     async def _token_patch(
@@ -709,6 +741,18 @@ class GoBackendClient:
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return await self._request_json(method, path, token=token, payload=payload)
+
+
+def _binding_headers(
+    confirm_id: str | None, receipt_id: str | None
+) -> dict[str, str]:
+    """Settlement binding headers for a rail mutation."""
+    headers: dict[str, str] = {}
+    if confirm_id:
+        headers[CONFIRM_ID_HEADER] = confirm_id
+    if receipt_id:
+        headers[RECEIPT_ID_HEADER] = receipt_id
+    return headers
 
 
 def _as_list(data: Any, key: str) -> list[dict[str, Any]]:

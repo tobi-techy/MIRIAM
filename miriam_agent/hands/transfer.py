@@ -44,7 +44,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TransferInstruction:
-    """One movement, described for a rail. Immutable on purpose."""
+    """One movement, described for a rail. Immutable on purpose.
+
+    ``confirm_id``/``receipt_id`` ride along so Go can bind the settlement to
+    the challenge that authorised it. Sent as X-Miriam-Confirm-Id /
+    X-Miriam-Receipt-Id where the client supports extra headers, and always
+    persisted on the receipt.
+    """
 
     user_id: str
     amount: Decimal
@@ -53,6 +59,8 @@ class TransferInstruction:
     sleeve: str
     idempotency_key: str
     purpose: str = "transfer"
+    confirm_id: str = ""
+    receipt_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,12 +134,16 @@ class GoRail:
                     recipient=instruction.counterparty,
                     amount=float(instruction.amount),
                     idempotency_key=instruction.idempotency_key,
+                    confirm_id=instruction.confirm_id or None,
+                    receipt_id=instruction.receipt_id or None,
                 )
             else:
                 result = await client.transfer_to_stash(
                     self.token,
                     amount=float(instruction.amount),
                     idempotency_key=instruction.idempotency_key,
+                    confirm_id=instruction.confirm_id or None,
+                    receipt_id=instruction.receipt_id or None,
                 )
         except Exception as exc:  # noqa: BLE001 - a rail error is a business result
             logger.warning("go rail failed: %s", exc)
@@ -326,6 +338,8 @@ async def execute_transfer(
         spendable=ledger.balance("spendable"),
         rent_required=ledger.rent_first.required,
         rent_reserved=ledger.rent_first.reserved,
+        ledger=ledger,
+        at=timestamp,
     )
     if not report.allowed:
         receipt = _rejected(
@@ -362,6 +376,7 @@ async def execute_transfer(
         sleeve=action.sleeve,
         idempotency_key=idempotency_key,
         purpose="transfer",
+        confirm_id=decision_id,
     )
     outcome = await rail.execute(instruction)
     if not outcome.ok:
@@ -424,6 +439,7 @@ async def execute_transfer(
             sleeves_before=before,
             sleeves_after=sleeves_snapshot(ledger.sleeves),
             rail_reference=outcome.reference,
+            confirm_id=instruction.confirm_id,
             detail=f"moved {amount} {ledger.currency} to {action.counterparty}",
         )
         ledger.remember_receipt(receipt)
@@ -630,6 +646,114 @@ async def record_refusal(
     )
 
 
+async def handle_debit(
+    *,
+    store: LedgerStore,
+    ledger: Ledger,
+    payment_id: str,
+    amount: Decimal,
+    reason: str = "",
+    at: datetime | None = None,
+) -> TransferOutcome:
+    """Apply a Go-sent debit or reversal against the spendable sleeve.
+
+    Uses the original credit's idempotency key (``payment_id``), so a reversal
+    that arrives after a retried credit replays rather than double-applies. This
+    is deliberately not a second inflow with a negative amount: sign-flipping an
+    inflow would credit income on one ordering and debit on another. When
+    spendable is short the debit fails closed with an audited rejected receipt
+    and invents nothing in another sleeve.
+    """
+    timestamp = at if at is not None else _utcnow()
+    amount = money(amount)
+    prior = ledger.receipt_for(payment_id)
+    if prior is not None:
+        return TransferOutcome(
+            receipt=prior.model_copy(update={"idempotent_replay": True}),
+            ledger=ledger,
+        )
+    before = sleeves_snapshot(ledger.sleeves)
+    reasons: list[str] = []
+    if amount <= 0:
+        reasons.append("NON_POSITIVE_AMOUNT")
+    elif amount > ledger.balance("spendable"):
+        reasons.append("INSUFFICIENT_SPENDABLE")
+    if reasons:
+        receipt = _rejected(
+            ledger=ledger,
+            action="debit",
+            reasons=reasons,
+            amount=amount,
+            counterparty=reason,
+            decision_id="",
+            idempotency_key=payment_id,
+            at=timestamp,
+            detail=f"go debit refused: {';'.join(reasons)}; nothing moved",
+        )
+        receipt.sleeves_before = before
+        receipt.sleeves_after = before
+        ledger.remember_receipt(receipt)
+        await store.save(ledger)
+        return TransferOutcome(
+            receipt=receipt,
+            ledger=ledger,
+            audit=[
+                _audit(
+                    ledger=ledger,
+                    receipt=receipt,
+                    decision_id="",
+                    trigger="event",
+                    detail=f"go debit {payment_id} refused: {reason}",
+                )
+            ],
+        )
+    ledger.debit("spendable", amount)
+    ledger.record_movement(
+        Movement(
+            kind="outflow",
+            amount=amount,
+            sleeve="spendable",
+            counterparty=reason,
+            category="debit",
+            ref=payment_id,
+            at=timestamp,
+        )
+    )
+    receipt = Receipt(
+        id=_id("rcpt"),
+        at=timestamp,
+        status="executed",
+        action="debit",
+        currency=ledger.currency,
+        amount=amount,
+        counterparty=reason,
+        sleeve="spendable",
+        decision_id="",
+        idempotency_key=payment_id,
+        sleeves_before=before,
+        sleeves_after=sleeves_snapshot(ledger.sleeves),
+        detail=f"go debit {payment_id} applied: {amount} {ledger.currency}",
+    )
+    ledger.remember_receipt(receipt)
+    await store.save(ledger)
+    return TransferOutcome(
+        receipt=receipt,
+        ledger=ledger,
+        audit=[
+            _audit(
+                ledger=ledger,
+                receipt=receipt,
+                decision_id="",
+                trigger="event",
+                detail=f"go debit {payment_id}: {reason}",
+            )
+        ],
+    )
+
+
+handle_reversal = handle_debit
+
+
 async def move_between_sleeves(
     *,
     store: LedgerStore,
@@ -762,6 +886,12 @@ _UNLOCK_WORDS = ("unlock", "release", "unfreeze")
 
 _MULTIPLIERS = {"k": 1000, "thousand": 1000, "m": 1_000_000, "mille": 1000}
 
+# Names that name the user's own sleeves, never a person. A sentence that says
+# "move N to <sleeve>" is an internal move, not a P2P send.
+_SLEEVE_WORDS = ("spendable", "savings", "stash", "yield", "locked")
+
+_SLEEVE_ALIASES = {"stash": "savings"}
+
 
 def parse_amount(text: str) -> Decimal | None:
     """The first money amount in a sentence, with a k/m suffix understood."""
@@ -784,6 +914,10 @@ def parse_transfer_utterance(text: str) -> ProposedAction | None:
     Returns ``None`` when the sentence does not clearly ask for a concrete
     action. A model is never asked what the user meant in money terms: an
     unknown sentence becomes no action, and Judgment asks a question instead.
+
+    Sleeve names are never counterparties. "move 1k to savings|stash|yield|
+    locked" is an internal move between the user's own sleeves; a person name
+    stays a P2P transfer.
     """
     lowered = (text or "").casefold()
     if not lowered.strip():
@@ -791,6 +925,21 @@ def parse_transfer_utterance(text: str) -> ProposedAction | None:
     amount = parse_amount(lowered)
     if amount is None:
         return None
+
+    match = _TO_RE.search(text or "")
+    counterparty = match.group(1).strip() if match else ""
+    destination = counterparty.casefold().strip(" .,;:")
+
+    if any(word in lowered for word in _SEND_WORDS) and destination in _SLEEVE_WORDS:
+        to_sleeve = _SLEEVE_ALIASES.get(destination, destination)
+        return ProposedAction(
+            type="internal_move",
+            amount=amount,
+            counterparty="",
+            sleeve=to_sleeve,
+            raw=text,
+            source="user",
+        )
 
     if any(word in lowered for word in _UNLOCK_WORDS):
         return ProposedAction(
@@ -800,10 +949,6 @@ def parse_transfer_utterance(text: str) -> ProposedAction | None:
         return ProposedAction(
             type="lock", amount=amount, sleeve="spendable", raw=text, source="user"
         )
-
-    match = _TO_RE.search(text or "")
-    counterparty = match.group(1).strip() if match else ""
-
     if any(word in lowered for word in _SEND_WORDS):
         return ProposedAction(
             type="transfer",
@@ -833,6 +978,8 @@ __all__ = [
     "TransferInstruction",
     "TransferOutcome",
     "execute_transfer",
+    "handle_debit",
+    "handle_reversal",
     "move_between_sleeves",
     "parse_amount",
     "parse_transfer_utterance",

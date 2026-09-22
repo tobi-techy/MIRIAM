@@ -159,22 +159,26 @@ class Challenge(BaseModel):
     """A pending confirmation for one exact action.
 
     The user taps CONFIRM with this id. The id -- never a chat word -- is what
-    makes a confirmation real, and it is bound to the amount and counterparty
-    below so a confirmed challenge cannot be replayed for a different action.
+    makes a confirmation real, and it is bound to the amount, counterparty,
+    sleeve and user below so a confirmed challenge cannot be replayed for a
+    different action. Voice may only print these stored fields; it never invents
+    a figure to narrate.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    user_id: str = ""
     action: str
     amount: Decimal
     counterparty: str = ""
+    destination: str = ""
     sleeve: str = "spendable"
     decision_id: str = ""
     reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     expires_at: datetime
-    status: Literal["pending", "consumed", "expired"] = "pending"
+    status: Literal["pending", "consumed", "expired", "declined"] = "pending"
 
     def is_open(self, at: datetime) -> bool:
         return self.status == "pending" and at < self.expires_at
