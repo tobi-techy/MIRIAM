@@ -59,6 +59,11 @@ class InputValidator:
 
     def __init__(self):
         self.fernet = Fernet(self._get_encryption_key())
+        self._legacy_fernet: Fernet | None = None
+        try:
+            self._legacy_fernet = Fernet(self._get_legacy_encryption_key())
+        except Exception:
+            self._legacy_fernet = None
         self.patterns = self._load_validation_patterns()
         self.blocked_keywords = self._load_blocked_keywords()
         self.allowed_characters = self._load_allowed_characters()
@@ -110,6 +115,22 @@ class InputValidator:
             )
             raw_bytes = hkdf.derive(raw.encode())
             return base64.urlsafe_b64encode(raw_bytes).decode()
+
+    def _get_legacy_encryption_key(self) -> str:
+        """Pre-HKDF derivation (single SHA-256) for decrypting old rows.
+
+        Mirrors ``_get_encryption_key`` except with the legacy digest, so
+        values encrypted before the HKDF migration stay readable.
+        """
+        raw = os.getenv("ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or ""
+        if not raw:
+            raise ValueError("no configured secret for legacy key")
+        try:
+            Fernet(raw.encode())
+            return raw
+        except Exception:
+            digest = hashlib.sha256(raw.encode()).digest()
+            return base64.urlsafe_b64encode(digest).decode()
 
     def _load_validation_patterns(self) -> dict[str, Any]:
         """Load validation patterns for different input types."""
@@ -627,16 +648,22 @@ class InputValidator:
             raise SecurityError("Failed to encrypt sensitive data")
 
     async def decrypt_sensitive_data(self, encrypted_data: str) -> str:
-        """Decrypt sensitive data."""
+        """Decrypt sensitive data, accepting pre-HKDF rows as well."""
         try:
             decrypted_data = self.fernet.decrypt(encrypted_data.encode())
             return decrypted_data.decode()
         except Exception:
-            logger.error(
-                "Error decrypting sensitive data",
-                exc_info=True,
-            )
-            raise SecurityError("Failed to decrypt sensitive data")
+            pass
+        if self._legacy_fernet is not None:
+            try:
+                return self._legacy_fernet.decrypt(encrypted_data.encode()).decode()
+            except Exception:
+                pass
+        logger.error(
+            "Error decrypting sensitive data",
+            exc_info=True,
+        )
+        raise SecurityError("Failed to decrypt sensitive data")
 
     async def generate_secure_token(self, length: int = 32) -> str:
         """Generate a secure token."""
@@ -704,7 +731,25 @@ class InputValidator:
     # Local fallback buckets when Redis is down — per-process, best-effort.
     # Only used for availability-sensitive `auth`/`transaction`; `chat` fails
     # open as before but now also throttles locally instead of unlimited.
+    # Capped so a spray of distinct user_ids during an outage cannot grow
+    # memory without bound; oldest idle buckets are evicted first.
     _local_buckets: dict[str, list[float]] = {}
+    _MAX_LOCAL_BUCKETS: int = 10_000
+
+    def _prune_local_bucket(self, key: str, now: float, window: float) -> list[float]:
+        bucket = self._local_buckets.setdefault(key, [])
+        cutoff = now - window
+        bucket[:] = [t for t in bucket if t > cutoff]
+        if not bucket:
+            self._local_buckets.pop(key, None)
+            return self._local_buckets.setdefault(key, [])
+        if len(self._local_buckets) > self._MAX_LOCAL_BUCKETS and key in self._local_buckets:
+            # Evict the oldest key (insertion order) that is not this one.
+            for old_key in list(self._local_buckets.keys()):
+                if old_key != key:
+                    del self._local_buckets[old_key]
+                    break
+        return bucket
 
     async def validate_rate_limit(self, user_id: str, action: str) -> bool:
         """Validate rate limiting for user actions.
@@ -746,10 +791,7 @@ class InputValidator:
         except Exception as e:
             logger.warning("Rate limit check failed, using local fallback: %s", e)
             # Local fallback — same sliding window but per-process.
-            bucket = self._local_buckets.setdefault(key, [])
-            cutoff = now - window
-            # prune
-            bucket[:] = [t for t in bucket if t > cutoff]
+            bucket = self._prune_local_bucket(key, now, window)
             if len(bucket) >= limit:
                 return False
             bucket.append(now)

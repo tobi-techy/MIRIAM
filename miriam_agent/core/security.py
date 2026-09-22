@@ -30,6 +30,16 @@ def _derive_fernet_key(secret: str) -> bytes:
     return hkdf.derive(secret.encode())
 
 
+def _derive_legacy_key(secret: str) -> bytes:
+    """Pre-HKDF derivation (single SHA-256). Kept for decrypting old rows.
+
+    The HKDF migration changed the derived bytes, so ciphertext written
+    before the switch can only be opened with this function. New writes
+    always use HKDF; this exists solely as a read fallback.
+    """
+    return hashlib.sha256(secret.encode()).digest()
+
+
 def create_fernet() -> Fernet:
     """Create a Fernet cipher from the configured encryption key.
 
@@ -58,10 +68,26 @@ def encrypt_value(value: str) -> str:
         raise SecurityError(f"Encryption failed: {e}")
 
 
+def _legacy_fernet() -> Fernet:
+    """Fernet built with the pre-HKDF SHA-256 derivation (read fallback)."""
+    settings = get_settings()
+    key = settings.ENCRYPTION_KEY or settings.SECRET_KEY
+    return Fernet(create_key_from_bytes(_derive_legacy_key(key)))
+
+
 def decrypt_value(ciphertext: str) -> str:
-    """Decrypt a previously encrypted string."""
+    """Decrypt a previously encrypted string.
+
+    Tries the current HKDF key first, then the legacy SHA-256 key so rows
+    written before the KDF migration stay readable. A legacy hit is
+    re-encrypted on next write; callers do not need to migrate eagerly.
+    """
     try:
         return create_fernet().decrypt(ciphertext.encode()).decode()
+    except FernetInvalidToken:
+        pass
+    try:
+        return _legacy_fernet().decrypt(ciphertext.encode()).decode()
     except FernetInvalidToken:
         raise SecurityError("Decryption failed: invalid token")
     except Exception as e:

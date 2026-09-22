@@ -38,7 +38,11 @@ def test_production_refuses_short_secrets():
 
 
 def test_production_accepts_strong_secrets():
-    settings = _settings(
+    assert _strong().ENVIRONMENT == "production"
+
+
+def _strong(**overrides):
+    base = dict(
         ENVIRONMENT="production",
         JWT_SECRET="j" * 40,
         SECRET_KEY="s" * 40,
@@ -48,7 +52,32 @@ def test_production_accepts_strong_secrets():
         ALLOWED_ORIGINS="https://app.example.com",
         DATABASE_URL="postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
-    assert settings.ENVIRONMENT == "production"
+    base.update(overrides)
+    return _settings(**base)
+
+
+def test_production_rejects_short_encryption_key():
+    with pytest.raises(Exception):
+        _strong(ENCRYPTION_KEY="short")
+
+
+def test_production_rejects_missing_audience_issuer():
+    with pytest.raises(Exception):
+        _strong(JWT_AUDIENCE="")
+    with pytest.raises(Exception):
+        _strong(JWT_ISSUER="")
+
+
+def test_production_rejects_wildcard_origins():
+    with pytest.raises(Exception):
+        _strong(ALLOWED_ORIGINS="*")
+
+
+def test_production_rejects_default_db_password():
+    with pytest.raises(Exception):
+        _strong(
+            DATABASE_URL="postgresql+asyncpg://miriam:miriam_password@localhost:5432/miriam"
+        )
 
 
 def test_development_allows_defaults(monkeypatch):

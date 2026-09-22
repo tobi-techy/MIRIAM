@@ -219,16 +219,25 @@ async def metrics(request: Request):
     """Prometheus metrics endpoint — restricted in production.
 
     Exposed without auth in development for scraping; in production the
-    endpoint requires either an authenticated caller or an internal-network
-    source. Unauthenticated external access returns 404 to avoid leaking
+    endpoint requires a valid JWT Bearer token (same issuer as the API).
+    Unauthenticated external access returns 404 to avoid leaking
     request counts, latencies and dependency state via enumeration.
     """
-    if os.getenv("ENVIRONMENT") == "production":
+    from miriam_agent.config.settings import get_settings
+
+    if get_settings().ENVIRONMENT == "production":
         auth = request.headers.get("Authorization", "")
-        # Allow only bearer-authenticated callers in production; unauthenticated
-        # scrape should be done via an internal allowlist/network policy instead
-        # of an open endpoint.
-        if not auth.startswith("Bearer "):
+        scheme, _, token = auth.partition(" ")
+        valid = False
+        if scheme == "Bearer" and token.strip():
+            try:
+                from miriam_agent.auth.jwt import decode_token
+
+                decode_token(token.strip())
+                valid = True
+            except Exception:
+                valid = False
+        if not valid:
             # Return 404 (not 401) to avoid confirming the endpoint exists to scanners.
             return JSONResponse(status_code=404, content={"detail": "Not found"})
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest

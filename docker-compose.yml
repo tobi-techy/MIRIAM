@@ -37,7 +37,10 @@ services:
   miriam-app:
     build: .
     environment:
-      DATABASE_URL: postgresql://miriam:${POSTGRES_PASSWORD}@miriam-postgres:5432/miriam_db
+      # Production compose: all secrets are required via :? so a missing
+      # .env fails fast with a named error instead of booting forgeable
+      # defaults. For local dev use: docker compose -f docker-compose.dev.yml up
+      DATABASE_URL: postgresql://miriam:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in production}@miriam-postgres:5432/miriam_db
       REDIS_URL: redis://miriam-redis:6379/0
       LOG_LEVEL: INFO
       ENVIRONMENT: production

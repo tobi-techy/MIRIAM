@@ -77,6 +77,7 @@ jobs:
           flags: unittests
           name: codecov-umbrella
           token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Check lockfile freshness
         run: |
@@ -90,9 +91,19 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Run security scan
+      - name: Run safety check
+        continue-on-error: true
         run: |
-          pip install safety semgrep pip-audit
-          safety check --full-report || true
-          pip-audit --desc || true
+          pip install safety
+          safety check --full-report
+
+      - name: Run pip-audit
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit --desc
+
+      - name: Run semgrep
+        run: |
+          pip install semgrep
           semgrep --config=auto --severity=ERROR --quiet --error

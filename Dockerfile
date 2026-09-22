@@ -1,5 +1,6 @@
 FROM python:3.11-slim AS base
-# Pinned via digest for supply-chain: update with `docker pull python:3.11-slim` and `docker inspect --format='{{index .RepoDigests 0}}'`
+# Supply-chain: pin to a digest in release branches via
+# `docker pull python:3.11-slim` then `docker inspect --format='{{index .RepoDigests 0}}'`.
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

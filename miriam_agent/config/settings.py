@@ -271,7 +271,7 @@ class Settings(BaseSettings):
                 "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
                 "allowlist of origins"
             )
-        if "miriam_password" in self.DATABASE_URL:
+        if ":miriam_password@" in self.DATABASE_URL:
             problems.append(
                 "DATABASE_URL must not contain the default password 'miriam_password' "
                 "in production; inject via secrets"
