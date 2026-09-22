@@ -71,6 +71,12 @@ MONEY_TOOL_NAMES: frozenset[str] = frozenset(
         "buy_asset",
         "sell_asset",
         "set_allocation",
+        # Glider enrollment writes. These names must never become registry
+        # tools: enrollment runs in hands/invest.py after a confirm_id tap,
+        # never from a chat-turn tool call.
+        "glider_prepare_enroll",
+        "glider_complete_enroll",
+        "glider_prepare_deposit_intent",
     }
 )
 

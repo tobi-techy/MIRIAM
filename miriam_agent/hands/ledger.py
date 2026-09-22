@@ -175,6 +175,11 @@ class Challenge(BaseModel):
     created_at: datetime
     expires_at: datetime
     status: Literal["pending", "consumed", "expired"] = "pending"
+    # Extra binding for actions the four base fields cannot name. An invest
+    # challenge carries its Rail strategy id, Glider strategy id, owner
+    # account and source here, so the settle step can reject anything that
+    # does not match what the card showed.
+    meta: dict[str, str] = Field(default_factory=dict)
 
     def is_open(self, at: datetime) -> bool:
         return self.status == "pending" and at < self.expires_at
@@ -189,6 +194,33 @@ class PendingInflow(BaseModel):
     amount: Decimal
     source_raw: str = ""
     classified_as: str | None = None
+
+
+class PendingInvest(BaseModel):
+    """A user-signed Glider enrollment between tap and wallet signature.
+
+    The tap authorises the money; the wallet signature authorises the chain
+    write. This record binds them: ``settle`` refuses a signature for a
+    different flow, amount, strategy or owner. Amounts are strings because
+    this crosses the Go confirmation boundary, where the same binding is
+    re-checked against the payload hash.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    confirm_id: str
+    strategy_id: str
+    glider_strategy_id: str = ""
+    owner_account_id: str = ""
+    # Stage-1 round-trip fields, echoed byte-for-byte at stage 2. A change
+    # causes signature verification to fail, so they are stored, not re-typed.
+    account_index: str = "0"
+    agent_account_id: str = ""
+    amount: str = "0"
+    source: str = "savings"
+    status: Literal["pending", "enrolled", "failed"] = "pending"
+    created_at: datetime = Field(default_factory=_now)
 
 
 class Ledger(BaseModel):
@@ -208,6 +240,9 @@ class Ledger(BaseModel):
     receipts: list[Receipt] = Field(default_factory=list)
     challenges: dict[str, Challenge] = Field(default_factory=dict)
     pending_inflow: PendingInflow | None = None
+    # flow_id -> PendingInvest. A tap that approved Glider enrollment waits
+    # here for the wallet signature; settle refuses anything unbound.
+    pending_invest: dict[str, PendingInvest] = Field(default_factory=dict)
     # idempotency key -> receipt id. The presence of a key is the whole
     # idempotency mechanism: a repeated inflow or transfer finds its key here
     # and replays the receipt instead of moving money again.
@@ -488,6 +523,7 @@ __all__ = [
     "LedgerStore",
     "Movement",
     "PendingInflow",
+    "PendingInvest",
     "RedisLedgerStore",
     "RentFirst",
     "Track",

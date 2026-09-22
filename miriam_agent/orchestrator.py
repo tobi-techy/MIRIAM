@@ -39,6 +39,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from miriam_agent.hands.audit import AuditLog, AuditRow, Receipt
+from miriam_agent.hands.invest import (
+    INVEST_SLEEVE,
+    parse_invest_utterance,
+    prepare_allocate,
+    settle_allocate,
+)
 from miriam_agent.hands.ledger import (
     Challenge,
     InMemoryLedgerStore,
@@ -76,11 +82,12 @@ logger = logging.getLogger(__name__)
 # How long a confirm_id stays valid.
 CHALLENGE_TTL_MINUTES = 30
 
-EventType = Literal["inflow", "utterance", "confirm"]
+EventType = Literal["inflow", "utterance", "confirm", "wallet_signature"]
 
 
 class Event(BaseModel):
-    """Something that happened: money arrived, the user spoke, or a tap landed."""
+    """Something that happened: money arrived, the user spoke, a tap landed,
+    or a wallet signature arrived."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +101,12 @@ class Event(BaseModel):
     source_raw: str = ""
     # confirm tap
     confirm_id: str = ""
+    # wallet that will own the Glider portfolio (base58). Terminal tests send
+    # their ephemeral key; production sends the connected wallet address.
+    wallet_address: str = ""
+    # wallet signature settle
+    flow_id: str = ""
+    signed_tx: str = ""
 
 
 @dataclass
@@ -112,6 +125,11 @@ class TurnResult:
     audit: list[AuditRow] = field(default_factory=list)
     # True when the turn is silent by design rather than because Voice failed.
     quiet: bool = False
+    # Allocate card (tap time): kind/amount/strategy/flow/sign payload. The
+    # sign payload is the base64 Solana transaction the wallet must sign.
+    card: dict[str, Any] | None = None
+    # Settle result (wallet-signature time): ok/enrollment/funding/positions.
+    invest: dict[str, Any] | None = None
 
 
 def _utcnow() -> datetime:
@@ -132,6 +150,7 @@ class Orchestrator:
         memory: Any = None,
         judge: Judge | None = None,
         clock: Callable[[], datetime] | None = None,
+        go_token: str | None = None,
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -141,6 +160,10 @@ class Orchestrator:
         self.memory = memory
         self.judge = judge
         self.clock = clock or _utcnow
+        # Bearer token for the Go money/ledger host, used only by the invest
+        # leg (Glider stage 1/2 via /api/v1/investments/*). None means the
+        # invest path fails closed.
+        self.go_token = go_token
 
     # -- the door ---------------------------------------------------------
 
@@ -168,6 +191,8 @@ class Orchestrator:
             return await self._handle_inflow(ledger, event)
         if event.type == "utterance":
             return await self._handle_utterance(ledger, event)
+        if event.type == "wallet_signature":
+            return await self._handle_wallet_signature(ledger, event)
         return await self._handle_confirm(ledger, event)
 
     async def handle_utterance(self, user_id: str, text: str) -> TurnResult:
@@ -290,6 +315,12 @@ class Orchestrator:
             # Structurally unreachable today, and it stays that way: anything not
             # built from the user's own words is not an action.
             action = None
+        if action is None:
+            # The diversified stock sleeve. Single-name tickers parse to None
+            # here (a later verb), so Judgment asks instead of investing.
+            action = parse_invest_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
 
         state = build_state(
             ledger=ledger,
@@ -312,9 +343,10 @@ class Orchestrator:
         receipt: Receipt | None = None
         confirm_id = ""
 
-        if decision.next_mode == "act" and decision.action_choice in (
-            "allow",
-            "allow_smaller",
+        if (
+            decision.next_mode == "act"
+            and decision.action_choice in ("allow", "allow_smaller")
+            and (action is None or action.type != "invest")
         ):
             outcome = await self._execute(ledger, state, decision, action)
             if outcome is not None:
@@ -324,9 +356,15 @@ class Orchestrator:
                 execution = self._execution_from(receipt)
 
         if execution is None and action is not None:
-            if decision.next_mode == "ask" and decision.action_choice in (
+            # Invest never executes from an utterance: the tap authorises the
+            # money and the wallet signature authorises the chain write. An
+            # "act" verdict stages the same challenge as "ask".
+            if decision.action_choice in (
                 "allow",
                 "allow_smaller",
+            ) and (
+                decision.next_mode == "ask"
+                or (action.type == "invest" and decision.next_mode == "act")
             ):
                 confirm_id = await self._create_challenge(ledger, decision, action)
                 decision = decision.model_copy(update={"confirm_id": confirm_id})
@@ -413,6 +451,12 @@ class Orchestrator:
                 audit=audit.rows,
             )
 
+        if challenge.action == "invest":
+            # The tap approves the money; the wallet signature (a separate
+            # event) approves the chain write. Stage 1 runs here and returns
+            # the transaction the wallet must sign.
+            return await self._handle_confirm_invest(ledger, event, challenge)
+
         action = ProposedAction(
             type=_action_type(challenge.action),
             amount=challenge.amount,
@@ -463,6 +507,215 @@ class Orchestrator:
             decision=state.decision,
             receipt=receipt,
             confirm_id=challenge.id,
+            audit=audit.rows,
+        )
+
+    async def handle_wallet_signature(
+        self, user_id: str, flow_id: str, signed_tx: str
+    ) -> TurnResult:
+        """Settle a prepared allocation with the wallet's signature.
+
+        The second half of the invest leg: the tap approved the money, this
+        approves the chain write. The pending binding is re-checked and the
+        savings sleeve moves only after the host reports funding submitted.
+        """
+        return await self.handle(
+            Event(
+                type="wallet_signature",
+                user_id=user_id,
+                flow_id=flow_id,
+                signed_tx=signed_tx,
+            )
+        )
+
+    def _invest_calls(self) -> dict[str, Any] | None:
+        """Bound Go-host calls for the invest leg, or None (fail closed)."""
+        token = self.go_token
+        if not token:
+            return None
+        from miriam_agent.integrations.go_client import get_go_client
+
+        client = get_go_client()
+
+        async def list_strategies() -> dict[str, Any]:
+            return await client.list_investment_strategies(token, status="active")
+
+        async def get_owner() -> dict[str, Any]:
+            return await client.get_investment_owner(token)
+
+        async def prepare_call(payload: dict[str, Any]) -> dict[str, Any]:
+            tok = payload.pop("confirmation_token", None)
+            return await client.prepare_user_enroll(
+                token, payload, confirmation_token=tok
+            )
+
+        async def complete_call(payload: dict[str, Any]) -> dict[str, Any]:
+            tok = payload.pop("confirmation_token", None)
+            return await client.complete_user_enroll(
+                token, payload, confirmation_token=tok
+            )
+
+        return {
+            "list_strategies": list_strategies,
+            "get_owner": get_owner,
+            "prepare_call": prepare_call,
+            "complete_call": complete_call,
+        }
+
+    async def _handle_confirm_invest(
+        self, ledger: Ledger, event: Event, challenge: Any
+    ) -> TurnResult:
+        """Settle an invest tap: run Glider stage 1 and return the sign card."""
+        from miriam_agent.hands.ledger import money as _money
+
+        audit = AuditLog()
+        now = self.clock()
+        challenge.status = "consumed"
+        ledger.challenges[challenge.id] = challenge
+
+        action = ProposedAction(
+            type="invest",
+            amount=challenge.amount,
+            counterparty=challenge.counterparty,
+            sleeve=challenge.sleeve,
+            source="user",
+        )
+        decision = Decision(
+            id=challenge.decision_id,
+            at=now,
+            next_mode="act",
+            action_choice="allow",
+            suggested_amount=challenge.amount,
+            reasons=list(challenge.reasons),
+            confirm_id=challenge.id,
+        )
+        calls = self._invest_calls()
+        if calls is None:
+            receipt = Receipt(
+                id=f"rcpt_rejected_{challenge.id}",
+                at=now,
+                status="rejected",
+                action="invest_prepare",
+                currency=ledger.currency,
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                decision_id=challenge.decision_id,
+                reasons=["GLIDER_UNREACHABLE"],
+                detail="no Go host token on this path; nothing moved",
+            )
+            ledger.remember_receipt(receipt)
+            await self.store.save(ledger)
+            state = build_state(
+                ledger=ledger,
+                policy=self.policy,
+                proposed_action=action,
+                decision=decision.model_dump(mode="json"),
+                now=now,
+            )
+            return TurnResult(
+                state=state,
+                narration=await self._speak(state),
+                decision=state.decision,
+                receipt=receipt,
+                confirm_id=challenge.id,
+                audit=audit.rows,
+            )
+
+        owner_address = (event.wallet_address or "").strip() or None
+        receipt, card, ledger = await prepare_allocate(
+            store=self.store,
+            ledger=ledger,
+            user_id=event.user_id,
+            token=self.go_token or "",
+            amount=_money(challenge.amount),
+            source="savings" if challenge.sleeve == INVEST_SLEEVE else challenge.sleeve,
+            decision_id=challenge.decision_id,
+            owner_address=owner_address,
+            list_strategies=calls["list_strategies"],
+            get_owner=calls["get_owner"],
+            prepare_call=calls["prepare_call"],
+            at=now,
+        )
+        execution = self._execution_from(receipt)
+        state = build_state(
+            ledger=ledger,
+            policy=self.policy,
+            proposed_action=action,
+            decision=decision.model_dump(mode="json"),
+            execution=execution,
+            now=self.clock(),
+        )
+        return TurnResult(
+            state=state,
+            narration=await self._speak(state),
+            decision=state.decision,
+            receipt=receipt,
+            confirm_id=challenge.id,
+            card=card,
+            audit=audit.rows,
+        )
+
+    async def _handle_wallet_signature(
+        self, ledger: Ledger, event: Event
+    ) -> TurnResult:
+        """Settle a prepared allocation: run Glider stage 2 and fund."""
+        audit = AuditLog()
+        now = self.clock()
+        calls = self._invest_calls()
+        if calls is None:
+            receipt = Receipt(
+                id=f"rcpt_rejected_{(event.flow_id or 'missing')}",
+                at=now,
+                status="rejected",
+                action="invest_settle",
+                currency=ledger.currency,
+                decision_id="",
+                reasons=["GLIDER_UNREACHABLE"],
+                detail="no Go host token on this path; nothing moved",
+            )
+            ledger.remember_receipt(receipt)
+            await self.store.save(ledger)
+            state = build_state(
+                ledger=ledger,
+                policy=self.policy,
+                now=now,
+            )
+            return TurnResult(
+                state=state,
+                narration=await self._speak(state),
+                decision=state.decision,
+                receipt=receipt,
+                audit=audit.rows,
+            )
+        receipt, result, ledger = await settle_allocate(
+            store=self.store,
+            ledger=ledger,
+            user_id=event.user_id,
+            flow_id=(event.flow_id or "").strip(),
+            signed_tx=event.signed_tx or "",
+            complete_call=calls["complete_call"],
+            at=now,
+        )
+        execution = self._execution_from(receipt)
+        state = build_state(
+            ledger=ledger,
+            policy=self.policy,
+            decision={
+                "id": "",
+                "next_mode": "act",
+                "action_choice": "allow" if result.get("ok") else "deny",
+                "reasons": result.get("reasons", []),
+            },
+            execution=execution,
+            now=self.clock(),
+        )
+        return TurnResult(
+            state=state,
+            narration=await self._speak(state),
+            decision=state.decision,
+            receipt=receipt,
+            invest=result,
             audit=audit.rows,
         )
 
@@ -597,6 +850,7 @@ class Orchestrator:
             reasons=list(decision.reasons),
             created_at=now,
             expires_at=now + timedelta(minutes=CHALLENGE_TTL_MINUTES),
+            meta={"strategy": "rail-stock-sleeve"} if action.type == "invest" else {},
         )
         ledger.challenges[challenge.id] = challenge
         await self.store.save(ledger)
@@ -641,7 +895,11 @@ class Orchestrator:
 
 def _action_type(value: str) -> Any:
     """Narrow a stored challenge action back to the ProposedAction vocabulary."""
-    return value if value in ("transfer", "purchase", "lock", "unlock") else "none"
+    return (
+        value
+        if value in ("transfer", "purchase", "lock", "unlock", "invest")
+        else "none"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -669,8 +927,15 @@ _MOVE_WORDS = frozenset(
     }
 )
 
+# Words that ask for money to move into the stock sleeve. Deliberately the
+# same vocabulary the parser in hands/invest.py understands, so a turn is
+# never routed here for a phrase the parser would then ignore. Single-name
+# tickers are not here: they are a later verb, not the sleeve.
+_INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
+
 # Frames that ask whether something is affordable. A judgement question, not a
 # statement of fact, so it goes to Judgment rather than to the answer path.
+_INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
 _AFFORD_FRAMES = (
     "can i afford",
     "can i buy",
@@ -708,6 +973,11 @@ _INFLOW_FRAMES = (
     "inflow of",
     "payment received",
     "salary alert",
+    # Payday language typed by hand. The rail webhook is authoritative for real
+    # money; a pasted "i just got paid 100" splits the same 70/30 book so the
+    # demo loop and manual top-ups behave like the rail.
+    "got paid",
+    "payday",
 )
 
 _AMOUNT_HINT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?", re.UNICODE)
@@ -756,6 +1026,8 @@ def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
     # ("send it to her") is not parseable, so the agent answers it and the user
     # gets a question instead of a silent no-op.
     if has_amount and words & _MOVE_WORDS:
+        return "orchestrator"
+    if has_amount and words & _INVEST_WORDS:
         return "orchestrator"
     if "rent" in words and has_amount and words & {"reserve", "protect", "cover"}:
         return "orchestrator"

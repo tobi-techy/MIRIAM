@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     # since the ceiling is what lets her act on her own.
     APPROVAL_REQUIRED_ABOVE: float = Field(default=0.0)
 
+    # Terminal invest testing. When true, the Spectrum endpoint accepts a
+    # text-carried wallet signature on the terminal channel (ephemeral local
+    # keypair, real ed25519). When false (the default, and always in any demo
+    # recording) signatures arrive only through the wallet authorize flow, and
+    # text-carried signatures are refused outright.
+    RAIL_ALLOW_DEV_SIGN: bool = Field(default=False)
+
     # Whether this deployment runs exactly one process. Money turns read the
     # ledger from Redis; with more than one worker, falling back to process
     # memory during an outage would give the same user two ledgers. Leave this
@@ -208,17 +215,10 @@ class Settings(BaseSettings):
     # The drawdown the book must survive without the user selling (R-HOUSEL-1).
     MONEY_DRAWDOWN_TOLERANCE_PCT: float = Field(default=40.0)
 
-    # Glider B2B API (https://docs.glider.fi/api-reference/v2-overview).
-    # Direct v2 access with an x-api-key. Reads, strategy validation and draft
-    # creation only -- no enrollment or withdrawal is ever agent-initiated.
-    GLIDER_API_BASE_URL: str = Field(default="https://api.glider.fi/v2")
-    GLIDER_API_KEY: str = Field(default="")
-    GLIDER_REQUEST_TIMEOUT: float = Field(default=20.0)
-    GLIDER_MAX_RETRIES: int = Field(default=2)
-    # Poll cadence for async operations (Glider asks for 2-5s; a dispatched
-    # operation has no SLA, so callers poll rather than assume settlement).
-    GLIDER_OPERATION_POLL_SECONDS: float = Field(default=3.0)
-    GLIDER_OPERATION_MAX_POLLS: int = Field(default=40)
+    # Glider reads go through the Go money/ledger host
+    # (``integrations.go_client`` -> ``/api/v1/investments/*``), which holds
+    # the only x-api-key. Python must never carry one: there is no GLIDER_API_KEY
+    # here on purpose, so no code path in this repo can talk to Glider directly.
 
     model_config = {
         "env_file": ".env",

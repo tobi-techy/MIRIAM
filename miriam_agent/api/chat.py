@@ -97,6 +97,7 @@ def _orchestrator_for(token: str) -> Orchestrator:
         store=_get_ledger_store(),
         policy=Policy.from_settings(),
         rail=GoRail(token),
+        go_token=token,
     )
 
 
