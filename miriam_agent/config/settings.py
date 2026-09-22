@@ -251,6 +251,31 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
+        if not self.ENCRYPTION_KEY or len(self.ENCRYPTION_KEY) < 32:
+            problems.append(
+                "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
+                "production; deriving it from SECRET_KEY via single SHA-256 is not "
+                "a KDF and must not be used in production"
+            )
+        if not self.JWT_AUDIENCE or len(self.JWT_AUDIENCE) < 3:
+            problems.append(
+                "JWT_AUDIENCE must be set (e.g. 'miriam-api') in production; "
+                "without it tokens can be replayed across services sharing JWT_SECRET"
+            )
+        if not self.JWT_ISSUER or len(self.JWT_ISSUER) < 3:
+            problems.append(
+                "JWT_ISSUER must be set (e.g. 'rail-backend') in production"
+            )
+        if self.ALLOWED_ORIGINS.strip() == "*":
+            problems.append(
+                "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
+                "allowlist of origins"
+            )
+        if "miriam_password" in self.DATABASE_URL:
+            problems.append(
+                "DATABASE_URL must not contain the default password 'miriam_password' "
+                "in production; inject via secrets"
+            )
         if problems:
             raise ValueError("; ".join(problems))
         return self

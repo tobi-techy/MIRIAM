@@ -97,9 +97,19 @@ class InputValidator:
             return raw
         except Exception:
             # Not a Fernet key: derive one deterministically so values
-            # encrypted in an earlier run stay decryptable.
-            digest = hashlib.sha256(raw.encode()).digest()
-            return base64.urlsafe_b64encode(digest).decode()
+            # encrypted in an earlier run stay decryptable. HKDF-SHA256
+            # replaces single SHA-256 (not a KDF) — see core/security.py.
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=None,
+                info=b"miriam-agent-fernet-v1",
+            )
+            raw_bytes = hkdf.derive(raw.encode())
+            return base64.urlsafe_b64encode(raw_bytes).decode()
 
     def _load_validation_patterns(self) -> dict[str, Any]:
         """Load validation patterns for different input types."""
@@ -691,6 +701,11 @@ class InputValidator:
             )
         return self._redis
 
+    # Local fallback buckets when Redis is down — per-process, best-effort.
+    # Only used for availability-sensitive `auth`/`transaction`; `chat` fails
+    # open as before but now also throttles locally instead of unlimited.
+    _local_buckets: dict[str, list[float]] = {}
+
     async def validate_rate_limit(self, user_id: str, action: str) -> bool:
         """Validate rate limiting for user actions.
 
@@ -708,6 +723,9 @@ class InputValidator:
         why rate limiting is not a money control -- moving money relies on
         ``hands/`` instead, which reads the ledger, checks the limits and needs a
         typed decision, and does not consult this limiter at all.
+        Tightened: `transaction`/`auth` now use a local in-memory window
+        when Redis is down (fail-closed-ish) instead of unlimited bypass;
+        `chat` still degrades but also throttles locally to cap LLM cost.
         """
         limit, window = self.RATE_LIMITS.get(action, (60, 60))
         key = f"ratelimit:{user_id}:{action}"
@@ -726,7 +744,17 @@ class InputValidator:
             return True
 
         except Exception as e:
-            logger.warning("Rate limit check failed, failing open: %s", e)
+            logger.warning("Rate limit check failed, using local fallback: %s", e)
+            # Local fallback — same sliding window but per-process.
+            bucket = self._local_buckets.setdefault(key, [])
+            cutoff = now - window
+            # prune
+            bucket[:] = [t for t in bucket if t > cutoff]
+            if len(bucket) >= limit:
+                return False
+            bucket.append(now)
+            # For `transaction`/`auth` this is a real throttle; for `chat`
+            # it caps cost during outage vs previous unlimited bypass.
             return True
 
     async def check_for_malware_urls(self, url: str) -> tuple[bool, list[str]]:

@@ -42,6 +42,11 @@ def test_production_accepts_strong_secrets():
         ENVIRONMENT="production",
         JWT_SECRET="j" * 40,
         SECRET_KEY="s" * 40,
+        ENCRYPTION_KEY="e" * 40,
+        JWT_AUDIENCE="miriam-api",
+        JWT_ISSUER="rail-backend",
+        ALLOWED_ORIGINS="https://app.example.com",
+        DATABASE_URL="postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
     assert settings.ENVIRONMENT == "production"
 

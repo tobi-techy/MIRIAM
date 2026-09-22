@@ -1,14 +1,33 @@
 """Security primitives for Miriam Financial Agent."""
 
+import base64
 import hashlib
 import hmac
 import secrets
 
 from cryptography.fernet import Fernet
 from cryptography.fernet import InvalidToken as FernetInvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import SecurityError
+
+
+def _derive_fernet_key(secret: str) -> bytes:
+    """Derive 32 raw bytes from an arbitrary secret via HKDF-SHA256.
+
+    Single SHA-256 is not a KDF (no salt, fast). HKDF is the standard
+    extract-and-expand for turning a high-entropy secret into a key.
+    Info is domain-separated so this key cannot collide with other HKDF uses.
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"miriam-agent-fernet-v1",
+    )
+    return hkdf.derive(secret.encode())
 
 
 def create_fernet() -> Fernet:
@@ -20,9 +39,8 @@ def create_fernet() -> Fernet:
     """
     settings = get_settings()
     key = settings.ENCRYPTION_KEY or settings.SECRET_KEY
-    # Derive a 32-byte urlsafe-base64 key from the secret
-    digest = hashlib.sha256(key.encode()).digest()
-    return Fernet(create_key_from_bytes(digest))
+    raw = _derive_fernet_key(key)
+    return Fernet(create_key_from_bytes(raw))
 
 
 def create_key_from_bytes(raw: bytes) -> str:

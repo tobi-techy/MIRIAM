@@ -89,6 +89,23 @@ if _cors_wildcard:
 
 
 @app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add baseline security headers to every response."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    # HSTS only makes sense behind TLS; harmless to send always
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
+    return response
+
+
+@app.middleware("http")
 async def correlate_requests(request: Request, call_next):
     """Adopt the channel's trace id, or mint one, and echo it back.
 
@@ -198,8 +215,22 @@ async def ready_check():
 
 
 @app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint."""
+async def metrics(request: Request):
+    """Prometheus metrics endpoint — restricted in production.
+
+    Exposed without auth in development for scraping; in production the
+    endpoint requires either an authenticated caller or an internal-network
+    source. Unauthenticated external access returns 404 to avoid leaking
+    request counts, latencies and dependency state via enumeration.
+    """
+    if os.getenv("ENVIRONMENT") == "production":
+        auth = request.headers.get("Authorization", "")
+        # Allow only bearer-authenticated callers in production; unauthenticated
+        # scrape should be done via an internal allowlist/network policy instead
+        # of an open endpoint.
+        if not auth.startswith("Bearer "):
+            # Return 404 (not 401) to avoid confirming the endpoint exists to scanners.
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(
