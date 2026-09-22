@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
+from pydantic import BaseModel
 from typesafe_sdk import AsyncTypeSafeClient, SystemOneResponse, TypeSafeError
 
 from miriam_agent.judgment.client import get_async_client
 from miriam_agent.judgment.questions import Catalog
-from miriam_agent.judgment.schemas import JudgmentState
 
 logger = logging.getLogger(__name__)
+
+# Any catalog's state: the ingress/tool/egress state model, the money STATE, or
+# an already-serialized payload. `evaluate` only ever calls `model_dump` on it.
+StatePayload = BaseModel | dict[str, Any]
 
 
 class JudgmentUnavailableError(Exception):
@@ -30,17 +35,20 @@ class JudgmentUnavailableError(Exception):
 
 
 async def evaluate(
-    state: JudgmentState,
+    state: StatePayload,
     catalog: Catalog,
     *,
     client: AsyncTypeSafeClient | None = None,
 ) -> SystemOneResponse:
     """Evaluate ``state`` against ``catalog`` and return the typed response."""
     client = client or get_async_client()
+    payload = (
+        state.model_dump(exclude_none=True) if isinstance(state, BaseModel) else state
+    )
     start = time.perf_counter()
     try:
         response = await client.system_one(
-            state=state.model_dump(exclude_none=True),
+            state=payload,
             questions=catalog.questions,
             response_model=catalog.response_model,
         )

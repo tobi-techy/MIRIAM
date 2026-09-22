@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from miriam_agent.api.chat import router as chat_router
 from miriam_agent.api.proactive import router as proactive_router
+from miriam_agent.api.spectrum import router as spectrum_router
 from miriam_agent.observability.correlation import (
     TRACE_HEADER,
     bind_trace_id,
@@ -86,6 +87,23 @@ if _cors_wildcard:
         "ALLOWED_ORIGINS is '*' -- CORS credentials are disabled and any "
         "origin may read responses. Set an explicit allowlist in production."
     )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add baseline security headers to every response."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    # HSTS only makes sense behind TLS; harmless to send always
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+    )
+    return response
 
 
 @app.middleware("http")
@@ -198,8 +216,31 @@ async def ready_check():
 
 
 @app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint."""
+async def metrics(request: Request):
+    """Prometheus metrics endpoint — restricted in production.
+
+    Exposed without auth in development for scraping; in production the
+    endpoint requires a valid JWT Bearer token (same issuer as the API).
+    Unauthenticated external access returns 404 to avoid leaking
+    request counts, latencies and dependency state via enumeration.
+    """
+    from miriam_agent.config.settings import get_settings
+
+    if get_settings().ENVIRONMENT == "production":
+        auth = request.headers.get("Authorization", "")
+        scheme, _, token = auth.partition(" ")
+        valid = False
+        if scheme == "Bearer" and token.strip():
+            try:
+                from miriam_agent.auth.jwt import decode_token
+
+                decode_token(token.strip())
+                valid = True
+            except Exception:
+                valid = False
+        if not valid:
+            # Return 404 (not 401) to avoid confirming the endpoint exists to scanners.
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(
@@ -211,3 +252,4 @@ async def metrics():
 # Include routers
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(proactive_router, prefix="/api/v1")
+app.include_router(spectrum_router, prefix="/api/v1")

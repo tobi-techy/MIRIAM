@@ -1,41 +1,54 @@
-"""The canonical set of tools that move money or mutate backend state.
+"""The tool names that must never face a model, and never face a rail caller.
 
-Every consumer that needs to answer "is this a money tool?" imports from here.
-Previously four independently-maintained copies existed and had already drifted:
+One purpose, and one answer to a question several modules used to answer
+separately: "is this tool name one of the money family?"
 
-- ``safety/policy.py`` allowlist
-- ``safety/policy.py`` ``_MONEY_ACTIONS`` (audit filter for daily-limit sums)
-- ``api/chat.py`` ``_MONEY_TOOLS`` (which tool arguments get audited)
-- ``tools/investment_definitions.py`` ``STAGED_CONFIRMATION_TOOLS``
+The answer is used in two places, both of which are structural:
 
-The first three are consolidated here. The automation and scheduled-investment
-mutations were gated for approval but were missing from the audit and
-daily-limit lists, so their amounts were never recorded. That is the class of
-drift this module removes -- ``tests/test_money_tools.py`` asserts the registry
-and this file cannot disagree.
+* ``tools/definitions.build_tool_registry`` removes every one of them from the
+  live registry, so the agent loop has nothing to find, and
+* ``agents/agent_loop`` refuses one outright if a model still asks for it.
 
-``STAGED_CONFIRMATION_TOOLS`` in ``investment_definitions`` is deliberately
-*not* folded in: it answers a different question (which Go endpoints answer
-with a payload-bound confirmation token that the agent may replay), not "does
-this touch money".
+``miriam_agent.hands`` is the only thing in the process that moves money. It is
+reached through ``orchestrator.py``, and it does not go through a tool at all,
+so the correct number of money tools in the registry is zero.
+
+This list is curated rather than derived from the registry on purpose. A newly
+registered mutation must not inherit the ability to be reachable, and a name
+that a well-meaning future change might invent for the same job has to fail a
+test rather than quietly reopen the rail.
 """
 
 from __future__ import annotations
 
-# Every tool that mutates backend state and must therefore be staged behind an
-# explicit user confirmation.
-#
-# Curated rather than derived from the registry on purpose: a newly registered
-# mutation cannot silently inherit money-movement privileges just by existing.
-# The drift test enforces the other direction -- registering a mutation without
-# listing it here fails the build.
-MONEY_TOOLS: frozenset[str] = frozenset(
+# Names that move money today, plus the names a future change might reach for.
+MONEY_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        # Money movement (Go ledger)
+        # Money movement
         "send_money",
+        "transfer",
+        "transfer_money",
+        "send",
+        "move_money",
         "transfer_stash_to_spending",
         "transfer_spending_to_stash",
         "pay_bill",
+        "withdraw",
+        "redeem",
+        # Sleeves and the income split
+        "split",
+        "split_income",
+        "auto_split",
+        "lock",
+        "unlock",
+        "lock_sleeve",
+        "unlock_sleeve",
+        "set_sleeve",
+        "credit_sleeve",
+        "debit_sleeve",
+        "change_track",
+        "set_track",
+        "update_track",
         # Lasting behaviour whose future runs move money unattended
         "create_automation",
         "update_automation",
@@ -47,7 +60,8 @@ MONEY_TOOLS: frozenset[str] = frozenset(
         "create_obligation",
         "mark_obligation_paid",
         "save_bill_beneficiary",
-        # Glider investment Agent API
+        # Investments
+        "invest",
         "create_strategy",
         "update_strategy",
         "enroll_strategy",
@@ -57,25 +71,19 @@ MONEY_TOOLS: frozenset[str] = frozenset(
         "buy_asset",
         "sell_asset",
         "set_allocation",
+        # Glider enrollment writes. These names must never become registry
+        # tools: enrollment runs in hands/invest.py after a confirm_id tap,
+        # never from a chat-turn tool call.
+        "glider_prepare_enroll",
+        "glider_complete_enroll",
+        "glider_prepare_deposit_intent",
     }
 )
 
-# The subset that actually moves money, now or on a schedule. Only these carry
-# amounts that count toward the per-transaction and daily transfer caps.
-#
-# Create/config tools that merely *record* an intention (a saved beneficiary, a
-# tracked bill) live in MONEY_TOOLS but not here: their amounts must never be
-# summed into "how much did this user transfer today".
-TRANSFER_TOOLS: frozenset[str] = frozenset(
-    {
-        "send_money",
-        "transfer_stash_to_spending",
-        "transfer_spending_to_stash",
-        "pay_bill",
-        "buy_asset",
-        "sell_asset",
-        "enroll_strategy",
-        "create_scheduled_investment",
-        "create_automation",
-    }
-)
+
+def is_money_tool(name: str) -> bool:
+    """Whether a tool name belongs to the family that must never face a model."""
+    return name in MONEY_TOOL_NAMES
+
+
+__all__ = ["MONEY_TOOL_NAMES", "is_money_tool"]

@@ -432,25 +432,3 @@ class AuditSystem:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-
-
-_audit_singleton: AuditSystem | None = None
-
-
-async def get_audit_system_singleton(database_url: str | None = None) -> AuditSystem:
-    """Get the process-wide, lazily-initialized AuditSystem singleton.
-
-    Used by SafetyPolicy to read real recent activity for a user. Unlike
-    the request-scoped instance in api/dependencies.py, this one is shared
-    across requests (audit rows are cheap to read repeatedly and the
-    engine/session factory is safe to reuse).
-    """
-    global _audit_singleton
-    if _audit_singleton is None:
-        from miriam_agent.config.settings import get_settings
-
-        url = database_url or get_settings().DATABASE_URL
-        instance = AuditSystem(url)
-        await instance.initialize()
-        _audit_singleton = instance
-    return _audit_singleton

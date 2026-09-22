@@ -181,119 +181,30 @@ def test_investment_reads_use_agent_paths():
     _run(client.close())
 
 
-def test_investment_staged_order_sends_confirmation_token():
-    seen = {}
+def test_the_client_has_no_investment_mutation_methods():
+    """The rail-calling investment client is deleted, not just unwired.
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["body"] = json.loads(request.content)
-        return httpx.Response(
-            202,
-            json={
-                "status": "AWAITING_CONFIRMATION",
-                "confirmation": {"token": "cfm-1"},
-            },
-        )
+    Every one of these methods existed to carry a mutation out of the agent, and
+    the agent has no money path. ``hands/`` is the only thing that moves money,
+    and it reaches the rail through its own two verbs.
+    """
+    from miriam_agent.integrations.go_client import GoBackendClient
 
-    client = _client_for(handler)
-    first = _run(
-        client.create_investment_order(
-            "tok",
-            {
-                "symbol": "AAPL",
-                "side": "buy",
-                "amount_usd": 25,
-                "idempotency_key": "k-inv",
-            },
-        )
-    )
-    assert seen["path"] == "/api/v1/investments/orders"
-    assert seen["body"]["symbol"] == "AAPL"
-    assert seen["body"]["side"] == "buy"
-    assert seen["body"]["amount_usd"] == 25
-    assert seen["body"]["idempotency_key"] == "k-inv"
-    assert "confirmation_token" not in seen["body"]
-    assert first["status"] == "AWAITING_CONFIRMATION"
+    for gone in (
+        "create_investment_strategy",
+        "publish_investment_strategy_version",
+        "enroll_investment",
+        "create_investment_order",
+        "set_investment_allocation",
+        "pause_investment_strategy",
+        "resume_investment_strategy",
+        "rebalance_investment_strategy",
+    ):
+        assert not hasattr(GoBackendClient, gone), gone
 
-    replay = _run(
-        client.create_investment_order(
-            "tok",
-            {
-                "symbol": "AAPL",
-                "side": "buy",
-                "amount_usd": 25,
-                "idempotency_key": "k-inv",
-            },
-            confirmation_token="cfm-1",
-        )
-    )
-    assert seen["body"]["confirmation_token"] == "cfm-1"
-    assert replay["confirmation"]["token"] == "cfm-1"
-    _run(client.close())
-
-
-def test_investment_mutations_use_agent_paths():
-    seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(
-            {
-                "path": request.url.path,
-                "body": json.loads(request.content) if request.content else {},
-            }
-        )
-        return httpx.Response(202, json={"status": "AWAITING_CONFIRMATION"})
-
-    client = _client_for(handler)
-    _run(client.create_investment_strategy("tok", {"name": "Growth"}))
-    _run(
-        client.publish_investment_strategy_version(
-            "tok", "s1", {"rationale": "rebalance"}
-        )
-    )
-    _run(
-        client.enroll_investment(
-            "tok", {"strategy_id": "s1", "idempotency_key": "k-enr"}
-        )
-    )
-    _run(
-        client.set_investment_allocation(
-            "tok",
-            {"targets": [{"symbol": "VOO"}], "idempotency_key": "k-all"},
-        )
-    )
-    _run(client.pause_investment_strategy("tok", "s1"))
-    _run(client.resume_investment_strategy("tok", "s1"))
-    _run(client.rebalance_investment_strategy("tok", "s1", reason="drift"))
-    assert seen[0]["path"] == "/api/v1/investments/strategies"
-    assert seen[1]["path"] == "/api/v1/investments/strategies/s1/versions"
-    assert seen[2]["path"] == "/api/v1/investments/enroll"
-    assert seen[2]["body"]["idempotency_key"] == "k-enr"
-    assert seen[3]["path"] == "/api/v1/investments/allocations"
-    assert seen[3]["body"]["targets"][0]["symbol"] == "VOO"
-    assert seen[4]["path"] == "/api/v1/investments/strategies/s1/pause"
-    assert seen[5]["path"] == "/api/v1/investments/strategies/s1/resume"
-    assert seen[6]["path"] == "/api/v1/investments/strategies/s1/rebalance"
-    assert seen[6]["body"]["reason"] == "drift"
-    assert not any("/investment/glider" in s["path"] for s in seen)
-    _run(client.close())
-
-
-def test_investment_cooldown_surfaces_integration_error():
-    from miriam_agent.core.exceptions import IntegrationError
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/investments/strategies/s1/rebalance"
-        return httpx.Response(
-            429,
-            json={"code": "INVESTMENT_PROVIDER_COOLDOWN", "message": "try later"},
-        )
-
-    client = _client_for(handler)
-    with pytest.raises(IntegrationError) as excinfo:
-        _run(client.rebalance_investment_strategy("tok", "s1"))
-    assert "INVESTMENT_PROVIDER_COOLDOWN" in str(excinfo.value)
-    _run(client.close())
+    # The reads the agent still answers from stay.
+    for kept in ("get_investment_portfolio", "list_investment_strategies"):
+        assert hasattr(GoBackendClient, kept), kept
 
 
 def test_agent_client_exposes_no_withdrawal_method():
@@ -503,3 +414,35 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
+
+
+def test_user_enroll_hits_prepare_and_complete_paths():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        seen.append((request.url.path, body.get("confirmation_token")))
+        if request.url.path == "/api/v1/investments/owner":
+            return httpx.Response(200, json={"owner_account_id": "solana:x:y"})
+        return httpx.Response(200, json={"status": "COMPLETED"})
+
+    client = _client_for(handler)
+    owner = _run(client.get_investment_owner("tok"))
+    assert owner["owner_account_id"] == "solana:x:y"
+    out = _run(
+        client.prepare_user_enroll("tok", {"strategy_id": "s1"})
+    )
+    assert out["status"] == "COMPLETED"
+    out = _run(
+        client.complete_user_enroll(
+            "tok", {"flow_id": "f1"}, confirmation_token="cfm-2"
+        )
+    )
+    assert out["status"] == "COMPLETED"
+    paths = [p for p, _ in seen]
+    assert "/api/v1/investments/enroll/prepare" in paths
+    assert "/api/v1/investments/enroll/complete" in paths
+    assert "/api/v1/investments/owner" in paths
+    complete_bodies = [b for p, b in seen if p == "/api/v1/investments/enroll/complete"]
+    assert complete_bodies[0] == "cfm-2"
+    _run(client.close())

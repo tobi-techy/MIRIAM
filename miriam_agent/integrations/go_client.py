@@ -161,9 +161,7 @@ class GoBackendClient:
         exception that looks like the capability is missing.
         """
         try:
-            data = await self._token_get(
-                "/api/v1/funding/ngn/virtual-account", token
-            )
+            data = await self._token_get("/api/v1/funding/ngn/virtual-account", token)
         except IntegrationError as e:
             message = str(e)
             if "404" in message or "not_found" in message:
@@ -216,7 +214,10 @@ class GoBackendClient:
                 return out
             if data.get("_tool_error"):
                 return data
-            return {"_tool_error": "deposit address response had no address", "raw": data}
+            return {
+                "_tool_error": "deposit address response had no address",
+                "raw": data,
+            }
         return {"_tool_error": "unexpected deposit address response shape"}
 
     async def get_user_profile(self, token: str) -> dict[str, Any]:
@@ -450,103 +451,56 @@ class GoBackendClient:
             f"/api/v1/investments/investors/{investor_id}/activity", token
         )
 
-<<<<<<< Updated upstream
-    # ---- investments (staged mutations) ----
+    async def get_investment_owner(self, token: str) -> dict[str, Any]:
+        """The caller's Solana owner account id (CAIP-10) for user-signed enroll.
+
+        Read-only. An account without a Solana wallet gets an explicit error,
+        never an invented address.
+        """
+        return await self._token_get("/api/v1/investments/owner", token)
+
+    # ---- investments (user-signed Glider enroll, via the Go host) ----
     #
-    # Every mutation below returns HTTP 202 with a body carrying
-    # ``status: "AWAITING_CONFIRMATION"`` plus a ``confirmation`` object until
-    # the caller replays the exact same payload with the confirmation token.
-    # We pass the token back as the request body field the Go handler expects
-    # (``confirmation_token``); it also accepts the X-Investment-Confirmation
-    # header. Idempotency keys go in the body because that is where the Go
-    # request structs read them (``idempotency_key``).
+    # The only investment writes Miriam makes. Stage 1 returns the base64
+    # Solana transaction the wallet signs; stage 2 submits it (idempotent on
+    # flowId). Both are driven from the hands layer after a confirm_id tap,
+    # never from a chat-turn tool.
 
-    async def create_investment_strategy(
+    async def prepare_user_enroll(
         self,
         token: str,
         payload: dict[str, Any],
         confirmation_token: str | None = None,
     ) -> dict[str, Any]:
+        """Glider stage 1 for a user-held Solana wallet (Model B).
+
+        Returns the base64 Solana transaction to sign plus the confirmation
+        the allocate card binds to. Fail-closed: a simulated backend answers
+        with an explicit not-live error and no sign payload.
+        """
         return await self._token_post(
-            "/api/v1/investments/strategies",
+            "/api/v1/investments/enroll/prepare",
             token,
             _with_confirmation(payload, confirmation_token),
         )
 
-    async def publish_investment_strategy_version(
-        self,
-        token: str,
-        strategy_id: str,
-        payload: dict[str, Any],
-        confirmation_token: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._token_post(
-            f"/api/v1/investments/strategies/{strategy_id}/versions",
-            token,
-            _with_confirmation(payload, confirmation_token),
-        )
-
-    async def enroll_investment(
+    async def complete_user_enroll(
         self,
         token: str,
         payload: dict[str, Any],
         confirmation_token: str | None = None,
     ) -> dict[str, Any]:
+        """Glider stage 2: submit the wallet-signed transaction.
+
+        Idempotent on flowId. The confirmation token binds flowId + amount +
+        strategyId; mutated payloads are rejected by the backend.
+        """
         return await self._token_post(
-            "/api/v1/investments/enroll",
+            "/api/v1/investments/enroll/complete",
             token,
             _with_confirmation(payload, confirmation_token),
         )
 
-    async def create_investment_order(
-        self,
-        token: str,
-        payload: dict[str, Any],
-        confirmation_token: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._token_post(
-            "/api/v1/investments/orders",
-            token,
-            _with_confirmation(payload, confirmation_token),
-        )
-
-    async def set_investment_allocation(
-        self,
-        token: str,
-        payload: dict[str, Any],
-        confirmation_token: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._token_post(
-            "/api/v1/investments/allocations",
-            token,
-            _with_confirmation(payload, confirmation_token),
-        )
-
-    # ---- investments (immediate mutations; no staged confirmation) ----
-
-    async def pause_investment_strategy(
-        self, token: str, strategy_id: str
-    ) -> dict[str, Any]:
-        return await self._token_post(
-            f"/api/v1/investments/strategies/{strategy_id}/pause", token, {}
-        )
-
-    async def resume_investment_strategy(
-        self, token: str, strategy_id: str
-    ) -> dict[str, Any]:
-        return await self._token_post(
-            f"/api/v1/investments/strategies/{strategy_id}/resume", token, {}
-        )
-
-    async def rebalance_investment_strategy(
-        self, token: str, strategy_id: str, reason: str | None = None
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        if reason:
-            payload["reason"] = reason
-        return await self._token_post(
-            f"/api/v1/investments/strategies/{strategy_id}/rebalance", token, payload
-=======
     # ---- retirement vault (Sleeve A; Rail-owned locked USD vault) ----
     # Reads only. The app performs POST /vault with its own ConfirmationToken +
     # passcode flow; Python never POSTs vault writes and holds no
@@ -600,7 +554,6 @@ class GoBackendClient:
             "/api/v1/vault/preview-withdraw",
             token,
             params={"amount": amount},
->>>>>>> Stashed changes
         )
 
     # ---- lookups / automations / obligations / schedules ----
@@ -810,9 +763,7 @@ class GoBackendClient:
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
-                logger.warning(
-                    "Go backend %s %s -> %d", method, path, resp.status_code
-                )
+                logger.warning("Go backend %s %s -> %d", method, path, resp.status_code)
                 raise IntegrationError(
                     f"Go backend {method} {path} failed: {resp.text[:200]}"
                 ) from e
@@ -862,9 +813,7 @@ class GoBackendClient:
         token: str,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        return await self._request_json(
-            method, path, token=token, payload=payload
-        )
+        return await self._request_json(method, path, token=token, payload=payload)
 
 
 def _with_confirmation(
@@ -873,8 +822,9 @@ def _with_confirmation(
     """Merge a staged-action confirmation token into a request body.
 
     The Go investment API accepts the token either as the ``confirmation_token``
-    body field or the ``X-Investment-Confirmation`` header; we use the body
-    field. The token must accompany the exact same payload it was issued for.
+    body field or the ``X-Investment-Confirmation`` header; the user-signed
+    enroll endpoints use the body field. The token must accompany the exact
+    same payload it was issued for.
     """
     if not confirmation_token:
         return payload

@@ -1,14 +1,43 @@
 """Security primitives for Miriam Financial Agent."""
 
+import base64
 import hashlib
 import hmac
 import secrets
 
 from cryptography.fernet import Fernet
 from cryptography.fernet import InvalidToken as FernetInvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import SecurityError
+
+
+def _derive_fernet_key(secret: str) -> bytes:
+    """Derive 32 raw bytes from an arbitrary secret via HKDF-SHA256.
+
+    Single SHA-256 is not a KDF (no salt, fast). HKDF is the standard
+    extract-and-expand for turning a high-entropy secret into a key.
+    Info is domain-separated so this key cannot collide with other HKDF uses.
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"miriam-agent-fernet-v1",
+    )
+    return hkdf.derive(secret.encode())
+
+
+def _derive_legacy_key(secret: str) -> bytes:
+    """Pre-HKDF derivation (single SHA-256). Kept for decrypting old rows.
+
+    The HKDF migration changed the derived bytes, so ciphertext written
+    before the switch can only be opened with this function. New writes
+    always use HKDF; this exists solely as a read fallback.
+    """
+    return hashlib.sha256(secret.encode()).digest()
 
 
 def create_fernet() -> Fernet:
@@ -20,9 +49,8 @@ def create_fernet() -> Fernet:
     """
     settings = get_settings()
     key = settings.ENCRYPTION_KEY or settings.SECRET_KEY
-    # Derive a 32-byte urlsafe-base64 key from the secret
-    digest = hashlib.sha256(key.encode()).digest()
-    return Fernet(create_key_from_bytes(digest))
+    raw = _derive_fernet_key(key)
+    return Fernet(create_key_from_bytes(raw))
 
 
 def create_key_from_bytes(raw: bytes) -> str:
@@ -40,10 +68,26 @@ def encrypt_value(value: str) -> str:
         raise SecurityError(f"Encryption failed: {e}")
 
 
+def _legacy_fernet() -> Fernet:
+    """Fernet built with the pre-HKDF SHA-256 derivation (read fallback)."""
+    settings = get_settings()
+    key = settings.ENCRYPTION_KEY or settings.SECRET_KEY
+    return Fernet(create_key_from_bytes(_derive_legacy_key(key)))
+
+
 def decrypt_value(ciphertext: str) -> str:
-    """Decrypt a previously encrypted string."""
+    """Decrypt a previously encrypted string.
+
+    Tries the current HKDF key first, then the legacy SHA-256 key so rows
+    written before the KDF migration stay readable. A legacy hit is
+    re-encrypted on next write; callers do not need to migrate eagerly.
+    """
     try:
         return create_fernet().decrypt(ciphertext.encode()).decode()
+    except FernetInvalidToken:
+        pass
+    try:
+        return _legacy_fernet().decrypt(ciphertext.encode()).decode()
     except FernetInvalidToken:
         raise SecurityError("Decryption failed: invalid token")
     except Exception as e:

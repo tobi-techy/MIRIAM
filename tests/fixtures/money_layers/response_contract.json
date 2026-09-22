@@ -1,0 +1,202 @@
+{
+  "_comment": [
+    "The response contract for a money turn on POST /api/v1/chat.",
+    "",
+    "Every key listed in `keys` is always present, including `receipt`, which is",
+    "null when nothing moved. `forbidden_keys` are never present: the old",
+    "approval-card protocol (requires_confirmation + cards) is gone, and a client",
+    "that still reads it is reading a contract this server no longer has.",
+    "",
+    "`examples` are verbatim responses recorded from the endpoint. Pin the Go",
+    "PythonChatResponse struct and these examples against this file.",
+    "",
+    "Request direction: the client settles a challenge with",
+    "{ \"confirm_id\": \"<id from this response>\", \"yes\": true|false }.",
+    "There is no other way to confirm, and `approved_actions` is not read."
+  ],
+  "endpoint": "POST /api/v1/chat",
+  "keys": [
+    "response",
+    "conversation_id",
+    "trace_id",
+    "confirm_id",
+    "decision",
+    "receipt",
+    "conversation_history"
+  ],
+  "forbidden_keys": [
+    "requires_confirmation",
+    "cards"
+  ],
+  "request_keys_for_a_confirmation": [
+    "confirm_id",
+    "yes"
+  ],
+  "examples": {
+    "confirmation_required": {
+      "response": "Noted.",
+      "conversation_id": "conv_example",
+      "trace_id": "trace_example",
+      "confirm_id": "confirm_3d5345e9",
+      "decision": {
+        "id": "decision_example",
+        "at": "2026-09-20T10:00:00Z",
+        "inflow_class": "salary",
+        "inflow_conf": 0.9,
+        "intent_type": "order",
+        "intent_conf": 0.9,
+        "affordability": 0.9,
+        "policy_violation": false,
+        "reversibility": true,
+        "next_mode": "ask",
+        "action_choice": "allow_smaller",
+        "suggested_amount": "2000.00",
+        "reasons": [
+          "REVERSIBLE",
+          "OVER_AUTO"
+        ],
+        "confirm_id": "confirm_3d5345e9",
+        "degraded": false
+      },
+      "receipt": null,
+      "conversation_history": []
+    },
+    "executed": {
+      "response": "Noted.",
+      "conversation_id": "conv_example",
+      "trace_id": "trace_example",
+      "confirm_id": "confirm_3d5345e9",
+      "decision": {
+        "id": "decision_example",
+        "at": "2026-09-20T10:00:00Z",
+        "inflow_class": "unknown",
+        "inflow_conf": 0.0,
+        "intent_type": "status",
+        "intent_conf": 0.0,
+        "affordability": 0.0,
+        "policy_violation": false,
+        "reversibility": false,
+        "next_mode": "act",
+        "action_choice": "allow",
+        "suggested_amount": "2000.00",
+        "reasons": [
+          "REVERSIBLE",
+          "OVER_AUTO"
+        ],
+        "confirm_id": "confirm_3d5345e9",
+        "degraded": false
+      },
+      "receipt": {
+        "id": "rcpt_example",
+        "at": "2026-09-20T10:00:00Z",
+        "status": "executed",
+        "action": "transfer",
+        "currency": "NGN",
+        "amount": "2000.00",
+        "counterparty": "Ada",
+        "sleeve": "spendable",
+        "decision_id": "dec_example",
+        "idempotency_key": "idem_example",
+        "reasons": [],
+        "sleeves_before": {
+          "locked": "0.00",
+          "savings": "0.00",
+          "spendable": "90000.00",
+          "yield": "0.00"
+        },
+        "sleeves_after": {
+          "locked": "0.00",
+          "savings": "0.00",
+          "spendable": "88000.00",
+          "yield": "0.00"
+        },
+        "rail_reference": "rail_example",
+        "detail": "moved 2000.00 NGN to Ada",
+        "idempotent_replay": false
+      },
+      "conversation_history": []
+    },
+    "rejected": {
+      "response": "Noted.",
+      "conversation_id": "conv_example",
+      "trace_id": "trace_example",
+      "confirm_id": "",
+      "decision": {
+        "id": "decision_example",
+        "at": "2026-09-20T10:00:00Z",
+        "inflow_class": "salary",
+        "inflow_conf": 0.9,
+        "intent_type": "order",
+        "intent_conf": 0.9,
+        "affordability": 0.21,
+        "policy_violation": true,
+        "reversibility": true,
+        "next_mode": "ask",
+        "action_choice": "deny",
+        "suggested_amount": null,
+        "reasons": [
+          "REVERSIBLE",
+          "TRACK_BREAK",
+          "LOW_AFFORDABILITY",
+          "RENT_SHORT"
+        ],
+        "confirm_id": "",
+        "degraded": false
+      },
+      "receipt": {
+        "id": "rcpt_example",
+        "at": "2026-09-20T10:00:00Z",
+        "status": "rejected",
+        "action": "transfer",
+        "currency": "NGN",
+        "amount": "95000.00",
+        "counterparty": "Ada",
+        "sleeve": "spendable",
+        "decision_id": "dec_example",
+        "idempotency_key": "idem_example",
+        "reasons": [
+          "REVERSIBLE",
+          "TRACK_BREAK",
+          "LOW_AFFORDABILITY",
+          "RENT_SHORT"
+        ],
+        "sleeves_before": {
+          "locked": "0.00",
+          "savings": "0.00",
+          "spendable": "184000.00",
+          "yield": "0.00"
+        },
+        "sleeves_after": {
+          "locked": "0.00",
+          "savings": "0.00",
+          "spendable": "184000.00",
+          "yield": "0.00"
+        },
+        "rail_reference": "rail_example",
+        "detail": "the decision refused this; nothing moved",
+        "idempotent_replay": false
+      },
+      "conversation_history": []
+    }
+  },
+  "inflow_endpoint": {
+    "endpoint": "POST /api/v1/money/inflow",
+    "request_keys": [
+      "payment_id",
+      "amount",
+      "source_raw"
+    ],
+    "response_keys": [
+      "payment_id",
+      "response",
+      "decision",
+      "receipt",
+      "trace_id"
+    ],
+    "failure_statuses": {
+      "400": "payment_id or amount missing",
+      "409": "insufficient_state: the ledger cannot answer for this user",
+      "503": "the ledger store is unavailable; the rail must retry"
+    }
+  }
+}

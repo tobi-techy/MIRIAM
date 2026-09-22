@@ -13,7 +13,6 @@ and answers like the same person every turn. The voice is a sharp friend
 who knows your money, not a customer-service agent.
 """
 
-import importlib
 from typing import Any
 
 from miriam_agent.spec import SPEC_VERSION
@@ -160,22 +159,27 @@ says blocked or plan unavailable, stop.
 def _execution_model() -> str:
     """Generate the EXECUTION MODEL block from the live tool registry so the
     prompt can never drift from what the server actually enforces. Mirrors
-    ``executionModelSection()`` in RAIL_BACKEND."""
-    try:
-        importlib.import_module("miriam_agent.tools.definitions")
-        from miriam_agent.agents.tools import get_registry
+    ``executionModelSection()`` in RAIL_BACKEND.
 
-        registry = get_registry()
+    There is no staged list any more, and the fallback cannot invent one: money
+    movements are not tools. They go through the orchestrator, which reads the
+    ledger, takes a typed judgment and writes a receipt, so a model that was told
+    it could call ``send_money`` would be being told something false.
+    """
+    try:
+        from miriam_agent.tools import build_tool_registry
+
+        registry = build_tool_registry()
         auto = sorted(registry.auto_execute_names())
-        staged = sorted(registry.stage_confirm_names())
+        if not auto:
+            raise RuntimeError("registry is empty")
     except Exception:
         auto = [
             "get_balance",
             "get_transactions",
             "get_spending_summary",
-            "analyze_portfolio",
             "get_financial_plan",
-            "budget_advice",
+            "get_money_plan",
             "search_memory",
             "lookup_recipient",
             "list_automations",
@@ -200,37 +204,25 @@ def _execution_model() -> str:
             "get_investor_activity",
             "list_investors",
         ]
-        staged = [
-            "send_money",
-            "transfer_spending_to_stash",
-            "transfer_stash_to_spending",
-            "create_automation",
-            "pay_bill",
-            "create_strategy",
-            "update_strategy",
-            "enroll_strategy",
-            "pause_strategy",
-            "resume_strategy",
-            "rebalance_strategy",
-            "buy_asset",
-            "sell_asset",
-            "set_allocation",
-        ]
 
-    parts = [
-        "EXECUTION MODEL (mirrors how the app enforces confirmations):",
-        "- AUTO-EXECUTE: "
-        + ", ".join(auto)
-        + ". These never move money; call them whenever the user asks for real data.",
-        "- STAGE & CONFIRM (anything that moves money): "
-        + ", ".join(staged)
-        + ". Calling these STAGES the move for the user's approval; the move has NOT "
-        "happened until an approved result comes back. Describe what's pending, never "
-        '"sent", "paid", "moved", or "done". A staged move returns an approval prompt.',
-        '- Never ask "Want me to...?" in chat. State the plan as fact and let the '
-        "confirmation handle the ask.",
-    ]
-    return "\n".join(parts)
+    return "\n".join(
+        [
+            "EXECUTION MODEL (mirrors how the app enforces confirmations):",
+            "- READ-ONLY TOOLS: "
+            + ", ".join(auto)
+            + ". These never move money; call them whenever the user asks for "
+            "real data.",
+            "- MOVING MONEY IS NOT A TOOL. There is no send, transfer, split, "
+            "lock, unlock or invest tool in this conversation, and asking for one "
+            "will fail. The user's own words are the instruction: they say what "
+            "they want, the ledger decides what is allowed, and the user taps a "
+            "confirmation to settle it. Never promise a movement is done, and "
+            'never say "sent", "paid", "moved" or "done" about money: only a '
+            "receipt from the ledger means anything moved.",
+            '- Never ask "Want me to...?" in chat. State the plan as fact and let '
+            "the confirmation handle the ask.",
+        ]
+    )
 
 
 def _spec_reference_section() -> str:

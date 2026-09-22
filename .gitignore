@@ -99,3 +99,7 @@ covhtml/
 *.pyd
 *.dylib
 .cube
+
+# Spectrum gateway (bun)
+apps/spectrum-gateway/node_modules/
+apps/spectrum-gateway/dist/

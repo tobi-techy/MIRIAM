@@ -21,7 +21,12 @@ ROLE_LEVELS: dict[str, set[str]] = {
 }
 
 # Tool name -> minimum required permission (filled from registry on import).
-# Unknown tools default to "read" (safe default: they may be audit-only).
+#
+# A name that is not in here is denied rather than defaulted. It used to default
+# to "read", which was harmless while every money tool was registered and
+# classified as "execute" -- but the registry no longer holds a money tool, so
+# that default would have quietly granted read access to `send_money`. An
+# unknown name now requires the tool to be registered before it can be called.
 _TOOL_PERMISSIONS: dict[str, str] = {}
 
 
@@ -55,7 +60,10 @@ def can_execute(user_roles: set[str], tool_name: str) -> bool:
     """Check whether the user's roles allow executing the given tool."""
     if tool_name not in _TOOL_PERMISSIONS:
         _load_tool_permissions()
-    required = _TOOL_PERMISSIONS.get(tool_name, "read")
+    required = _TOOL_PERMISSIONS.get(tool_name)
+    if required is None:
+        # Not a registered tool: nothing to grant access to.
+        return False
     for role in user_roles:
         level = ROLE_LEVELS.get(role, set())
         if required in level:

@@ -1,0 +1,1509 @@
+{
+  "transcripts": [
+    {
+      "id": "T01",
+      "kind": "utterance",
+      "text": "Send 200k to Femi",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 200000 against money the ledger will not release"
+    },
+    {
+      "id": "T02",
+      "kind": "utterance",
+      "text": "transfer 500k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 500000 against money the ledger will not release"
+    },
+    {
+      "id": "T03",
+      "kind": "utterance",
+      "text": "pay Chidi 150k",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 150000 against money the ledger will not release"
+    },
+    {
+      "id": "T04",
+      "kind": "utterance",
+      "text": "send 300k to rent agent",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 300000 against money the ledger will not release"
+    },
+    {
+      "id": "T05",
+      "kind": "utterance",
+      "text": "give 120k to mum",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 120000 against money the ledger will not release"
+    },
+    {
+      "id": "T06",
+      "kind": "utterance",
+      "text": "send 200k to Femi",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 200000 against money the ledger will not release"
+    },
+    {
+      "id": "T07",
+      "kind": "utterance",
+      "text": "transfer 250k to supplier",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 250000 against money the ledger will not release"
+    },
+    {
+      "id": "T08",
+      "kind": "utterance",
+      "text": "pay 500k rent",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 500000 against money the ledger will not release"
+    },
+    {
+      "id": "T09",
+      "kind": "utterance",
+      "text": "send 199k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 199000 against money the ledger will not release"
+    },
+    {
+      "id": "T10",
+      "kind": "utterance",
+      "text": "move 500k to savings",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.1,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "order of 500000 against money the ledger will not release"
+    },
+    {
+      "id": "T11",
+      "kind": "utterance",
+      "text": "send 95k to Ada",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "95000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T12",
+      "kind": "utterance",
+      "text": "transfer 100k to Femi",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "100000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T13",
+      "kind": "utterance",
+      "text": "send 150k to Femi",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "150000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T14",
+      "kind": "utterance",
+      "text": "pay 90k to the landlord",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "90000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T15",
+      "kind": "utterance",
+      "text": "send 80k to Ada",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "80000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T16",
+      "kind": "utterance",
+      "text": "move 70k to my other account",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "70000 would leave rent of 120000 in 9 days uncovered"
+    },
+    {
+      "id": "T17",
+      "kind": "utterance",
+      "text": "send 5k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "2000",
+            "sleeve": "spendable",
+            "counterparty": "Ada"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "above the act-without-asking ceiling; the confirmed amount is the cap"
+    },
+    {
+      "id": "T18",
+      "kind": "utterance",
+      "text": "send 5k to Femi",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "2000",
+            "sleeve": "spendable",
+            "counterparty": "Femi"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "above the act-without-asking ceiling; the confirmed amount is the cap"
+    },
+    {
+      "id": "T19",
+      "kind": "utterance",
+      "text": "transfer 9k to Chidi",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "2000",
+            "sleeve": "spendable",
+            "counterparty": "Chidi"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "above the act-without-asking ceiling; the confirmed amount is the cap"
+    },
+    {
+      "id": "T20",
+      "kind": "utterance",
+      "text": "pay 5k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "2000",
+            "sleeve": "spendable",
+            "counterparty": "Ada"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "above the act-without-asking ceiling; the confirmed amount is the cap"
+    },
+    {
+      "id": "T21",
+      "kind": "utterance",
+      "text": "send 8k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "2000",
+            "sleeve": "spendable",
+            "counterparty": "Ada"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "above the act-without-asking ceiling; the confirmed amount is the cap"
+    },
+    {
+      "id": "T22",
+      "kind": "utterance",
+      "text": "send 1.5k to Ada",
+      "ledger": {
+        "spendable": 50000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.95,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "1500",
+            "sleeve": "spendable",
+            "counterparty": "Ada"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "under every ceiling; the user confirmed the exact proposal"
+    },
+    {
+      "id": "T23",
+      "kind": "utterance",
+      "text": "transfer 1k to Femi",
+      "ledger": {
+        "spendable": 50000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.95,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "1000",
+            "sleeve": "spendable",
+            "counterparty": "Femi"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "under every ceiling; the user confirmed the exact proposal"
+    },
+    {
+      "id": "T24",
+      "kind": "utterance",
+      "text": "pay 900 to Chidi",
+      "ledger": {
+        "spendable": 50000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.95,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "900",
+            "sleeve": "spendable",
+            "counterparty": "Chidi"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "under every ceiling; the user confirmed the exact proposal"
+    },
+    {
+      "id": "T25",
+      "kind": "utterance",
+      "text": "send 1.2k to Ada",
+      "ledger": {
+        "spendable": 50000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.95,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "1200",
+            "sleeve": "spendable",
+            "counterparty": "Ada"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "under every ceiling; the user confirmed the exact proposal"
+    },
+    {
+      "id": "T26",
+      "kind": "utterance",
+      "text": "give 800 to mum",
+      "ledger": {
+        "spendable": 50000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.95,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [
+          {
+            "amount": "800",
+            "sleeve": "spendable",
+            "counterparty": "mum"
+          }
+        ],
+        "sleeves": null
+      },
+      "note": "under every ceiling; the user confirmed the exact proposal"
+    },
+    {
+      "id": "T27",
+      "kind": "utterance",
+      "text": "can I buy this phone for 95k",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "advice",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "advice is answered, never executed"
+    },
+    {
+      "id": "T28",
+      "kind": "utterance",
+      "text": "can I afford 200k for a car",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "advice",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "advice is answered, never executed"
+    },
+    {
+      "id": "T29",
+      "kind": "utterance",
+      "text": "what is my balance",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "status is answered, never executed"
+    },
+    {
+      "id": "T30",
+      "kind": "utterance",
+      "text": "hey Miriam",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "smalltalk",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "smalltalk is answered, never executed"
+    },
+    {
+      "id": "T31",
+      "kind": "utterance",
+      "text": "why is rent so painful",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "status is answered, never executed"
+    },
+    {
+      "id": "T32",
+      "kind": "utterance",
+      "text": "should I buy a laptop for 300k",
+      "ledger": {
+        "spendable": 184000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 120000,
+        "rent_reserved": 0,
+        "due_in_days": 9
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "advice",
+        "afford": 0.21,
+        "violation": 0.9,
+        "reversible": 0.9,
+        "mode": "ask",
+        "action": "none"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "advice is answered, never executed"
+    },
+    {
+      "id": "T33",
+      "kind": "utterance",
+      "text": "send 1.5k to Ada",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T34",
+      "kind": "utterance",
+      "text": "transfer 2k to Femi",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T35",
+      "kind": "utterance",
+      "text": "send 200k to Femi",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T36",
+      "kind": "utterance",
+      "text": "pay 500 to Chidi",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T37",
+      "kind": "utterance",
+      "text": "send 3k to Ada",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T38",
+      "kind": "utterance",
+      "text": "move 1k to savings",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T39",
+      "kind": "utterance",
+      "text": "send 900 to mum",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T40",
+      "kind": "utterance",
+      "text": "transfer 4k to Ada",
+      "ledger": {
+        "spendable": 500000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": null,
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "JEV returned nothing; the rules fail closed to an ask"
+    },
+    {
+      "id": "T41",
+      "kind": "inflow",
+      "payment_id": "pay_sept",
+      "amount": "420000",
+      "source_raw": "ACME PAYROLL SEPTEMBER",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "split": {
+          "spendable": "144000.00",
+          "savings": "126000.00",
+          "locked": "150000.00"
+        }
+      },
+      "note": "money arriving splits in Hands with no rail call and no model"
+    },
+    {
+      "id": "T42",
+      "kind": "inflow",
+      "payment_id": "pay_oct",
+      "amount": "420000",
+      "source_raw": "ACME PAYROLL OCTOBER",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "split": {
+          "spendable": "144000.00",
+          "savings": "126000.00",
+          "locked": "150000.00"
+        }
+      },
+      "note": "money arriving splits in Hands with no rail call and no model"
+    },
+    {
+      "id": "T43",
+      "kind": "inflow",
+      "payment_id": "invoice_42",
+      "amount": "150000",
+      "source_raw": "INVOICE 0042 SETTLED",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "split": {
+          "spendable": "0.00",
+          "savings": "45000.00",
+          "locked": "105000.00"
+        }
+      },
+      "note": "money arriving splits in Hands with no rail call and no model"
+    },
+    {
+      "id": "T44",
+      "kind": "inflow",
+      "payment_id": "gift_mum",
+      "amount": "50000",
+      "source_raw": "TRANSFER FROM M O ADEYEMI",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "split": {
+          "spendable": "0.00",
+          "savings": "15000.00",
+          "locked": "35000.00"
+        }
+      },
+      "note": "money arriving splits in Hands with no rail call and no model"
+    },
+    {
+      "id": "T45",
+      "kind": "inflow",
+      "payment_id": "refund_air",
+      "amount": "32000",
+      "source_raw": "REFUND AIRLINE",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "split": {
+          "spendable": "0.00",
+          "savings": "9600.00",
+          "locked": "22400.00"
+        }
+      },
+      "note": "money arriving splits in Hands with no rail call and no model"
+    },
+    {
+      "id": "T46",
+      "kind": "inflow_twice",
+      "payment_id": "pay_dup_1",
+      "amount": "420000",
+      "source_raw": "ACME PAYROLL",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "splits": 1,
+        "split": {
+          "spendable": "144000.00",
+          "savings": "126000.00",
+          "locked": "150000.00"
+        }
+      },
+      "note": "the rail delivers the same payment twice; one split"
+    },
+    {
+      "id": "T47",
+      "kind": "inflow_twice",
+      "payment_id": "pay_dup_2",
+      "amount": "420000",
+      "source_raw": "ACME PAYROLL",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "splits": 1,
+        "split": {
+          "spendable": "144000.00",
+          "savings": "126000.00",
+          "locked": "150000.00"
+        }
+      },
+      "note": "the rail delivers the same payment twice; one split"
+    },
+    {
+      "id": "T48",
+      "kind": "inflow_twice",
+      "payment_id": "pay_dup_3",
+      "amount": "420000",
+      "source_raw": "ACME PAYROLL",
+      "ledger": {
+        "spendable": 0,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 150000,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "status",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "stay_quiet",
+        "action": "classify_only"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null,
+        "splits": 1,
+        "split": {
+          "spendable": "144000.00",
+          "savings": "126000.00",
+          "locked": "150000.00"
+        }
+      },
+      "note": "the rail delivers the same payment twice; one split"
+    },
+    {
+      "id": "T49",
+      "kind": "confirm_unknown",
+      "confirm_id": "confirm_never_issued",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 126000,
+        "yield": 0,
+        "locked": 150000,
+        "rent_required": 150000,
+        "rent_reserved": 150000,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": true,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "a tap on an id Hands never issued settles nothing"
+    },
+    {
+      "id": "T50",
+      "kind": "confirm_declined",
+      "text": "send 5k to Ada",
+      "ledger": {
+        "spendable": 90000,
+        "savings": 0,
+        "yield": 0,
+        "locked": 0,
+        "rent_required": 0,
+        "rent_reserved": 0,
+        "due_in_days": 6
+      },
+      "judge": {
+        "inflow": "salary",
+        "intent": "order",
+        "afford": 0.9,
+        "violation": 0.0,
+        "reversible": 0.9,
+        "mode": "act",
+        "action": "allow"
+      },
+      "confirmed": false,
+      "old_path": {
+        "rail_moves": [],
+        "sleeves": null
+      },
+      "note": "the user declined the challenge"
+    }
+  ]
+}

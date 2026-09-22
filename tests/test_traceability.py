@@ -17,7 +17,7 @@ from miriam_agent.observability.correlation import TRACE_HEADER
 from miriam_agent.observability.correlation import normalize_trace_id, current_trace_id
 
 from miriam_agent.api.main import app
-from miriam_agent.agents.agent_loop import Agent, ProposedAction
+from miriam_agent.agents.agent_loop import Agent
 from miriam_agent.safety.audit import AuditSystem
 from miriam_agent.onboarding.trace import TraceRecord
 

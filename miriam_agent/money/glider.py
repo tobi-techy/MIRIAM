@@ -1,8 +1,9 @@
 """Stage 5 - the Glider *decision*, as a draft rather than a promise.
 
 Which book, whether it is allowed at all, and how far a live portfolio has
-drifted from the approved target. The wire protocol lives in
-``integrations/glider_client.py``; this module never makes a request.
+drifted from the approved target. The wire goes through the Go money/ledger
+host (``/api/v1/investments/*``), which holds the only x-api-key; this module
+never makes a request and there is no direct Glider client in this repo.
 
 A Glider action requires **all** of:
 

@@ -92,11 +92,30 @@ class Settings(BaseSettings):
     # Safety
     MAX_DAILY_TRANSFER: float = Field(default=10000.0)
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
-    AUTO_APPROVE_THRESHOLD: float = Field(default=100.0)
-    # Server-side pending-confirmation ledger values: money actions above this
-    # amount (in any of amount/amount_ngn/amount_usd) must be covered by a
-    # staged confirmation record before the Go side is ever asked to move money.
-    APPROVAL_REQUIRED_ABOVE: float = Field(default=2000.0)
+    # The ceiling above which a money movement needs the user's confirmation.
+    # Read by ``hands/limits.Policy.from_settings`` as max_auto; it is the only
+    # consumer. There is no client-side or tool-side approval step.
+    #
+    # Zero, deliberately, and it should stay zero until the inflow webhook has
+    # been right in production for a while: at zero nothing moves without a tap,
+    # because every movement is above the ceiling and so becomes a challenge.
+    # Raise it once Miriam's ledger has been shown to track Go's credits exactly,
+    # since the ceiling is what lets her act on her own.
+    APPROVAL_REQUIRED_ABOVE: float = Field(default=0.0)
+
+    # Terminal invest testing. When true, the Spectrum endpoint accepts a
+    # text-carried wallet signature on the terminal channel (ephemeral local
+    # keypair, real ed25519). When false (the default, and always in any demo
+    # recording) signatures arrive only through the wallet authorize flow, and
+    # text-carried signatures are refused outright.
+    RAIL_ALLOW_DEV_SIGN: bool = Field(default=False)
+
+    # Whether this deployment runs exactly one process. Money turns read the
+    # ledger from Redis; with more than one worker, falling back to process
+    # memory during an outage would give the same user two ledgers. Leave this
+    # off unless the service really is a single instance, in which case a Redis
+    # outage degrades to an in-process ledger instead of refusing every turn.
+    MONEY_SINGLE_PROCESS: bool = Field(default=False)
 
     # TypeSafe judgment layer (System One). A typed decision layer that runs
     # in front of the generator: the ingress gate classifies the turn and
@@ -125,6 +144,15 @@ class Settings(BaseSettings):
     PROACTIVE_MIN_INTERVAL_HOURS: float = Field(default=12.0)
     PROACTIVE_MAX_TOKENS: int = Field(default=700)
     PROACTIVE_TEMPERATURE: float = Field(default=0.4)
+
+    # Miriam's three money layers (hands -> judgment -> voice), reached through
+    # orchestrator.py. On means a money turn is routed to the orchestrator
+    # instead of the agent loop, which is the only path that can move money.
+    #
+    # Turning this off does NOT restore the old writer: the money tools are not
+    # in the live registry either way, so the agent loop cannot reach a rail
+    # whichever way the flag is set. The flag decides routing, never authority.
+    MONEY_LAYERS_ENABLED: bool = Field(default=True)
 
     # Conversational onboarding: the LLM-led financial interview the Python
     # brain runs before the general agent. Miriam (the LLM) carries the whole
@@ -187,17 +215,10 @@ class Settings(BaseSettings):
     # The drawdown the book must survive without the user selling (R-HOUSEL-1).
     MONEY_DRAWDOWN_TOLERANCE_PCT: float = Field(default=40.0)
 
-    # Glider B2B API (https://docs.glider.fi/api-reference/v2-overview).
-    # Direct v2 access with an x-api-key. Reads, strategy validation and draft
-    # creation only -- no enrollment or withdrawal is ever agent-initiated.
-    GLIDER_API_BASE_URL: str = Field(default="https://api.glider.fi/v2")
-    GLIDER_API_KEY: str = Field(default="")
-    GLIDER_REQUEST_TIMEOUT: float = Field(default=20.0)
-    GLIDER_MAX_RETRIES: int = Field(default=2)
-    # Poll cadence for async operations (Glider asks for 2-5s; a dispatched
-    # operation has no SLA, so callers poll rather than assume settlement).
-    GLIDER_OPERATION_POLL_SECONDS: float = Field(default=3.0)
-    GLIDER_OPERATION_MAX_POLLS: int = Field(default=40)
+    # Glider reads go through the Go money/ledger host
+    # (``integrations.go_client`` -> ``/api/v1/investments/*``), which holds
+    # the only x-api-key. Python must never carry one: there is no GLIDER_API_KEY
+    # here on purpose, so no code path in this repo can talk to Glider directly.
 
     model_config = {
         "env_file": ".env",
@@ -220,15 +241,50 @@ class Settings(BaseSettings):
 
         weak = {"", "change-me-in-production"}
         problems: list[str] = []
-        if self.JWT_SECRET in weak or len(self.JWT_SECRET) < 32:
+
+        def _is_dev_placeholder(value: str) -> bool:
+            # .env.example ships dev-only secrets (e.g. dev-jwt-secret-...);
+            # they are long enough to pass the length check but public, so
+            # copying .env.example into production must fail loudly here.
+            return value in weak or value.startswith("dev-")
+
+        if _is_dev_placeholder(self.JWT_SECRET) or len(self.JWT_SECRET) < 32:
             problems.append(
                 "JWT_SECRET must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if self.SECRET_KEY in weak or len(self.SECRET_KEY) < 32:
+        if _is_dev_placeholder(self.SECRET_KEY) or len(self.SECRET_KEY) < 32:
             problems.append(
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
+            )
+        if (
+            _is_dev_placeholder(self.ENCRYPTION_KEY)
+            or len(self.ENCRYPTION_KEY) < 32
+        ):
+            problems.append(
+                "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
+                "production; deriving it from SECRET_KEY via single SHA-256 is not "
+                "a KDF and must not be used in production"
+            )
+        if not self.JWT_AUDIENCE or len(self.JWT_AUDIENCE) < 3:
+            problems.append(
+                "JWT_AUDIENCE must be set (e.g. 'miriam-api') in production; "
+                "without it tokens can be replayed across services sharing JWT_SECRET"
+            )
+        if not self.JWT_ISSUER or len(self.JWT_ISSUER) < 3:
+            problems.append(
+                "JWT_ISSUER must be set (e.g. 'rail-backend') in production"
+            )
+        if "*" in {origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")}:
+            problems.append(
+                "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
+                "allowlist of origins"
+            )
+        if ":miriam_password@" in self.DATABASE_URL:
+            problems.append(
+                "DATABASE_URL must not contain the default password 'miriam_password' "
+                "in production; inject via secrets"
             )
         if problems:
             raise ValueError("; ".join(problems))

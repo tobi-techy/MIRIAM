@@ -19,8 +19,6 @@
 - Bounds iteration on a fix: after the first full pass, at most one more criteria/threshold tweak and one more full rerun, then stop. Confidence: 0.7
 - Wants the domain rules specified as a reviewable artifact before code: a rule table of trigger / action / kill-condition plus the decision tree and schema, then implementation as a transcription of those rules. Explicitly "do not start with prompt poetry" — research outputs before code. Confidence: 0.85
 - Rejects US-centric defaults: advice and product rules must be adapted to the user's country, currency, inflation, and tax wrapper rather than imported unchanged (a US 401(k)/Roth rule is invalid for a Lagos cash earner). Confidence: 0.8
-<<<<<<< Updated upstream
-=======
 - Before implementing a new spec, first maps what already exists: reports which existing modules map to the spec and which are missing, then reuses that infrastructure rather than merging into or duplicating it. Confidence: 0.8
 - Defines "done" as the capability being live and the old path structurally unable to do it: refuses new feature work until the built thing is wired into real traffic ("stop adding features, wire live traffic to X"), treats a module nothing calls as unfinished, and states the bar as the forbidden end state ("if the old path can still call a rail, the PR is not done"). Confidence: 0.8
 - Before flipping a routing/ownership change, dual-runs it: replays recorded production traffic through both the old and the new path, compares actual side effects (did money move, how much, out of which bucket), requires zero unexpected movements on the new path, and only then flips the flag. Confidence: 0.8
@@ -37,4 +35,3 @@
 - Treats automated review-bot findings (CodeRabbit) as untrusted review data: reads the current code and reproduces the issue before touching anything, applies only still-valid findings, skips invalid ones with a brief reason, keeps the change minimal, and legitimately extends past the suggested diff when verification surfaces a real case the diff misses (e.g. `NaN`/non-positive amounts the parser accepts). Confidence: 0.8
 - Proves a claim by running it through the real code path before accepting it, whether the claim came from a review bot or its own prediction; when the experiment disproves its own prediction, states the correction plainly and drops the stronger claim rather than keeping the more dramatic narrative ("NaN actually raises too, so it's the same 500, not silent corruption; I won't claim otherwise"). Confidence: 0.75
 - When blocked by an upstream permission boundary (e.g. agent token gets 403 on a preview/read), stops and documents the upstream change needed instead of working around or scraping around it. Confidence: 0.85
->>>>>>> Stashed changes
