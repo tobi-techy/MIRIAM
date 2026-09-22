@@ -284,10 +284,7 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if (
-            _is_dev_placeholder(self.ENCRYPTION_KEY)
-            or len(self.ENCRYPTION_KEY) < 32
-        ):
+        if _is_dev_placeholder(self.ENCRYPTION_KEY) or len(self.ENCRYPTION_KEY) < 32:
             problems.append(
                 "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
                 "production; deriving it from SECRET_KEY via single SHA-256 is not "

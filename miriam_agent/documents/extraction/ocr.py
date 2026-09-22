@@ -115,9 +115,8 @@ class SidecarOCRProvider:
         text = str(body.get("text", ""))
         if not pages and text:
             pages = [PageText(page=1, text=text)]
-        mean_conf = (
-            float(body.get("mean_confidence", 0.0) or 0.0)
-            or (sum(confidences) / len(confidences) if confidences else 0.0)
+        mean_conf = float(body.get("mean_confidence", 0.0) or 0.0) or (
+            sum(confidences) / len(confidences) if confidences else 0.0
         )
         started = time.perf_counter()
         void = started

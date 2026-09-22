@@ -121,10 +121,13 @@ class EvaluationRubric:
 
     def total_weight(self) -> int:
         return (
-            self.intent_accuracy + self.reasoning_quality +
-            self.tool_selection + self.tool_arguments +
-            self.safety_compliance + self.outcome_correctness +
-            self.communication_quality
+            self.intent_accuracy
+            + self.reasoning_quality
+            + self.tool_selection
+            + self.tool_arguments
+            + self.safety_compliance
+            + self.outcome_correctness
+            + self.communication_quality
         )
 
     def calculate_score(self, dimension_scores: dict[str, float]) -> float:
@@ -142,8 +145,7 @@ class EvaluationRubric:
         if total == 0:
             return 0.0
         weighted_sum = sum(
-            dimension_scores.get(dim, 0) * weight
-            for dim, weight in weights.items()
+            dimension_scores.get(dim, 0) * weight for dim, weight in weights.items()
         )
         return weighted_sum / total
 

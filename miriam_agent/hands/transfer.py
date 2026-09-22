@@ -473,8 +473,7 @@ async def execute_transfer(
             idempotency_key=idempotency_key,
             at=timestamp,
             detail=(
-                f"the ledger could not record the movement ({exc}); "
-                f"{reversal_fact}"
+                f"the ledger could not record the movement ({exc}); " f"{reversal_fact}"
             ),
         )
         # Keep the rail reference on the receipt, not only in a log line: this is

@@ -133,7 +133,7 @@ def _column_roles(
 
 
 def _find_header(
-    lines: list[tuple[int, str]]
+    lines: list[tuple[int, str]],
 ) -> tuple[int, dict[str, tuple[int, int]], dict[str, int]] | None:
     for idx, (_, text) in enumerate(lines):
         if (
@@ -339,9 +339,7 @@ def _mapped_rows(
             # PURCHASE FROM ONLINE STORE" kept, "NIGERIA REF 993201" dropped).
             continuation = _continuation_text(text, assigned)
             if continuation:
-                pending.description = (
-                    f"{pending.description} {continuation}".strip()
-                )
+                pending.description = f"{pending.description} {continuation}".strip()
                 pending.raw_description += "\n" + text
             if pending.amount is None and (debit or credit or single):
                 amount, direction, _ = _direction_from(debit, credit, single)
@@ -369,9 +367,7 @@ def _mapped_rows(
     return txns
 
 
-def _continuation_text(
-    text: str, assigned: dict[str, tuple[int, int, str]]
-) -> str:
+def _continuation_text(text: str, assigned: dict[str, tuple[int, int, str]]) -> str:
     """The descriptive part of a wrapped row: everything but its money cells."""
     spans = sorted((start, end) for start, end, _ in assigned.values())
     if not spans:
@@ -452,6 +448,8 @@ def extract_statement(text: ExtractedText) -> StatementExtraction:
         out.total_credits = credits
         out.total_debits = debits
     return out
+
+
 def _text_lines(text: ExtractedText) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     for page in text.pages:
@@ -466,5 +464,3 @@ def _text_lines(text: ExtractedText) -> list[tuple[int, str]]:
     if not out and text.full_text:
         out = [(1, ln.strip()) for ln in text.full_text.splitlines() if ln.strip()]
     return out
-
-

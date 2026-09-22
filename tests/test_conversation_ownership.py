@@ -206,7 +206,5 @@ def test_endpoint_guard_allows_a_not_yet_existing_id():
 def test_endpoint_guard_passes_through_a_missing_id():
     from miriam_agent.api.chat import _require_owned_conversation
 
-    resolved = _run(
-        _require_owned_conversation(_guarded(None), _user("user-A"), None)
-    )
+    resolved = _run(_require_owned_conversation(_guarded(None), _user("user-A"), None))
     assert resolved is None

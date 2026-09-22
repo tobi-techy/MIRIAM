@@ -211,9 +211,7 @@ def test_agent_client_exposes_no_withdrawal_method():
     from miriam_agent.integrations.go_client import GoBackendClient
 
     methods = [name for name in dir(GoBackendClient) if not name.startswith("__")]
-    assert not any(
-        "withdraw" in name and "preview" not in name for name in methods
-    )
+    assert not any("withdraw" in name and "preview" not in name for name in methods)
 
 
 def test_stash_transfers_use_real_paths_and_idempotency_header():
@@ -392,7 +390,16 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
         return httpx.Response(404, json={"error": "not found"})
 
     client = _client_for(handler)
-    plan = _run(client.get_financial_plan("tok"))
+
+    # The composition lives in the financial layer now (the client is a raw
+    # adapter), so the engine functions are called with the client injected.
+    from miriam_agent.financial.intelligence import (
+        cash_flow_forecast_live,
+        financial_health_live,
+        financial_plan_live,
+    )
+
+    plan = _run(financial_plan_live(client, "tok"))
     assert "/api/v1/analytics/financial-snapshot" in seen_paths
     assert "/api/v1/financial-obligations" in seen_paths
     assert "/api/v1/ai/financial-plan" not in seen_paths
@@ -402,11 +409,11 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
     assert plan["engine"] == "financial-snapshot"
     assert plan["next_steps"][0]["priority"] == 1
     assert plan["health"]["score"] >= 0
-    health = _run(client.get_financial_health("tok"))
+    health = _run(financial_health_live(client, "tok"))
     assert health["source"] == "python"
     assert health["engine"] == "financial-snapshot"
     assert "/api/v1/ai/financial-health" not in seen_paths
-    forecast = _run(client.get_cash_flow_forecast("tok"))
+    forecast = _run(cash_flow_forecast_live(client, "tok"))
     assert forecast["engine"] == "financial-snapshot"
     assert forecast["spend_balance"] == 10.0
     _run(client.close())
@@ -429,9 +436,7 @@ def test_user_enroll_hits_prepare_and_complete_paths():
     client = _client_for(handler)
     owner = _run(client.get_investment_owner("tok"))
     assert owner["owner_account_id"] == "solana:x:y"
-    out = _run(
-        client.prepare_user_enroll("tok", {"strategy_id": "s1"})
-    )
+    out = _run(client.prepare_user_enroll("tok", {"strategy_id": "s1"}))
     assert out["status"] == "COMPLETED"
     out = _run(
         client.complete_user_enroll(

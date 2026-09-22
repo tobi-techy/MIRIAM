@@ -244,7 +244,7 @@ class FakeState:
 
 class FakeGoAgentClient:
     def __init__(self):
-        self.health_periods = []
+        self.health_windows = []
         self.plan_calls = 0
 
     async def get_balances(self, token):
@@ -265,13 +265,12 @@ class FakeGoAgentClient:
     async def get_upcoming_bills(self, token):
         return []
 
-    async def get_financial_health(self, token, period="last_90_days"):
-        self.health_periods.append(period)
-        return {"score": 72, "period": period}
-
-    async def get_financial_plan(self, token):
-        self.plan_calls += 1
-        return {"plan": "engine", "next_steps": ["top up emergency fund"]}
+    async def engine_snapshot(self, token, from_date=None, to_date=None):
+        # The analyst goes through financial.intelligence.financial_health_live,
+        # which resolves the period into an explicit (from, to) window before
+        # asking the client for the snapshot.
+        self.health_windows.append((from_date, to_date))
+        return {"period_requested": (from_date, to_date)}
 
     async def get_user_profile(self, token):
         return {"profile": {"name": "Test User"}}
@@ -336,6 +335,18 @@ def test_analyst_threads_period_into_health_and_uses_engine_plan(monkeypatch):
     monkeypatch.setattr(gc, "_client", fake)
 
     captured = {}
+    seen = {}
+
+    async def fake_health_live(client, token, period="last_90_days"):
+        seen["health_period"] = period
+        return {"score": 72, "period": period}
+
+    async def fake_plan_live(client, token):
+        seen["plan_fetched"] = True
+        return {"plan": "engine", "next_steps": ["top up emergency fund"]}
+
+    monkeypatch.setattr(analyst, "financial_health_live", fake_health_live)
+    monkeypatch.setattr(analyst, "financial_plan_live", fake_plan_live)
 
     class Provider:
         model = "mock"
@@ -365,8 +376,8 @@ def test_analyst_threads_period_into_health_and_uses_engine_plan(monkeypatch):
         )
     )
 
-    assert fake.health_periods == ["last_12_months"]
-    assert fake.plan_calls == 1
+    assert seen["health_period"] == "last_12_months"
+    assert seen["plan_fetched"] is True
     snapshot = captured["content"]
     assert "Financial health" in snapshot
     assert "Financial plan" in snapshot

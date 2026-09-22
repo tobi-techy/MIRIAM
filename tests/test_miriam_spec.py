@@ -28,6 +28,8 @@ def test_spec_version_is_accessible():
     """Test that the spec version is properly defined and accessible."""
     assert SPEC_VERSION == "1.2"
     assert SPEC_VERSION, "SPEC_VERSION should be defined"
+
+
 def test_spec_directory_exists():
     """Test that the spec directory structure exists."""
     spec_dir = Path(__file__).parent.parent / "miriam_agent" / "spec"
@@ -46,9 +48,9 @@ def test_sections_structure():
         assert "title" in section_data, f"Section {section_num} should have title"
         assert "topic" in section_data, f"Section {section_num} should have topic"
         assert "rule_ids" in section_data, f"Section {section_num} should have rule_ids"
-        assert "enforce_by" in section_data, (
-            f"Section {section_num} should have enforce_by"
-        )
+        assert (
+            "enforce_by" in section_data
+        ), f"Section {section_num} should have enforce_by"
 
 
 def test_every_section_has_rule_content():
@@ -56,9 +58,9 @@ def test_every_section_has_rule_content():
     for section_num, section_data in SECTIONS.items():
         # Section should have either rule_ids or topic with substantive content
         assert (
-            section_data["rule_ids"] or
-            "definition" in section_data["topic"].lower() or
-            "example" in section_data["topic"].lower()
+            section_data["rule_ids"]
+            or "definition" in section_data["topic"].lower()
+            or "example" in section_data["topic"].lower()
         ), (
             f"Section {section_num} ({section_data['title']}) "
             "must have at least one rule or definition"
@@ -79,6 +81,7 @@ def test_transaction_classes_coverage():
     # Load tool registry to check for money-movement tools
     try:
         from miriam_agent.tools import ensure_registered
+
         registry = ensure_registered()
 
         # Find all mutation tools
@@ -88,8 +91,9 @@ def test_transaction_classes_coverage():
         # Every mutation tool should have a corresponding transaction class
         for tool in mutation_tools:
             tool_name = tool.name
-            assert any(tool_name in tc for tc in TRANSACTION_CLASSES.keys()), \
-                f"Tool {tool_name} should have a corresponding transaction class"
+            assert any(
+                tool_name in tc for tc in TRANSACTION_CLASSES.keys()
+            ), f"Tool {tool_name} should have a corresponding transaction class"
 
     except ImportError:
         # If we can't load the tool registry, skip this test
@@ -106,9 +110,9 @@ def test_reasoning_order_structure():
     # Should contain key financial concepts
     assert "INCOME" in REASONING_ORDER, "REASONING_ORDER should include INCOME"
     assert "GOALS" in REASONING_ORDER, "REASONING_ORDER should include GOALS"
-    assert "OPTIMIZATION" in REASONING_ORDER, (
-        "REASONING_ORDER should include OPTIMIZATION"
-    )
+    assert (
+        "OPTIMIZATION" in REASONING_ORDER
+    ), "REASONING_ORDER should include OPTIMIZATION"
 
 
 def test_anti_patterns_structure():
@@ -117,12 +121,12 @@ def test_anti_patterns_structure():
 
     for pattern_id, pattern_data in ANTI_PATTERNS.items():
         assert "name" in pattern_data, f"Anti-pattern {pattern_id} should have name"
-        assert "description" in pattern_data, (
-            f"Anti-pattern {pattern_id} should have description"
-        )
-        assert "violates" in pattern_data, (
-            f"Anti-pattern {pattern_id} should have violates"
-        )
+        assert (
+            "description" in pattern_data
+        ), f"Anti-pattern {pattern_id} should have description"
+        assert (
+            "violates" in pattern_data
+        ), f"Anti-pattern {pattern_id} should have violates"
         assert "fix" in pattern_data, f"Anti-pattern {pattern_id} should have fix"
 
 
@@ -146,8 +150,9 @@ def test_spec_hash_calculation():
         ).encode()
     ).hexdigest()
 
-    assert content_hash() == expected_hash, \
-        "Content hash should match calculated hash from registry data"
+    assert (
+        content_hash() == expected_hash
+    ), "Content hash should match calculated hash from registry data"
 
 
 def test_spec_hash_binding_to_version():
@@ -184,6 +189,7 @@ def test_transaction_classes_for_all_mutation_tools():
     # Load tool registry to check for money-movement tools
     try:
         from miriam_agent.tools import ensure_registered
+
         registry = ensure_registered()
 
         # Find all tools with requires_approval (they should have transaction classes)
@@ -192,9 +198,10 @@ def test_transaction_classes_for_all_mutation_tools():
 
         for tool in approval_tools:
             tool_name = tool.name
-            assert any(tc in tool_name for tc in TRANSACTION_CLASSES.keys()) or \
-                   tool_name.replace("_", "_") in TRANSACTION_CLASSES, \
-                f"Tool {tool_name} should have a corresponding transaction class"
+            assert (
+                any(tc in tool_name for tc in TRANSACTION_CLASSES.keys())
+                or tool_name.replace("_", "_") in TRANSACTION_CLASSES
+            ), f"Tool {tool_name} should have a corresponding transaction class"
 
     except ImportError:
         # If we can't load the tool registry, skip this test
@@ -278,19 +285,23 @@ def test_spec_gives_clear_implementation_guidance():
 
         # Check for implementation guidance sections
         implementation_keywords = [
-            "Implementation", "How", "Guide", "Steps", "Process", "Architecture"
+            "Implementation",
+            "How",
+            "Guide",
+            "Steps",
+            "Process",
+            "Architecture",
         ]
 
         has_implementation_guidance = any(
-            keyword.lower() in markdown.lower()
-            for keyword in implementation_keywords
+            keyword.lower() in markdown.lower() for keyword in implementation_keywords
         )
 
         # While we want implementation guidance, the spec focuses on behavioral rules
         # So this test should be flexible
-        assert has_implementation_guidance or True, (
-            "Spec should provide implementation guidance"
-        )
+        assert (
+            has_implementation_guidance or True
+        ), "Spec should provide implementation guidance"
 
     except ImportError as e:
         pytest.skip(f"Could not import spec loader: {e}")
@@ -313,9 +324,9 @@ def test_spec_is_machine_readable():
         assert len(markdown) > 1000, "Spec should be substantial"
 
         # Check that sections are structured (not just prose)
-        assert SECTIONS is not None and len(SECTIONS) > 0, (
-            "Spec should have structured sections"
-        )
+        assert (
+            SECTIONS is not None and len(SECTIONS) > 0
+        ), "Spec should have structured sections"
 
         # Check that rules are structured
         assert RULES is not None and len(RULES) > 0, "Spec should have structured rules"

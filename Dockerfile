@@ -4,8 +4,8 @@ FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
 
@@ -14,15 +14,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+# The image builds from uv.lock, not from the loose pyproject ranges: CI
+# checks lock freshness that deployment used to ignore, so what is tested is
+# not what shipped. --frozen refuses to run if the lock is stale.
+COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /usr/local/bin/
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+
 COPY miriam_agent ./miriam_agent
 COPY entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
-
-RUN pip install --upgrade pip \
-    && pip install --no-cache-dir "uvicorn[standard]" . \
+RUN chmod +x ./entrypoint.sh \
+    && uv sync --frozen --no-dev \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# uv sync installs into /app/.venv; put it on PATH for entrypoint and probes.
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Least privilege: non-root user
 RUN useradd -m -u 10001 miriam && chown -R miriam:miriam /app

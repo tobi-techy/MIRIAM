@@ -84,7 +84,9 @@ def test_production_rejects_dev_example_secrets():
     with pytest.raises(Exception):
         _strong(SECRET_KEY="dev-secret-key-change-in-production")
     with pytest.raises(Exception):
-        _strong(ENCRYPTION_KEY="dev-encryption-key-change-in-production-must-be-32-chars")
+        _strong(
+            ENCRYPTION_KEY="dev-encryption-key-change-in-production-must-be-32-chars"
+        )
 
 
 def test_production_rejects_default_db_password():

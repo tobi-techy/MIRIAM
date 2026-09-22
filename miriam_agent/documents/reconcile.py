@@ -54,8 +54,7 @@ def reconcile(ext: StatementExtraction, *, tolerance: Decimal) -> ReconResult:
                 name="statement_balance",
                 passed=False,
                 message=(
-                    f"expected {expected}, closing "
-                    f"{ext.closing_balance.normalized}"
+                    f"expected {expected}, closing " f"{ext.closing_balance.normalized}"
                 ),
             )
         )

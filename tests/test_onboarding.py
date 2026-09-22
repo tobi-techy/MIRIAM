@@ -1770,12 +1770,11 @@ def test_data_question_mid_interview_does_not_take_over(monkeypatch):
     _run(service.handle_turn(user, message="hey"))
 
     asked = _run(service.handle_turn(user, message="show me my transactions"))
-    assert asked.took_over is False, (
-        "a data question must not be answered by the tool-less onboarding conductor"
-    )
+    assert (
+        asked.took_over is False
+    ), "a data question must not be answered by the tool-less onboarding conductor"
 
     narrative = _run(service.handle_turn(user, message="I spend too much on food"))
-    assert narrative.took_over is True, (
-        "a narrative answer is interview material and must stay in the flow"
-    )
-
+    assert (
+        narrative.took_over is True
+    ), "a narrative answer is interview material and must stay in the flow"

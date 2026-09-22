@@ -189,8 +189,9 @@ registry.register(
 async def _get_financial_plan(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
-    client = get_go_client()
-    return await client.get_financial_plan(ctx["token"])
+    from miriam_agent.financial.intelligence import financial_plan_live
+
+    return await financial_plan_live(get_go_client(), ctx["token"])
 
 
 registry.register(
@@ -1290,8 +1291,9 @@ registry.register(
 async def _get_cash_flow_forecast(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
-    client = get_go_client()
-    return await client.get_cash_flow_forecast(ctx["token"])
+    from miriam_agent.financial.intelligence import cash_flow_forecast_live
+
+    return await cash_flow_forecast_live(get_go_client(), ctx["token"])
 
 
 registry.register(
@@ -1312,9 +1314,10 @@ registry.register(
 async def _get_financial_health(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
-    client = get_go_client()
-    return await client.get_financial_health(
-        ctx["token"], period=args.get("period", "last_90_days")
+    from miriam_agent.financial.intelligence import financial_health_live
+
+    return await financial_health_live(
+        get_go_client(), ctx["token"], period=args.get("period", "last_90_days")
     )
 
 
@@ -1365,6 +1368,20 @@ def build_tool_registry() -> Any:
     registration side effects, so the removal has to happen after that import
     rather than by not importing.
     """
+    from miriam_agent.auth import rbac
+
     for name in sorted(MONEY_TOOL_NAMES):
         registry.unregister(name)
+    # Push the tool metadata into RBAC from this side (adapters ->
+    # cross_cutting is the allowed direction; auth must not import tools).
+    rbac.register_tool_permissions(
+        {
+            tool.name: (
+                "execute"
+                if (tool.is_mutation or tool.requires_approval)
+                else "read"
+            )
+            for tool in registry
+        }
+    )
     return registry

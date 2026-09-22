@@ -26,6 +26,7 @@ from miriam_agent.safety.audit import AuditSystem
 
 # ---- Test helpers ----
 
+
 @pytest.fixture
 def mock_registry(mocker):
     reg = mocker.MagicMock()
@@ -36,6 +37,7 @@ def mock_registry(mocker):
     reg.add_observer = mocker.MagicMock()
     return reg
 
+
 @pytest.fixture
 def mock_provider(mocker):
     prov = mocker.MagicMock()
@@ -44,6 +46,7 @@ def mock_provider(mocker):
     prov.cost_estimate = mocker.MagicMock()
     return prov
 
+
 @pytest.fixture
 def mock_audit_store(mocker):
     store = mocker.MagicMock(spec=AuditSystem)
@@ -51,6 +54,7 @@ def mock_audit_store(mocker):
     store.__aenter__ = mocker.AsyncMock(return_value=store)
     store.__aexit__ = mocker.AsyncMock()
     return store
+
 
 # ---- Traceability chain tests ----
 
@@ -176,7 +180,9 @@ def test_no_trace_id_leakage_between_requests():
         tid2 = tid2
     assert tid1 != tid2
 
+
 # ---- Integration-like end-to-end tests ----
+
 
 @pytest.mark.asyncio
 async def test_trace_id_propagates_through_agent_to_tool_result():

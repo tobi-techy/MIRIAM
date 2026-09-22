@@ -42,18 +42,18 @@ def test_examples_have_required_fields():
         examples = parse_spec_examples(markdown)
 
         for example in examples:
-            assert isinstance(example, SpecExample), (
-                f"Example should be SpecExample: {example}"
-            )
+            assert isinstance(
+                example, SpecExample
+            ), f"Example should be SpecExample: {example}"
             assert example.id, "Example should have an ID"
             assert example.section, "Example should have a section"
             assert example.scenario, "Example should have a scenario"
             assert example.bad, "Example should have a bad response"
             assert example.good, "Example should have a good response"
             assert example.why_good, "Example should have why good explanation"
-            assert example.failure_mode_prevented, (
-                "Example should have failure mode prevented"
-            )
+            assert (
+                example.failure_mode_prevented
+            ), "Example should have failure mode prevented"
             assert example.violated_rule, "Example should have violated rule"
 
     except ImportError:
@@ -95,12 +95,14 @@ def test_bad_examples_fail_lint():
         for example in examples:
             # Bad responses should have violations
             violations = evaluate_reply(example.bad)
-            assert violations, \
-                f"Bad example {example.id} should fail lint but has no violations"
+            assert (
+                violations
+            ), f"Bad example {example.id} should fail lint but has no violations"
 
             # Should violate the rule it claims
-            assert example.violated_rule in str(violations), \
-                f"Bad example {example.id} should violate rule {example.violated_rule}"
+            assert example.violated_rule in str(
+                violations
+            ), f"Bad example {example.id} should violate rule {example.violated_rule}"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -116,8 +118,9 @@ def test_spec_examples_have_minimum_count():
         markdown = load_markdown()
         examples = parse_spec_examples(markdown)
 
-        assert len(examples) >= 20, \
-            f"Should have at least 20 examples, found {len(examples)}"
+        assert (
+            len(examples) >= 20
+        ), f"Should have at least 20 examples, found {len(examples)}"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -136,8 +139,9 @@ def test_example_ids_are_unique():
         ids = [example.id for example in examples]
         unique_ids = set(ids)
 
-        assert len(ids) == len(unique_ids), \
-            f"Example IDs should be unique, found duplicates: {ids}"
+        assert len(ids) == len(
+            unique_ids
+        ), f"Example IDs should be unique, found duplicates: {ids}"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -157,8 +161,9 @@ def test_examples_cover_different_sections():
         sections = set(example.section for example in examples)
 
         # Should cover multiple sections (not just one)
-        assert len(sections) >= 3, \
-            f"Examples should cover multiple sections, found: {sections}"
+        assert (
+            len(sections) >= 3
+        ), f"Examples should cover multiple sections, found: {sections}"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -177,8 +182,7 @@ def test_examples_have_meaningful_violations():
         for example in examples:
             # Each example should violate at least one rule
             violations = evaluate_reply(example.bad)
-            assert violations, \
-                f"Example {example.id} should violate at least one rule"
+            assert violations, f"Example {example.id} should violate at least one rule"
 
             # The violated rule should be in the violations
             # This is a sanity check for the example structure
@@ -204,13 +208,13 @@ def test_spec_examples_integration_with_quality_module():
         for i, example in enumerate(examples[:5]):  # Test first 5 examples
             # Good response should pass
             good_violations = evaluate_reply(example.good)
-            assert not good_violations, \
-                f"Example {example.id} good response should pass: {good_violations}"
+            assert (
+                not good_violations
+            ), f"Example {example.id} good response should pass: {good_violations}"
 
             # Bad response should fail
             bad_violations = evaluate_reply(example.bad)
-            assert bad_violations, \
-                f"Example {example.id} bad response should fail"
+            assert bad_violations, f"Example {example.id} bad response should fail"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -228,12 +232,14 @@ def test_examples_have_explanatory_text():
 
         for example in examples:
             # Should have explanation for why it's good
-            assert len(example.why_good) > 10, \
-                f"Example {example.id} should have meaningful why good explanation"
+            assert (
+                len(example.why_good) > 10
+            ), f"Example {example.id} should have meaningful why good explanation"
 
             # Should have explanation for failure mode prevented
-            assert len(example.failure_mode_prevented) > 10, \
-                f"Example {example.id} should have meaningful failure mode prevented"
+            assert (
+                len(example.failure_mode_prevented) > 10
+            ), f"Example {example.id} should have meaningful failure mode prevented"
 
     except ImportError:
         pytest.skip("Could not import spec examples module")
@@ -256,7 +262,7 @@ def test_spec_examples_can_be_loaded_without_markdown():
             good="Good response",
             why_good="Why it's good",
             failure_mode_prevented="Failure mode prevented",
-            violated_rule="R1"
+            violated_rule="R1",
         )
 
         assert example.id == "test-example"
@@ -286,7 +292,7 @@ def test_example_validation_handles_errors_gracefully():
             good="",
             why_good="",
             failure_mode_prevented="",
-            violated_rule=""
+            violated_rule="",
         )
 
         # Validation should still work (even if results are empty)

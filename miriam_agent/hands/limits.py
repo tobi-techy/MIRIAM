@@ -66,9 +66,7 @@ class Policy:
             max_auto=money(settings.APPROVAL_REQUIRED_ABOVE),
             max_with_confirm=money(settings.MAX_TRANSACTION_AMOUNT),
             reversible_under=money(settings.APPROVAL_REQUIRED_ABOVE),
-            max_daily=(
-                money(daily) if daily is not None else money(DAILY_CAP_DEFAULT)
-            ),
+            max_daily=(money(daily) if daily is not None else money(DAILY_CAP_DEFAULT)),
         )
 
     def is_locked(self, sleeve: str) -> bool:
@@ -210,9 +208,7 @@ def _day_start(at: datetime | None) -> datetime:
         zone = ZoneInfo(get_settings().MONEY_DAY_TIMEZONE)
     except Exception:
         zone = UTC
-    return (
-        moment.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
-    )
+    return moment.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def evaluate_limits(

@@ -23,9 +23,11 @@ from miriam_agent.integrations import go_client  # noqa: E402
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) \
-        if not asyncio.get_event_loop().is_running() \
+    return (
+        asyncio.get_event_loop().run_until_complete(coro)
+        if not asyncio.get_event_loop().is_running()
         else asyncio.new_event_loop().run_until_complete(coro)
+    )
 
 
 class _AirtimeOK:

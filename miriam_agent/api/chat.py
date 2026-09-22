@@ -256,9 +256,7 @@ async def _run_money_turn(
     try:
         if confirm_id:
             return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(
-            message
-        ):
+        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
             # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
             # stable id derived from the alert so a re-paste cannot split twice.
             # Off by default and refused in production entirely — chat text is
@@ -601,9 +599,7 @@ async def chat_with_agent(
         # Internal error text can carry stack fragments, SQL, or provider
         # details; the client gets an opaque message and the trace id that
         # links it to the server log.
-        logger.exception(
-            "chat request failed", extra={"trace_id": current_trace_id()}
-        )
+        logger.exception("chat request failed", extra={"trace_id": current_trace_id()})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="something went wrong processing that message",
@@ -1031,10 +1027,11 @@ async def _load_financial_plan(token: str) -> dict[str, Any] | None:
     Does not call the retired Go AI ``/api/v1/ai/financial-plan`` endpoint.
     """
     try:
+        from miriam_agent.financial.intelligence import financial_plan_live
         from miriam_agent.integrations.go_client import get_go_client
 
         client = get_go_client()
-        plan = await client.get_financial_plan(token)
+        plan = await financial_plan_live(client, token)
         if plan:
             return plan
     except Exception as e:

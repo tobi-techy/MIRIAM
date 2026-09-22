@@ -546,9 +546,7 @@ def detect_currency(text: str, default: str = "NGN") -> tuple[str, bool]:
     return default.upper(), True
 
 
-_FREQUENCY_CHECKS: tuple[
-    tuple[str, tuple[str, ...], tuple[str, ...]], ...
-] = (
+_FREQUENCY_CHECKS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
         "weekly",
         ("every week", "per week", "a week", "/week", "/wk", "weekly", "each week"),
@@ -737,7 +735,6 @@ def _kind_owners(
                 owners.setdefault(id(preceder), []).append((field, phrase))
             hit = lowered.find(phrase, hit + 1)
     return owners
-
 
 
 # Context radius used to attribute an amount to a field. Wide enough for
@@ -1344,9 +1341,7 @@ def profile_from_onboarding_state(
     document_summary = getattr(state, "document_summary", None)
     if document_summary:
         # Statement numbers are the strongest evidence we hold.
-        profile.merge(
-            extract_profile(str(document_summary), source="statement")
-        )
+        profile.merge(extract_profile(str(document_summary), source="statement"))
 
     corpus_parts = [p for p in (str(money_moment), str(goal)) if p.strip()]
     if corpus_parts:

@@ -600,7 +600,7 @@ async def test_the_rollback_receipt_carries_the_rail_reference():
 
 
 async def test_nine_under_cap_pass_and_tenth_rejects():
-    """The cap is inclusive: the send that exactly fills it passes; one more is rejected.
+    """The cap is inclusive: exact fill passes, one more is rejected.
 
     The old `>=` comparison refused the send that exactly filled the remaining
     allowance, so the last slot of a 10k cap could never be used.
@@ -698,10 +698,10 @@ async def test_journal_trims_bodies_but_idempotency_keys_survive(monkeypatch):
     an archived stub for a trimmed key so every replay stays on the
     already-done path.
     """
+    from datetime import UTC, datetime
+
     from miriam_agent.hands import ledger as ledger_module
     from miriam_agent.hands.audit import Receipt
-
-    from datetime import UTC, datetime
 
     monkeypatch.setattr(ledger_module, "RECEIPT_RETENTION", 2)
     ledger = ledger_with(spendable=0)
@@ -824,12 +824,18 @@ async def test_debit_idempotent_on_replay():
     ledger = ledger_with(spendable=10000)
     store = await _seeded(ledger)
     outcome1 = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_dup",
-        amount=Decimal("500"), reason="go_debit",
+        store=store,
+        ledger=ledger,
+        payment_id="pay_dup",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     outcome2 = await handle_debit(
-        store=store, ledger=await store.load("u1"), payment_id="pay_dup",
-        amount=Decimal("500"), reason="go_debit",
+        store=store,
+        ledger=await store.load("u1"),
+        payment_id="pay_dup",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     assert outcome1.receipt.id == outcome2.receipt.id
     assert outcome2.receipt.idempotent_replay is True
@@ -839,8 +845,11 @@ async def test_debit_short_fails_closed():
     ledger = ledger_with(spendable=100)
     store = await _seeded(ledger)
     outcome = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_short",
-        amount=Decimal("500"), reason="go_debit",
+        store=store,
+        ledger=ledger,
+        payment_id="pay_short",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     assert outcome.receipt.status == "rejected"
     assert "INSUFFICIENT_SPENDABLE" in outcome.receipt.reasons
@@ -853,8 +862,11 @@ async def test_reversal_does_not_credit_income():
     ledger = ledger_with(spendable=10000)
     store = await _seeded(ledger)
     outcome = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_rev",
-        amount=Decimal("500"), reason="go_reversal",
+        store=store,
+        ledger=ledger,
+        payment_id="pay_rev",
+        amount=Decimal("500"),
+        reason="go_reversal",
     )
     after = await store.load("u1")
     assert outcome.receipt.status == "executed"

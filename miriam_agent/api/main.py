@@ -59,6 +59,7 @@ app = FastAPI(
     redoc_url="/redoc" if os.getenv("ENVIRONMENT") == "development" else None,
 )
 
+
 def _cors_origins() -> list[str]:
     """Parse ``ALLOWED_ORIGINS`` into a list of origins.
 
@@ -132,9 +133,7 @@ async def correlate_requests(request: Request, call_next):
         response = await call_next(request)
     response.headers[TRACE_HEADER] = bound
     try:
-        REQUEST_COUNT.labels(
-            request.method, endpoint, str(response.status_code)
-        ).inc()
+        REQUEST_COUNT.labels(request.method, endpoint, str(response.status_code)).inc()
         REQUEST_LATENCY.labels(endpoint).observe(time.perf_counter() - start)
     except Exception:
         pass
@@ -201,9 +200,7 @@ async def ready_check():
         from miriam_agent.integrations.go_client import get_go_client
 
         status_code = await get_go_client().health()
-        checks["go_backend"] = (
-            "ok" if status_code < 500 else f"status={status_code}"
-        )
+        checks["go_backend"] = "ok" if status_code < 500 else f"status={status_code}"
     except Exception as e:
         checks["go_backend"] = f"unreachable: {type(e).__name__}"
 
@@ -237,8 +234,10 @@ async def metrics(request: Request):
     if settings.is_production:
         valid = False
         key = request.headers.get("X-Rail-Service-Key", "")
-        if key and settings.RAIL_SERVICE_KEY and secrets.compare_digest(
-            key, settings.RAIL_SERVICE_KEY
+        if (
+            key
+            and settings.RAIL_SERVICE_KEY
+            and secrets.compare_digest(key, settings.RAIL_SERVICE_KEY)
         ):
             valid = True
         if not valid:
@@ -247,9 +246,7 @@ async def metrics(request: Request):
             if scheme == "Bearer" and token.strip():
                 try:
                     payload = decode_token(token.strip())
-                    valid = has_role(payload, "admin") or has_role(
-                        payload, "metrics"
-                    )
+                    valid = has_role(payload, "admin") or has_role(payload, "metrics")
                 except Exception:
                     valid = False
         if not valid:

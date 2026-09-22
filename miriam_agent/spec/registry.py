@@ -34,21 +34,21 @@ SECTIONS = {
     12: {
         "title": "Ranked Hypotheses & Directness",
         "topic": "spec §12: ranked hypothesis engine, relationship depth + "
-                   "pattern confidence drives directness",
+        "pattern confidence drives directness",
         "rule_ids": ["§12"],
         "enforce_by": ["§29/§12"],
     },
     14: {
         "title": "Reply Length",
         "topic": "spec §14: short, paragraph-bounded replies (120 words "
-                   "conversational, 220 for plan presentation)",
+        "conversational, 220 for plan presentation)",
         "rule_ids": ["§14"],
         "enforce_by": ["R1"],
     },
     15: {
         "title": "Ask vs Tell",
         "topic": "spec §15: default to ASK while cause unclear, but only "
-                   "high-information questions; when evidence points one way, TELL",
+        "high-information questions; when evidence points one way, TELL",
         "rule_ids": ["§15"],
         "enforce_by": ["R2"],
     },
@@ -67,7 +67,7 @@ SECTIONS = {
     21: {
         "title": "One Insight Per Plan",
         "topic": "spec §21: every plan carries one deterministic "
-                   "financial_insight object",
+        "financial_insight object",
         "rule_ids": ["§21"],
         "enforce_by": ["§27"],
     },
@@ -80,21 +80,21 @@ SECTIONS = {
     27: {
         "title": "Success = Real Insight, Not Completion",
         "topic": "spec §27: success is measured as a real insight, not a "
-                   "completed form",
+        "completed form",
         "rule_ids": ["§27"],
         "enforce_by": ["§27"],
     },
     29: {
         "title": "Conversation State",
         "topic": "spec §29: deterministic, backend-owned read of where the "
-                   "conversation is",
+        "conversation is",
         "rule_ids": ["§29"],
         "enforce_by": ["§29/§12"],
     },
     30: {
         "title": "Never Invent Numbers",
         "topic": "spec §30: never invent numbers, balances, or account status; "
-                   "must come from system of record or approved tool",
+        "must come from system of record or approved tool",
         "rule_ids": ["§30"],
         "enforce_by": ["R10"],
     },
@@ -131,7 +131,7 @@ SECTIONS = {
     53: {
         "title": "Tested Conversation",
         "topic": "spec §53: spec v1.1 §53 regression: mirror then concrete, not "
-                   "feelings",
+        "feelings",
         "rule_ids": ["§53"],
         "enforce_by": ["R11/R12"],
     },
@@ -143,45 +143,45 @@ SECTIONS = {
     },
     # Additional sections defined in the spec
     1: {
-        "title": 'Identity & Role',
-        "topic": 'spec §1: Miriam is a financial intelligence agent',
-        "rule_ids": ['§1'],
+        "title": "Identity & Role",
+        "topic": "spec §1: Miriam is a financial intelligence agent",
+        "rule_ids": ["§1"],
         "enforce_by": [],
     },
     2: {
-        "title": 'Conversation Behavior',
-        "topic": 'spec §2: rules for answering, questioning, and interaction',
-        "rule_ids": ['§2'],
+        "title": "Conversation Behavior",
+        "topic": "spec §2: rules for answering, questioning, and interaction",
+        "rule_ids": ["§2"],
         "enforce_by": [],
     },
     3: {
-        "title": 'Financial Reasoning',
-        "topic": 'spec §3: reasoning order and problem identification',
-        "rule_ids": ['§3'],
+        "title": "Financial Reasoning",
+        "topic": "spec §3: reasoning order and problem identification",
+        "rule_ids": ["§3"],
         "enforce_by": [],
     },
     4: {
-        "title": 'Truth & Uncertainty',
-        "topic": 'spec §4: truth rules and uncertainty handling',
-        "rule_ids": ['§4'],
+        "title": "Truth & Uncertainty",
+        "topic": "spec §4: truth rules and uncertainty handling",
+        "rule_ids": ["§4"],
         "enforce_by": [],
     },
     5: {
-        "title": 'Actions & Confirmation',
-        "topic": 'spec §5: transaction classes and confirmation policy',
-        "rule_ids": ['§5'],
+        "title": "Actions & Confirmation",
+        "topic": "spec §5: transaction classes and confirmation policy",
+        "rule_ids": ["§5"],
         "enforce_by": [],
     },
     6: {
-        "title": 'Personality',
-        "topic": 'spec §6: core personality traits and anti-patterns',
-        "rule_ids": ['§6'],
+        "title": "Personality",
+        "topic": "spec §6: core personality traits and anti-patterns",
+        "rule_ids": ["§6"],
         "enforce_by": [],
     },
     7: {
-        "title": 'Regional Behavior',
-        "topic": 'spec §7: currency handling and localization',
-        "rule_ids": ['§7'],
+        "title": "Regional Behavior",
+        "topic": "spec §7: currency handling and localization",
+        "rule_ids": ["§7"],
         "enforce_by": [],
     },
 }
@@ -319,7 +319,7 @@ ANTI_PATTERNS = {
     "AP-001": {
         "name": "Parroting",
         "description": "Lifting long clause from previous user message and "
-                         "appending low-information therapist tail",
+        "appending low-information therapist tail",
         "violates": ["R11"],
         "fix": "Substitute real information for empty tail",
     },
@@ -337,13 +337,13 @@ ANTI_PATTERNS = {
     },
     "AP-004": {
         "name": "Generic Praise",
-        "description": "\"great question,\" \"love that,\" \"awesome\"",
+        "description": '"great question," "love that," "awesome"',
         "violates": ["R3"],
         "fix": "Never open with praise - answer directly",
     },
     "AP-005": {
         "name": "Generic Advice",
-        "description": "\"you should budget,\" \"you need to save\"",
+        "description": '"you should budget," "you need to save"',
         "violates": ["R4"],
         "fix": "Earn specifics by listening, then reflect their own words",
     },
@@ -364,12 +364,16 @@ SPEC_HASH = hashlib.sha256(
     ).encode()
 ).hexdigest()
 
+
 # --- Loading utilities ---
 def load_markdown() -> str:
     """Load the spec markdown from its path."""
     spec_path = (
         pathlib.Path(__file__).parent
-        / ".." / "docs" / "miriam_spec" / "miriam_spec_v1.2.md"
+        / ".."
+        / "docs"
+        / "miriam_spec"
+        / "miriam_spec_v1.2.md"
     )
     return spec_path.read_text(encoding="utf-8")
 
@@ -377,6 +381,8 @@ def load_markdown() -> str:
 def sections() -> dict[int, dict[str, Any]]:
     """Return the SECTIONS mapping."""
     return SECTIONS
+
+
 def content_hash() -> str:
     """Return the spec content hash."""
     return SPEC_HASH

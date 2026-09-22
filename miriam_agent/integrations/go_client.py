@@ -133,26 +133,6 @@ class GoBackendClient:
             "/api/v1/analytics/financial-snapshot", token, params=params
         )
 
-    async def get_financial_plan(self, token: str) -> dict[str, Any]:
-        """Real financial plan from the ledger-backed financial snapshot.
-
-        Health, cash-flow forecast, and profile-driven next steps are computed
-        by the Python intelligence engine from Go's
-        ``/api/v1/analytics/financial-snapshot`` response (the old
-        ``/api/v1/ai/financial-plan`` endpoint is gone).
-        """
-        from miriam_agent.financial.intelligence import compute_financial_plan
-
-        snapshot = await self._engine_snapshot(token)
-        return compute_financial_plan(snapshot)
-
-    async def get_cash_flow_forecast(self, token: str) -> dict[str, Any]:
-        """Forecast computed from the ledger-backed financial snapshot."""
-        from miriam_agent.financial.intelligence import compute_cash_flow_forecast
-
-        snapshot = await self._engine_snapshot(token)
-        return compute_cash_flow_forecast(snapshot)
-
     async def get_investment_positions(self, token: str) -> dict[str, Any]:
         # Agent API positions read; returns {"positions": [...]} (raw body).
         return await self._token_get("/api/v1/investments/positions", token)
@@ -240,20 +220,7 @@ class GoBackendClient:
         # (camelCase: id, email, firstName, lastName, kycStatus, ...).
         return await self._token_get("/api/v1/users/me", token)
 
-    async def get_financial_health(
-        self, token: str, period: str = "last_90_days"
-    ) -> dict[str, Any]:
-        """Python-side health score from the ledger-backed financial snapshot."""
-        from miriam_agent.financial.intelligence import (
-            compute_financial_health,
-            period_to_window,
-        )
-
-        from_date, to_date = period_to_window(period)
-        snapshot = await self._engine_snapshot(token, from_date, to_date)
-        return compute_financial_health(snapshot, period=period)
-
-    async def _engine_snapshot(
+    async def engine_snapshot(
         self,
         token: str,
         from_date: str | None = None,
@@ -261,6 +228,13 @@ class GoBackendClient:
     ) -> dict[str, Any]:
         """Snapshot the intelligence engine needs: Go's ledger-backed
         financial snapshot plus upcoming obligations.
+
+        Raw adapter read, deliberately: the plan / forecast / health
+        composition lives in ``financial.intelligence`` (``*_live``), which
+        imports nothing from this layer in return. The old composed methods
+        here (get_financial_plan, get_cash_flow_forecast,
+        get_financial_health) were the one integrations -> domain import the
+        architecture contract forbids.
 
         Fails open: if the financial-snapshot endpoint is unreachable (e.g.
         a backend that predates it) we fall back to the legacy
@@ -578,9 +552,7 @@ class GoBackendClient:
         data = await self._token_get("/api/v1/vault/activity", token, params=params)
         return _as_list(data, "activity")
 
-    async def preview_vault_withdraw(
-        self, token: str, amount: float
-    ) -> dict[str, Any]:
+    async def preview_vault_withdraw(self, token: str, amount: float) -> dict[str, Any]:
         """Go-computed early-withdrawal math (principal/earnings/penalty/payout).
 
         Numbers pass through unchanged. Python never recomputes the 10% as a
@@ -872,9 +844,7 @@ def _with_confirmation(
     return {**payload, "confirmation_token": confirmation_token}
 
 
-def _binding_headers(
-    confirm_id: str | None, receipt_id: str | None
-) -> dict[str, str]:
+def _binding_headers(confirm_id: str | None, receipt_id: str | None) -> dict[str, str]:
     """Settlement binding headers for a rail mutation."""
     headers: dict[str, str] = {}
     if confirm_id:

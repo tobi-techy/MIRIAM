@@ -156,9 +156,7 @@ async def test_mismatch_is_reported_not_corrected():
     val = run.result.validation
     assert val.status == "invalid"
     assert Decimal(val.difference) == Decimal("4500.00")
-    assert any(
-        c.name == "statement_balance" and not c.passed for c in val.checks
-    )
+    assert any(c.name == "statement_balance" and not c.passed for c in val.checks)
     assert "opening + credits - debits does not equal closing balance" in val.errors
     txns = run.result.data.raw["statement"]["transactions"]
     assert len(txns) == 4  # rows untouched
@@ -168,8 +166,6 @@ async def test_invoice_is_not_forced_to_statement():
     run = await _run(fx.INVOICE_SAMPLE)
     assert run.result.document_type == "invoice"
     assert (
-        run.result.data.raw["statement"]
-        if "statement" in run.result.data.raw
-        else True
+        run.result.data.raw["statement"] if "statement" in run.result.data.raw else True
     )
     assert run.result.data.raw.get("statement") is None

@@ -1,7 +1,6 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from miriam_agent.core.exceptions import AuthorizationError
+from miriam_agent.core.timeutil import utcnow_naive
 from miriam_agent.database.models import (
     Base,
     Conversation,
@@ -42,9 +42,7 @@ class MemoryStore:
             await conn.run_sync(Base.metadata.create_all)
 
         # Create async session factory
-        self.async_session = async_sessionmaker(
-            self.engine, expire_on_commit=False
-        )
+        self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[AsyncSession]:
@@ -129,7 +127,7 @@ class MemoryStore:
                     conversation = await session.get(Conversation, conversation_id)
                     if conversation is None:
                         # conversation_id provided but doesn't exist - create it
-                        title = f"Conversation {datetime.utcnow():%Y-%m-%d %H:%M}"
+                        title = f"Conversation {utcnow_naive():%Y-%m-%d %H:%M}"
                         conversation = Conversation(
                             user_id=user_id,
                             title=title,
@@ -143,7 +141,7 @@ class MemoryStore:
                         )
                 else:
                     # Create new conversation
-                    title = f"Conversation {datetime.utcnow():%Y-%m-%d %H:%M}"
+                    title = f"Conversation {utcnow_naive():%Y-%m-%d %H:%M}"
                     conversation = Conversation(
                         user_id=user_id,
                         title=title,
@@ -168,7 +166,7 @@ class MemoryStore:
                     extra_data={
                         "role": role,
                         "conversation_id": conversation.id,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": utcnow_naive().isoformat(),
                         **(metadata or {}),
                     },
                 )
@@ -487,7 +485,7 @@ class MemoryStore:
                     return False
 
                 conversation.title = title
-                conversation.updated_at = datetime.utcnow()
+                conversation.updated_at = utcnow_naive()
 
                 await session.commit()
                 return True

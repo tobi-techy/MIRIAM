@@ -71,9 +71,9 @@ def test_golden_set_matches_expected_branches():
             f"got {decision.branch.value}"
         )
         if "expected_refusal_reason" in case:
-            assert decision.refusal_reason == case["expected_refusal_reason"], (
-                f"{case['id']}: wrong refusal reason"
-            )
+            assert (
+                decision.refusal_reason == case["expected_refusal_reason"]
+            ), f"{case['id']}: wrong refusal reason"
 
 
 def test_golden_set_has_thirty_cases():
@@ -92,9 +92,13 @@ def test_jailbreak_blocks_and_never_reaches_generator():
                 "intent": {"choice": "jailbreak_or_probe", "confidence": 0.96},
                 "domain": {"choice": "other", "confidence": 0.9},
                 "language": {"choice": "en", "confidence": 0.95},
-                "needs_tools": 0.05, "is_urgent": 0.02, "frustration": 0.1,
-                "jailbreak": 0.98, "requests_disallowed": 0.4,
-                "exposes_pii": 0.01, "wants_human": 0.01,
+                "needs_tools": 0.05,
+                "is_urgent": 0.02,
+                "frustration": 0.1,
+                "jailbreak": 0.98,
+                "requests_disallowed": 0.4,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
             }
         )
     )
@@ -110,9 +114,13 @@ def test_pii_blocks_without_echoing_secret():
                 "intent": {"choice": "answer_question", "confidence": 0.8},
                 "domain": {"choice": "account_overview", "confidence": 0.7},
                 "language": {"choice": "en", "confidence": 0.95},
-                "needs_tools": 0.5, "is_urgent": 0.2, "frustration": 0.1,
-                "jailbreak": 0.02, "requests_disallowed": 0.01,
-                "exposes_pii": 0.96, "wants_human": 0.01,
+                "needs_tools": 0.5,
+                "is_urgent": 0.2,
+                "frustration": 0.1,
+                "jailbreak": 0.02,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.96,
+                "wants_human": 0.01,
             }
         )
     )
@@ -129,9 +137,13 @@ def test_low_confidence_intent_clarifies_instead_of_tool_spamming():
                 "intent": {"choice": "perform_task", "confidence": 0.4},
                 "domain": {"choice": "other", "confidence": 0.4},
                 "language": {"choice": "en", "confidence": 0.92},
-                "needs_tools": 0.5, "is_urgent": 0.05, "frustration": 0.05,
-                "jailbreak": 0.01, "requests_disallowed": 0.01,
-                "exposes_pii": 0.01, "wants_human": 0.01,
+                "needs_tools": 0.5,
+                "is_urgent": 0.05,
+                "frustration": 0.05,
+                "jailbreak": 0.01,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
             }
         )
     )
@@ -145,9 +157,13 @@ def test_other_intent_clarifies():
                 "intent": {"choice": "other", "confidence": 0.7},
                 "domain": {"choice": "other", "confidence": 0.3},
                 "language": {"choice": "en", "confidence": 0.9},
-                "needs_tools": 0.2, "is_urgent": 0.05, "frustration": 0.05,
-                "jailbreak": 0.01, "requests_disallowed": 0.01,
-                "exposes_pii": 0.01, "wants_human": 0.01,
+                "needs_tools": 0.2,
+                "is_urgent": 0.05,
+                "frustration": 0.05,
+                "jailbreak": 0.01,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
             }
         )
     )
@@ -161,9 +177,13 @@ def test_angry_and_urgent_escalates():
                 "intent": {"choice": "complain", "confidence": 0.85},
                 "domain": {"choice": "money_movement", "confidence": 0.8},
                 "language": {"choice": "en", "confidence": 0.95},
-                "needs_tools": 0.8, "is_urgent": 0.97, "frustration": 1.9,
-                "jailbreak": 0.02, "requests_disallowed": 0.01,
-                "exposes_pii": 0.01, "wants_human": 0.4,
+                "needs_tools": 0.8,
+                "is_urgent": 0.97,
+                "frustration": 1.9,
+                "jailbreak": 0.02,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.4,
             }
         )
     )
@@ -178,9 +198,13 @@ def test_urgent_complaint_escalates_without_anger():
                 "intent": {"choice": "complain", "confidence": 0.85},
                 "domain": {"choice": "account_overview", "confidence": 0.8},
                 "language": {"choice": "en", "confidence": 0.95},
-                "needs_tools": 0.5, "is_urgent": 0.92, "frustration": 0.1,
-                "jailbreak": 0.02, "requests_disallowed": 0.02,
-                "exposes_pii": 0.01, "wants_human": 0.05,
+                "needs_tools": 0.5,
+                "is_urgent": 0.92,
+                "frustration": 0.1,
+                "jailbreak": 0.02,
+                "requests_disallowed": 0.02,
+                "exposes_pii": 0.01,
+                "wants_human": 0.05,
             }
         )
     )
@@ -195,9 +219,13 @@ def test_urgent_action_request_still_plans():
                 "intent": {"choice": "perform_task", "confidence": 0.9},
                 "domain": {"choice": "bills", "confidence": 0.9},
                 "language": {"choice": "en", "confidence": 0.95},
-                "needs_tools": 0.93, "is_urgent": 0.93, "frustration": 0.0,
-                "jailbreak": 0.02, "requests_disallowed": 0.05,
-                "exposes_pii": 0.01, "wants_human": 0.02,
+                "needs_tools": 0.93,
+                "is_urgent": 0.93,
+                "frustration": 0.0,
+                "jailbreak": 0.02,
+                "requests_disallowed": 0.05,
+                "exposes_pii": 0.01,
+                "wants_human": 0.02,
             }
         )
     )
@@ -211,9 +239,13 @@ def test_task_needing_tools_routes_to_planner():
                 "intent": {"choice": "perform_task", "confidence": 0.94},
                 "domain": {"choice": "money_movement", "confidence": 0.95},
                 "language": {"choice": "en", "confidence": 0.93},
-                "needs_tools": 0.99, "is_urgent": 0.05, "frustration": 0.02,
-                "jailbreak": 0.01, "requests_disallowed": 0.01,
-                "exposes_pii": 0.01, "wants_human": 0.01,
+                "needs_tools": 0.99,
+                "is_urgent": 0.05,
+                "frustration": 0.02,
+                "jailbreak": 0.01,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
             }
         )
     )
@@ -227,9 +259,13 @@ def test_answer_question_goes_to_generator():
                 "intent": {"choice": "answer_question", "confidence": 0.91},
                 "domain": {"choice": "account_overview", "confidence": 0.88},
                 "language": {"choice": "en", "confidence": 0.96},
-                "needs_tools": 0.97, "is_urgent": 0.03, "frustration": 0.05,
-                "jailbreak": 0.01, "requests_disallowed": 0.01,
-                "exposes_pii": 0.01, "wants_human": 0.02,
+                "needs_tools": 0.97,
+                "is_urgent": 0.03,
+                "frustration": 0.05,
+                "jailbreak": 0.01,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.02,
             }
         )
     )
@@ -253,9 +289,7 @@ class _FakeClient:
 
 
 async def test_ingress_gate_skips_when_disabled(monkeypatch):
-    monkeypatch.setattr(
-        "miriam_agent.judgment.gates.enabled", lambda: False
-    )
+    monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: False)
     from miriam_agent.judgment.schemas import JudgmentState, TurnInput
 
     decision = await ingress_gate(JudgmentState(turn=TurnInput(user_text="hi")))
@@ -285,9 +319,13 @@ async def test_ingress_gate_happy_path_short_circuits(monkeypatch):
             "intent": {"choice": "jailbreak_or_probe", "confidence": 0.96},
             "domain": {"choice": "other", "confidence": 0.9},
             "language": {"choice": "en", "confidence": 0.95},
-            "needs_tools": 0.05, "is_urgent": 0.02, "frustration": 0.1,
-            "jailbreak": 0.98, "requests_disallowed": 0.4,
-            "exposes_pii": 0.01, "wants_human": 0.01,
+            "needs_tools": 0.05,
+            "is_urgent": 0.02,
+            "frustration": 0.1,
+            "jailbreak": 0.98,
+            "requests_disallowed": 0.4,
+            "exposes_pii": 0.01,
+            "wants_human": 0.01,
         }
     )
     decision = await ingress_gate(
@@ -318,9 +356,7 @@ def test_build_ingress_state_trims_history_and_maps_tools():
             requires_approval=False,
         ),
     ]
-    history = [
-        {"role": "user", "content": f"turn {i}"} for i in range(6)
-    ]
+    history = [{"role": "user", "content": f"turn {i}"} for i in range(6)]
     state = build_ingress_state(
         user_id="u-1",
         message="What's my balance?",

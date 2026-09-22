@@ -159,10 +159,6 @@ def test_authenticated_user_id_reaches_tool_context():
                 handler=handler,
             )
         )
-    _run(
-        registry.execute(
-            name, {}, {"user_id": "auth-user-9", "token": "tok-9"}
-        )
-    )
+    _run(registry.execute(name, {}, {"user_id": "auth-user-9", "token": "tok-9"}))
     assert seen["user_id"] == "auth-user-9"
     assert seen["token"] == "tok-9"

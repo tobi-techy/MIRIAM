@@ -59,7 +59,7 @@ jobs:
 
       - name: Run spec gate tests
         run: |
-          uv run pytest tests/test_miriam_spec.py tests/test_spec_examples.py -v
+          pytest tests/test_miriam_spec.py tests/test_spec_examples.py -v
         env:
           PYTHONPATH: miriam_agent
 
@@ -91,17 +91,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Run safety check
-        continue-on-error: true
-        run: |
-          pip install safety
-          safety check --full-report
-
+      # Blocking: a known CVE in a dependency fails the build. (The old
+      # `safety check --full-report` step is gone: safety 3.x needs an
+      # account key CI does not have, so it could never pass honestly.)
       - name: Run pip-audit
-        continue-on-error: true
         run: |
           pip install pip-audit
-          pip-audit --desc
+          pip-audit --skip-editable --desc
 
       - name: Run semgrep
         run: |

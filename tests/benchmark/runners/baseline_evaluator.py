@@ -29,12 +29,13 @@ def get_git_commit() -> str:
     """Get current git commit hash."""
     try:
         import subprocess
+
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd="/Users/tobi/.factory/worktrees/7dd551a7/MIRIAM",
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
         return result.stdout.strip()[:8]  # Short hash
     except Exception:
@@ -78,10 +79,10 @@ async def execute_scenario(scenario: BenchmarkScenario) -> ScenarioResult:
             "tool_arguments": 85.0,
             "safety_compliance": 100.0,
             "outcome_correctness": 75.0,
-            "communication_quality": 80.0
+            "communication_quality": 80.0,
         },
         execution_time_ms=int((time.time() - start_time) * 1000),
-        tool_rounds=3
+        tool_rounds=3,
     )
 
     # Calculate total score
@@ -105,7 +106,7 @@ async def execute_scenario(scenario: BenchmarkScenario) -> ScenarioResult:
 async def run_baseline_evaluation(
     scenarios_dir: str = "tests/benchmark/scenarios",
     agent_version: str = "miriam_agent_v1.0",
-    run_id: str | None = None
+    run_id: str | None = None,
 ) -> BenchmarkRun:
     """Run baseline evaluation on all scenarios.
 
@@ -160,7 +161,7 @@ async def run_baseline_evaluation(
                 failure_reason=str(e),
                 critical_failures=["execution_error"],
                 passed=False,
-                total_score=0.0
+                total_score=0.0,
             )
             results.append(failed_result)
 
@@ -182,7 +183,7 @@ async def run_baseline_evaluation(
         average_score=average_score,
         results=results,
         critical_failures_summary=critical_failures_summary,
-        notes="Baseline evaluation run against current Miriam implementation"
+        notes="Baseline evaluation run against current Miriam implementation",
     )
 
     print("\nBaseline evaluation completed:")
@@ -239,10 +240,10 @@ def save_results(
                 "critical_failures": r.critical_failures,
                 "warnings": r.warnings,
                 "execution_time_ms": r.execution_time_ms,
-                "tool_rounds": r.tool_rounds
+                "tool_rounds": r.tool_rounds,
             }
             for r in benchmark_run.results
-        ]
+        ],
     }
 
     # Save to file
@@ -255,15 +256,19 @@ def save_results(
     # Also save a summary file
     summary_file = output_path / f"{benchmark_run.run_id}_summary.json"
     with open(summary_file, "w") as f:
-        json.dump({
-            "run_id": benchmark_run.run_id,
-            "timestamp": benchmark_run.timestamp,
-            "total_scenarios": benchmark_run.scenarios_run,
-            "passed": benchmark_run.scenarios_passed,
-            "failed": benchmark_run.scenarios_failed,
-            "average_score": benchmark_run.average_score,
-            "critical_failures": benchmark_run.critical_failures_summary
-        }, f, indent=2)
+        json.dump(
+            {
+                "run_id": benchmark_run.run_id,
+                "timestamp": benchmark_run.timestamp,
+                "total_scenarios": benchmark_run.scenarios_run,
+                "passed": benchmark_run.scenarios_passed,
+                "failed": benchmark_run.scenarios_failed,
+                "average_score": benchmark_run.average_score,
+                "critical_failures": benchmark_run.critical_failures_summary,
+            },
+            f,
+            indent=2,
+        )
 
     print(f"Summary saved to: {summary_file}")
 
@@ -322,4 +327,5 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())

@@ -84,6 +84,8 @@ class SpectrumRequest(BaseModel):
     signed_tx: str = ""
     flow_id: str = ""
     wallet_address: str = ""
+
+
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=]{100,}$")
 
 _PORTFOLIO_ASKS = (

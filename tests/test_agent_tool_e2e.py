@@ -116,9 +116,7 @@ class _DepositOK:
         }
 
     async def create_deposit_address(self, token, chain="base", currency="USDC"):
-        raise AssertionError(
-            "NGN account exists, no crypto fallback needed"
-        )
+        raise AssertionError("NGN account exists, no crypto fallback needed")
 
 
 class _DepositDown:
@@ -129,7 +127,6 @@ class _DepositDown:
 
     async def create_deposit_address(self, token, chain="base", currency="USDC"):
         return {"_tool_error": "deposit service down"}
-
 
 
 # ------------------------------------------------------------------
@@ -165,9 +162,7 @@ def test_agent_airtime_phone_number_calls_detect_network():
             ]
         )
         agent = Agent(registry=build_tool_registry(), provider=provider)
-        result = _run(
-            agent.run(user_id="u1", token="tok", message="08012345678")
-        )
+        result = _run(agent.run(user_id="u1", token="tok", message="08012345678"))
         assert len(result.tool_calls) == 1, result.tool_calls
         assert result.tool_calls[0]["name"] == "detect_network"
         assert result.tool_calls[0]["arguments"] == {"phone": "08012345678"}
@@ -205,16 +200,14 @@ def test_agent_airtime_provider_failure_is_honest():
             ]
         )
         agent = Agent(registry=build_tool_registry(), provider=provider)
-        result = _run(
-            agent.run(user_id="u1", token="tok", message="08012345678")
-        )
+        result = _run(agent.run(user_id="u1", token="tok", message="08012345678"))
         assert len(result.tool_calls) == 1, result.tool_calls
         assert result.tool_calls[0]["name"] == "detect_network"
         # Response should reflect a real failure, not a fabricated network.
         lowered = result.response.lower()
-        assert any(w in lowered for w in ("failed", "unreachable", "bill")), (
-            result.response
-        )
+        assert any(
+            w in lowered for w in ("failed", "unreachable", "bill")
+        ), result.response
         assert "\u2014" not in result.response
     finally:
         go_client._client = orig

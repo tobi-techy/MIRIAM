@@ -12,6 +12,7 @@ from typing import Any
 @dataclass
 class SpecExample:
     """A single spec example with good and bad response pairs."""
+
     id: str
     section: str
     scenario: str

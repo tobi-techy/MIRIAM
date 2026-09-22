@@ -105,3 +105,6 @@ covhtml/
 # Spectrum gateway (bun)
 apps/spectrum-gateway/node_modules/
 apps/spectrum-gateway/dist/
+
+# Eval run artifacts (regenerable; kept out of git history)
+eval/typesafe_results.json

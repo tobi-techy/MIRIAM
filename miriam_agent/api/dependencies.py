@@ -89,9 +89,7 @@ async def get_bearer_token(
 
 
 async def require_rail_service_key(
-    x_rail_service_key: str | None = Header(
-        default=None, alias="X-Rail-Service-Key"
-    ),
+    x_rail_service_key: str | None = Header(default=None, alias="X-Rail-Service-Key"),
 ) -> None:
     """Rail-only credential for endpoints that write ledger facts.
 
