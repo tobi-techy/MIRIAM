@@ -1,4 +1,6 @@
 FROM python:3.11-slim AS base
+# Supply-chain: pin to a digest in release branches via
+# `docker pull python:3.11-slim` then `docker inspect --format='{{index .RepoDigests 0}}'`.
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps (curl for healthcheck, build tools for deps with wheels missing)
+# System deps: curl for healthcheck, build-essential only for pip build then purged
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -18,7 +20,13 @@ COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir "uvicorn[standard]" .
+    && pip install --no-cache-dir "uvicorn[standard]" . \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Least privilege: non-root user
+RUN useradd -m -u 10001 miriam && chown -R miriam:miriam /app
+USER miriam
 
 EXPOSE 8000
 

@@ -2,17 +2,17 @@ version: '3.8'
 
 services:
   miriam-postgres:
-    image: postgres:15
+    image: postgres:15-alpine
     environment:
       POSTGRES_USER: miriam
-      POSTGRES_PASSWORD: miriam_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in production}
       POSTGRES_DB: miriam_db
       POSTGRES_EXTRA_OPTS: "-c shared_buffers=256MB -c max_connections=100"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U miriam -d miriam_db"]
@@ -26,7 +26,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -37,18 +37,24 @@ services:
   miriam-app:
     build: .
     environment:
-      DATABASE_URL: postgresql://miriam:miriam_password@miriam-postgres:5432/miriam_db
+      # Production compose: all secrets are required via :? so a missing
+      # .env fails fast with a named error instead of booting forgeable
+      # defaults. For local dev use: docker compose -f docker-compose.dev.yml up
+      DATABASE_URL: postgresql://miriam:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in production}@miriam-postgres:5432/miriam_db
       REDIS_URL: redis://miriam-redis:6379/0
       LOG_LEVEL: INFO
       ENVIRONMENT: production
       # Signing secrets MUST be set in the host environment. Production
       # refuses to boot with placeholders (config/settings.py) and compose
       # never embeds real secrets -- leave these alone and export e.g.
-      #   JWT_SECRET=... SECRET_KEY=... ENCRYPTION_KEY=...
+      #   JWT_SECRET=... SECRET_KEY=... ENCRYPTION_KEY=... POSTGRES_PASSWORD=...
       # before `docker compose up`.
-      JWT_SECRET: ${JWT_SECRET:-}
-      SECRET_KEY: ${SECRET_KEY:-}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:?JWT_AUDIENCE must be set}
+      JWT_ISSUER: ${JWT_ISSUER:?JWT_ISSUER must be set}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
       # TypeSafe judgment layer (System One). On by default; activate it by
       # exporting TYPESAFE_API_KEY on the host. Without a key the agent runs the
       # pre-TypeSafe path unchanged.
