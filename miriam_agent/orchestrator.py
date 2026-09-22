@@ -52,6 +52,7 @@ from miriam_agent.hands.ledger import (
     LedgerStore,
     LedgerUnavailable,
     PendingInflow,
+    money,
     new_ledger,
 )
 from miriam_agent.hands.limits import Policy
@@ -412,8 +413,9 @@ class Orchestrator:
     async def _handle_confirm(self, ledger: Ledger, event: Event) -> TurnResult:
         """Execute the exact action a confirm_id was issued for.
 
-        The challenge, not the sentence, is the authorisation: the amount and the
-        counterparty come from what Hands stored when it asked.
+        The challenge, not the sentence, is the authorisation: the amount, the
+        destination, the sleeve and the user come from what Hands stored when it
+        asked. Settle only if all match, one use, and a decline burns it.
         """
         audit = AuditLog()
         now = self.clock()
@@ -451,6 +453,15 @@ class Orchestrator:
                 audit=audit.rows,
             )
 
+        if (
+            challenge is not None
+            and challenge.is_open(now)
+            and challenge.user_id
+            and challenge.user_id != ledger.user_id
+        ):
+            challenge.status = "consumed"
+            ledger.challenges[challenge.id] = challenge
+
         if challenge.action == "invest":
             # The tap approves the money; the wallet signature (a separate
             # event) approves the chain write. Stage 1 runs here and returns
@@ -476,6 +487,51 @@ class Orchestrator:
             reasons=list(challenge.reasons),
             confirm_id=challenge.id,
         )
+        stored_destination = challenge.destination or challenge.counterparty or challenge.sleeve
+        action_destination = action.counterparty or action.sleeve
+        if challenge.user_id and challenge.user_id != ledger.user_id:
+            bound = False
+        else:
+            bound = (
+                money(action.amount or 0) == money(challenge.amount)
+                and action_destination == stored_destination
+                and money(action.amount or 0) > 0
+            )
+        if not bound:
+            challenge.status = "consumed"
+            ledger.challenges[challenge.id] = challenge
+            mismatched: Receipt = Receipt(
+                id=f"rcpt_rejected_{event.confirm_id or 'missing'}",
+                at=now,
+                status="rejected",
+                action="confirm",
+                currency=ledger.currency,
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                reasons=["CHALLENGE_MISMATCH"],
+                detail="that confirmation does not match the stored challenge",
+            )
+            ledger.remember_receipt(mismatched)
+            await self.store.save(ledger)
+            state = build_state(
+                ledger=ledger,
+                policy=self.policy,
+                decision={
+                    "id": "",
+                    "next_mode": "ask",
+                    "action_choice": "deny",
+                    "reasons": ["CHALLENGE_MISMATCH"],
+                },
+                now=now,
+            )
+            return TurnResult(
+                state=state,
+                narration=await self._speak(state),
+                decision=state.decision,
+                receipt=mismatched,
+                audit=audit.rows,
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -808,6 +864,18 @@ class Orchestrator:
                 rail=self.rail,
                 at=self.clock(),
             )
+        if action.type == "internal_move":
+            return await move_between_sleeves(
+                store=self.store,
+                ledger=ledger,
+                from_sleeve="spendable",
+                to_sleeve=action.sleeve,
+                amount=action.amount or Decimal("0"),
+                policy=self.policy,
+                action="internal_move",
+                decision_id=decision.id,
+                at=self.clock(),
+            )
         if action.type in ("lock", "unlock"):
             return await move_between_sleeves(
                 store=self.store,
@@ -848,12 +916,17 @@ class Orchestrator:
         amount = action.amount or Decimal("0")
         if decision.suggested_amount is not None and amount > decision.suggested_amount:
             amount = decision.suggested_amount
+        counterparty = action.counterparty
+        sleeve = action.sleeve
+        destination = counterparty or sleeve
         challenge = Challenge(
             id=f"confirm_{decision.id[-8:]}",
+            user_id=ledger.user_id,
             action=action.type,
-            amount=amount,
-            counterparty=action.counterparty,
-            sleeve=action.sleeve,
+            amount=money(amount),
+            counterparty=counterparty,
+            destination=destination,
+            sleeve=sleeve,
             decision_id=decision.id,
             reasons=list(decision.reasons),
             created_at=now,

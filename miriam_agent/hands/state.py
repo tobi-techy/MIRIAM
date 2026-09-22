@@ -35,7 +35,9 @@ from miriam_agent.hands.ledger import (
 )
 from miriam_agent.hands.limits import Policy
 
-ActionType = Literal["transfer", "purchase", "lock", "unlock", "yield", "invest", "none"]
+ActionType = Literal[
+    "transfer", "purchase", "lock", "unlock", "yield", "invest", "internal_move", "none"
+]
 
 # How many recent receipts travel in STATE. Enough for the user to be told what
 # just happened, not enough to bloat the payload.

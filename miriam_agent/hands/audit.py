@@ -62,6 +62,10 @@ class Receipt(BaseModel):
 
     ``sleeves_before`` and ``sleeves_after`` are both recorded, so a reader can
     verify the movement from the receipt alone without replaying the ledger.
+    ``confirm_id`` and ``rail_reference`` carry the settlement binding: the
+    Hands-issued confirm id this movement settled, and the rail reference it
+    settled under. Persisting both here means Go can add the check without
+    another Python rewrite.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -80,6 +84,7 @@ class Receipt(BaseModel):
     sleeves_before: dict[str, str] = Field(default_factory=dict)
     sleeves_after: dict[str, str] = Field(default_factory=dict)
     rail_reference: str = ""
+    confirm_id: str = ""
     detail: str = ""
     # True only when this receipt is being replayed for a repeated
     # idempotency key. The caller learns the original result, not a second one.
