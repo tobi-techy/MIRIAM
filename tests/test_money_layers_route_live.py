@@ -309,6 +309,36 @@ def test_a_declined_tap_moves_nothing(monkeypatch):
     assert "USER_DECLINED" in settled["receipt"]["reasons"]
 
 
+def test_a_string_yes_is_a_real_bool_not_truthiness(monkeypatch):
+    """``"yes": "no"`` used to be truthy: any string settled the challenge.
+
+    With the typed ChatRequest the boundary coerces the known words and
+    refuses the rest, so a sloppy client can no longer move money by
+    sending "yes": "please".
+    """
+    ledger = _ledger(spendable="90000")
+    _store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    issued = _post(client, {"message": "send 5k to Ada"})
+    declined = _post(
+        client, {"confirm_id": issued["confirm_id"], "yes": "no", "message": ""}
+    )
+    assert rail.moves == []
+    assert "USER_DECLINED" in declined["receipt"]["reasons"]
+
+    issued2 = _post(client, {"message": "send 5k to Ada"})
+    nonsense = client.post(
+        "/api/v1/chat",
+        headers={"Authorization": "Bearer test-token"},
+        json={"confirm_id": issued2["confirm_id"], "yes": "please", "message": ""},
+    )
+    assert nonsense.status_code == 422, nonsense.text
+    # The challenge survives: nothing was settled by the refused payload.
+    reloaded = await_sync(_load_for(_store))
+    assert reloaded.challenges[issued2["confirm_id"]].status == "pending"
+
+
 def test_typing_yes_in_a_message_settles_nothing(monkeypatch):
     """No free-text settlement: "yes" is a message like any other."""
     ledger = _ledger(spendable="90000")

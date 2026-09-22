@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from miriam_agent.api import chat as chatmod
 from miriam_agent.api.dependencies import (
@@ -49,15 +50,40 @@ from miriam_agent.hands.transfer import GoRail
 from miriam_agent.integrations import go_client as go_client_mod
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.orchestrator import Event, Orchestrator
+from miriam_agent.safety.validator import InputValidator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# The one channel that can carry a wallet signature in text is the one that
+# used to validate least. Every turn now passes the same rate limit and input
+# validation as /chat.
+_validator = InputValidator()
+
 CHANNELS = ("imessage", "whatsapp", "terminal")
 
 _CONFIRM_RE = re.compile(r"^(?:confirm|yes)\s+(\S+)\s*$", re.IGNORECASE)
 _DECLINE_RE = re.compile(r"^(?:no|decline|cancel)\s+(\S+)\s*$", re.IGNORECASE)
+
+
+class SpectrumRequest(BaseModel):
+    """Body for ``/chat/spectrum``.
+
+    Typed at the boundary like ChatRequest: a signature, confirm id or flow id
+    arrives as a string or not at all, and ``yes`` is a real tri-state (None =
+    not answered) instead of whatever truthiness the raw JSON implied.
+    """
+
+    channel: str = "terminal"
+    space_id: str = ""
+    user_id: str = ""
+    text: str = ""
+    confirm_id: str = ""
+    yes: bool | None = None
+    signed_tx: str = ""
+    flow_id: str = ""
+    wallet_address: str = ""
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=]{100,}$")
 
 _PORTFOLIO_ASKS = (
@@ -145,34 +171,48 @@ async def _live_positions(token: str) -> list[dict[str, Any]]:
 
 @router.post("/chat/spectrum")
 async def spectrum_chat(
-    request: dict[str, Any],
+    body: SpectrumRequest,
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
     memory_store: MemoryStore = Depends(get_memory_store),
 ) -> dict[str, Any]:
     """One gateway turn in, rendered parts out."""
-    channel = str(request.get("channel") or "terminal").strip().lower()
+    if not await _validator.validate_rate_limit(user.id, "chat"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again shortly.",
+        )
+    is_valid, validation_errors = await _validator.validate_user_input(
+        {"message": body.text}, "chat"
+    )
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Validation errors: {', '.join(validation_errors)}",
+        )
+
+    channel = body.channel.strip().lower()
     if channel not in CHANNELS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"channel must be one of {', '.join(CHANNELS)}",
         )
-    space_id = str(request.get("space_id") or "").strip()
-    body_user = str(request.get("user_id") or "").strip()
-    text = str(request.get("text") or "")
+    space_id = body.space_id.strip()
+    body_user = body.user_id.strip()
+    text = body.text
     if body_user and body_user != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="user_id does not match the bearer token",
         )
-    if not text and not request.get("confirm_id") and not request.get("signed_tx"):
+    if not text and not body.confirm_id and not body.signed_tx:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Text cannot be empty"
         )
 
     orchestrator = _orchestrator_for(token)
     confirm_id_out = ""
-    wallet_address = str(request.get("wallet_address") or "").strip()
+    wallet_address = body.wallet_address.strip()
     parts: list[dict[str, Any]] = []
     conv_id = f"spectrum:{channel}:{space_id or user.id}"
 
@@ -205,8 +245,8 @@ async def spectrum_chat(
             logger.warning("spectrum: memory store failed (non-blocking)")
 
     # -- 1. structured or text confirmation tap ---------------------------
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    yes: bool | None = request.get("yes")
+    confirm_id = body.confirm_id.strip()
+    yes: bool | None = body.yes
     m = _CONFIRM_RE.match(text.strip())
     d = _DECLINE_RE.match(text.strip())
     if m:
@@ -264,8 +304,8 @@ async def spectrum_chat(
         }
 
     # -- 2. wallet signature ----------------------------------------------
-    signed_tx = str(request.get("signed_tx") or "").strip()
-    flow_id = str(request.get("flow_id") or "").strip()
+    signed_tx = body.signed_tx.strip()
+    flow_id = body.flow_id.strip()
     if not signed_tx and channel == "terminal" and _B64_RE.match(text.strip()):
         settings = get_settings()
         if not settings.RAIL_ALLOW_DEV_SIGN:

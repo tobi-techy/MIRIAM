@@ -25,12 +25,14 @@ any other and settles nothing.
 import json
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer
+from pydantic import BaseModel
 
 from miriam_agent.agents.agent_loop import Agent, AgentRunResult
 from miriam_agent.agents.base import AgentConfig
@@ -326,22 +328,49 @@ async def _finalize_money_turn(
     return payload
 
 
-@router.post("/chat")
-async def chat_with_agent(
-    request: dict[str, Any],
-    user: User = Depends(get_current_user),
-    token: str = Depends(get_bearer_token),
-    memory_store: MemoryStore = Depends(get_memory_store),
-    supermemory_memory: Any = Depends(get_supermemory_memory_dep),
-) -> dict[str, Any]:
-    """Chat with the financial agent (non-streaming)."""
-    message = request.get("message", "")
-    conversation_id = request.get("conversation_id")
-    # A confirmation tap. Only the id settles anything; `yes` decides whether it
-    # is a confirmation or a decline. Anything else is not a confirmation, so a
-    # missing `yes` declines rather than moves money.
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    confirmed = bool(request.get("yes", False))
+class ChatRequest(BaseModel):
+    """Body for ``/chat`` and ``/chat/stream``.
+
+    Replaces the hand-parsed ``dict[str, Any]`` the endpoints used to take:
+    types are enforced at the boundary now, so ``"yes": "no"`` is False
+    instead of truthy, a non-bool cannot slip through as a confirmation, and
+    unknown fields are ignored rather than silently meaning nothing.
+    """
+
+    message: str = ""
+    conversation_id: str | None = None
+    confirm_id: str = ""
+    # Only the id settles anything; ``yes`` decides confirmation vs decline.
+    # A missing ``yes`` declines rather than moves money.
+    yes: bool = False
+    is_poll_vote: bool = False
+    poll_title: str = ""
+    document: dict[str, Any] | None = None
+
+
+@dataclass
+class _PreparedTurn:
+    """The request after validation, with a decision on who owns the turn."""
+
+    message: str
+    conversation_id: str | None
+    confirm_id: str
+    yes: bool
+    is_money_turn: bool
+    onboarding: OnboardingTurn | None
+
+
+async def _prepare_turn(
+    *, body: ChatRequest, memory_store: MemoryStore, user: User
+) -> _PreparedTurn:
+    """Validate one turn and decide who handles it.
+
+    Shared by /chat and /chat/stream: the two endpoints used to keep two
+    hand-maintained copies of this pipeline and the copies had already
+    drifted. One pipeline, two renderers.
+    """
+    message = body.message
+    confirm_id = body.confirm_id.strip()
 
     # A confirmation tap carries no message, so an id is an acceptable turn on
     # its own. Everything else is a message.
@@ -356,7 +385,6 @@ async def chat_with_agent(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded. Please try again shortly.",
         )
-
     is_valid, validation_errors = await _validator.validate_user_input(
         {"message": message}, "chat"
     )
@@ -374,57 +402,46 @@ async def chat_with_agent(
     # another user's conversation returned their messages (and appended this
     # user's turns into their conversation).
     conversation_id = await _require_owned_conversation(
-        memory_store, user, conversation_id
+        memory_store, user, body.conversation_id
     )
 
     # The turn is classified before anything else runs, and a money turn goes
-    # to the orchestrator. That is the only path in the process that can move
-    # money, and it is deliberately reached before onboarding: "send 200k to
-    # Femi" is an instruction, not an interview answer.
-    if get_settings().MONEY_LAYERS_ENABLED and (
-        confirm_id or classify_turn(message) == "orchestrator"
-    ):
-        money_result = await _run_money_turn(
-            user=user,
-            token=token,
-            message=message,
-            confirm_id=confirm_id,
-            yes=confirmed,
-        )
-        return await _finalize_money_turn(
-            memory_store=memory_store,
-            supermemory_memory=supermemory_memory,
-            user=user,
-            message=message,
-            result=money_result,
-            conversation_id=conversation_id,
-        )
+    # to the orchestrator, which is the only path in the process that can move
+    # money.
+    is_money_turn = get_settings().MONEY_LAYERS_ENABLED and (
+        bool(confirm_id) or classify_turn(message) == "orchestrator"
+    )
 
-    # Conversational onboarding: while a user has an unfinished financial
-    # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
-    # instead of the general agent. Action intents and completed interviews pass
-    # straight through.
-    try:
-        onboarding = await OnboardingService(memory_store).handle_turn(
-            user,
-            message=message,
-            is_poll_vote=bool(request.get("is_poll_vote", False)),
-            poll_title=request.get("poll_title") or "",
-            document=request.get("document"),
-        )
-    except Exception:
-        # Fail-open: onboarding must never 500 a message. If it crashes we
-        # hand the turn to the general agent rather than lose the user's
-        # message to a broken flow.
-        logger.exception("onboarding handle_turn failed for %s", user.id)
-        onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
-    if onboarding.took_over:
-        return await _finish_onboarding_turn(
-            memory_store, supermemory_memory, user, message, onboarding
-        )
+    # Conversational onboarding owns the turn when an interview is unfinished
+    # (polls + plan + consent). Fail-open, as everywhere: onboarding must
+    # never lose the user's message to a broken flow.
+    onboarding: OnboardingTurn | None = None
+    if not is_money_turn:
+        try:
+            onboarding = await OnboardingService(memory_store).handle_turn(
+                user,
+                message=message,
+                is_poll_vote=body.is_poll_vote,
+                poll_title=body.poll_title,
+                document=body.document,
+            )
+        except Exception:
+            logger.exception("onboarding handle_turn failed for %s", user.id)
+            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
 
-    registry = build_tool_registry()
-    agent = Agent(
+    return _PreparedTurn(
+        message=message,
+        conversation_id=conversation_id,
+        confirm_id=confirm_id,
+        yes=body.yes,
+        is_money_turn=is_money_turn,
+        onboarding=onboarding,
+    )
+
+
+def _build_agent(registry: Any) -> Agent:
+    """The general agent, built the same way on every path."""
+    return Agent(
         registry=registry,
         safety_policy=SafetyPolicy(),
         config=AgentConfig(
@@ -433,8 +450,19 @@ async def chat_with_agent(
             system_prompt="Miriam Financial Agent",
         ),
     )
-    _install_audit_observer()
 
+
+async def _agent_inputs(
+    *,
+    memory_store: MemoryStore,
+    supermemory_memory: Any,
+    user: User,
+    token: str,
+    message: str,
+    conversation_id: str | None,
+    registry: Any,
+) -> dict[str, Any]:
+    """The context bundle both agent paths run with (history, facts, plan)."""
     # Load user context (from Go backend when reachable; local memory otherwise)
     user_context = await _load_user_context(memory_store, user)
     history = (
@@ -446,13 +474,33 @@ async def chat_with_agent(
         memory_store, user.id, query=message, supermemory_memory=supermemory_memory
     )
     financial_plan = await _load_financial_plan(token)
+    return {
+        "history": history,
+        "user_context": user_context,
+        "memory_facts": memory_facts,
+        "financial_plan": financial_plan,
+    }
 
-    # TypeSafe ingress gate: classify the turn and short-circuit jailbreaks,
-    # PII pastes, and vague asks before the generator ever sees them.
+
+async def _ingress_decision(
+    *,
+    user_id: str,
+    message: str,
+    registry: Any,
+    history: list,
+    user_context: Any,
+    **_: Any,
+) -> Any:
+    """TypeSafe ingress gate, failing open.
+
+    A judgment-layer bug must never 500 a chat turn; network errors are
+    already handled (fail-closed) inside ingress_gate, so this only catches
+    unexpected code paths.
+    """
     try:
-        ingress_decision = await ingress_gate(
+        return await ingress_gate(
             build_ingress_state(
-                user_id=user.id,
+                user_id=user_id,
                 message=message,
                 history=history,
                 user_context=user_context,
@@ -460,20 +508,82 @@ async def chat_with_agent(
             )
         )
     except Exception:
-        # A judgment-layer bug must never 500 a chat turn; fail open to the
-        # generator. Network errors are already handled (fail-closed) inside
-        # ingress_gate, so this only catches unexpected code paths.
         logger.exception("ingress gate failed; failing open to generator")
-        ingress_decision = None
+        return None
+
+
+@router.post("/chat")
+async def chat_with_agent(
+    body: ChatRequest,
+    user: User = Depends(get_current_user),
+    token: str = Depends(get_bearer_token),
+    memory_store: MemoryStore = Depends(get_memory_store),
+    supermemory_memory: Any = Depends(get_supermemory_memory_dep),
+) -> dict[str, Any]:
+    """Chat with the financial agent (non-streaming)."""
+    turn = await _prepare_turn(body=body, memory_store=memory_store, user=user)
+
+    # A money turn goes to the orchestrator. That is the only path in the
+    # process that can move money, and it is deliberately reached before
+    # onboarding: "send 200k to Femi" is an instruction, not an interview
+    # answer.
+    if turn.is_money_turn:
+        money_result = await _run_money_turn(
+            user=user,
+            token=token,
+            message=turn.message,
+            confirm_id=turn.confirm_id,
+            yes=turn.yes,
+        )
+        return await _finalize_money_turn(
+            memory_store=memory_store,
+            supermemory_memory=supermemory_memory,
+            user=user,
+            message=turn.message,
+            result=money_result,
+            conversation_id=turn.conversation_id,
+        )
+
+    # Conversational onboarding: while a user has an unfinished financial
+    # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
+    # instead of the general agent. Action intents and completed interviews pass
+    # straight through.
+    if turn.onboarding is not None and turn.onboarding.took_over:
+        return await _finish_onboarding_turn(
+            memory_store, supermemory_memory, user, turn.message, turn.onboarding
+        )
+
+    registry = build_tool_registry()
+    agent = _build_agent(registry)
+    _install_audit_observer()
+
+    inputs = await _agent_inputs(
+        memory_store=memory_store,
+        supermemory_memory=supermemory_memory,
+        user=user,
+        token=token,
+        message=turn.message,
+        conversation_id=turn.conversation_id,
+        registry=registry,
+    )
+
+    # TypeSafe ingress gate: classify the turn and short-circuit jailbreaks,
+    # PII pastes, and vague asks before the generator ever sees them.
+    ingress_decision = await _ingress_decision(
+        user_id=user.id,
+        message=turn.message,
+        registry=registry,
+        **inputs,
+    )
     if ingress_decision is not None and ingress_decision.short_circuits:
         return await _finalize_turn(
             memory_store=memory_store,
             supermemory_memory=supermemory_memory,
             user=user,
-            message=message,
+            message=turn.message,
             result=AgentRunResult(
                 response=ingress_decision.reply or "",
-                conversation_id=conversation_id or f"conv_{user.id}",
+                conversation_id=turn.conversation_id or f"conv_{user.id}",
             ),
         )
 
@@ -481,12 +591,9 @@ async def chat_with_agent(
         result = await agent.run(
             user_id=user.id,
             token=token,
-            message=message,
-            conversation_id=conversation_id,
-            history=history,
-            user_context=user_context,
-            memory_facts=memory_facts,
-            financial_plan=financial_plan,
+            message=turn.message,
+            conversation_id=turn.conversation_id,
+            **inputs,
         )
     except HTTPException:
         raise
@@ -494,7 +601,9 @@ async def chat_with_agent(
         # Internal error text can carry stack fragments, SQL, or provider
         # details; the client gets an opaque message and the trace id that
         # links it to the server log.
-        logger.exception("chat request failed", extra={"trace_id": current_trace_id()})
+        logger.exception(
+            "chat request failed", extra={"trace_id": current_trace_id()}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="something went wrong processing that message",
@@ -504,91 +613,46 @@ async def chat_with_agent(
         memory_store=memory_store,
         supermemory_memory=supermemory_memory,
         user=user,
-        message=message,
+        message=turn.message,
         result=result,
     )
 
 
 @router.post("/chat/stream")
 async def chat_stream(
-    request: dict[str, Any],
+    body: ChatRequest,
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
     memory_store: MemoryStore = Depends(get_memory_store),
     supermemory_memory: Any = Depends(get_supermemory_memory_dep),
 ) -> StreamingResponse:
-    """Stream chat tokens via Server-Sent Events."""
-    message = request.get("message", "")
-    conversation_id = request.get("conversation_id")
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    confirmed = bool(request.get("yes", False))
-    if not message and not confirm_id:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    """Stream chat tokens via Server-Sent Events.
 
-    if not await _validator.validate_rate_limit(user.id, "chat"):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Please try again shortly.",
-        )
-    is_valid, validation_errors = await _validator.validate_user_input(
-        {"message": message}, "chat"
-    )
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Validation errors: {', '.join(validation_errors)}",
-        )
-
-    await memory_store.ensure_user(user)
-
-    # Same untrusted-id rule as /chat: refuse a conversation that isn't the
-    # caller's before a single token is streamed.
-    conversation_id = await _require_owned_conversation(
-        memory_store, user, conversation_id
-    )
-
-    # A money turn streams its one reply instead of tokens. It never reaches the
-    # agent loop, and it is not offered to onboarding.
-    is_money_turn = get_settings().MONEY_LAYERS_ENABLED and (
-        bool(confirm_id) or classify_turn(message) == "orchestrator"
-    )
-
-    # Conversational onboarding owns the turn here too, exactly as in /chat
-    # (polls only render in the iMessage bridge; the web stream carries the text
-    # and, when one is pending, the poll payload for the client to render).
-    onboarding = None
-    if not is_money_turn:
-        try:
-            onboarding = await OnboardingService(memory_store).handle_turn(
-                user,
-                message=message,
-                is_poll_vote=bool(request.get("is_poll_vote", False)),
-                poll_title=request.get("poll_title") or "",
-                document=request.get("document"),
-            )
-        except Exception:
-            # Fail-open, mirroring /chat: never 500 the stream over onboarding;
-            # fall through to the general agent.
-            logger.exception("onboarding handle_turn failed for %s", user.id)
-            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
+    Validation, ownership, classification and onboarding run through the same
+    ``_prepare_turn`` pipeline as /chat — a refused turn is an HTTP 4xx before
+    the stream opens, never a mystery error frame mid-stream.
+    """
+    turn = await _prepare_turn(body=body, memory_store=memory_store, user=user)
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            if is_money_turn:
+            # A money turn streams its one reply instead of tokens. It never
+            # reaches the agent loop, and it is not offered to onboarding.
+            if turn.is_money_turn:
                 money_result = await _run_money_turn(
                     user=user,
                     token=token,
-                    message=message,
-                    confirm_id=confirm_id,
-                    yes=confirmed,
+                    message=turn.message,
+                    confirm_id=turn.confirm_id,
+                    yes=turn.yes,
                 )
                 payload = await _finalize_money_turn(
                     memory_store=memory_store,
                     supermemory_memory=supermemory_memory,
                     user=user,
-                    message=message,
+                    message=turn.message,
                     result=money_result,
-                    conversation_id=conversation_id,
+                    conversation_id=turn.conversation_id,
                 )
                 yield _sse(
                     {
@@ -601,19 +665,19 @@ async def chat_stream(
                 yield _sse({"type": "token", "content": payload["response"]})
                 yield _sse({"type": "done"})
                 return
-            if onboarding is not None and onboarding.took_over:
-                conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
+            if turn.onboarding is not None and turn.onboarding.took_over:
+                conv_id = turn.onboarding.conversation_id or f"onboarding:{user.id}"
                 await memory_store.store_interaction(
                     user_id=user.id,
                     role="user",
-                    content=message,
+                    content=turn.message,
                     conversation_id=conv_id,
                     metadata={"channel": "api", "onboarding": True},
                 )
                 await memory_store.store_interaction(
                     user_id=user.id,
                     role="assistant",
-                    content=onboarding.response,
+                    content=turn.onboarding.response,
                     conversation_id=conv_id,
                     metadata={"channel": "api", "onboarding": True},
                 )
@@ -621,97 +685,68 @@ async def chat_stream(
                     supermemory_memory,
                     user.id,
                     conversation_id=conv_id,
-                    user_message=message,
-                    assistant_message=onboarding.response,
+                    user_message=turn.message,
+                    assistant_message=turn.onboarding.response,
                 )
-                if onboarding.poll:
+                if turn.onboarding.poll:
                     yield _sse(
                         {
                             "type": "onboarding",
-                            "onboarding": onboarding.to_payload(conv_id).get(
+                            "onboarding": turn.onboarding.to_payload(conv_id).get(
                                 "onboarding", {}
                             ),
-                            "poll": onboarding.poll,
+                            "poll": turn.onboarding.poll,
                         }
                     )
-                yield _sse({"type": "token", "content": onboarding.response})
+                yield _sse({"type": "token", "content": turn.onboarding.response})
                 yield _sse({"type": "done"})
                 return
 
             registry = build_tool_registry()
-            agent = Agent(
-                registry=registry,
-                safety_policy=SafetyPolicy(),
-                config=AgentConfig(name="financial_agent", tools=registry.list_names()),
-            )
+            agent = _build_agent(registry)
             _install_audit_observer()
-            history = (
-                await memory_store.get_conversation_history(conversation_id, user.id)
-                if conversation_id
-                else []
-            )
-            user_context = await _load_user_context(memory_store, user)
-            memory_facts = await _load_memory_facts(
-                memory_store,
-                user.id,
-                query=message,
+            inputs = await _agent_inputs(
+                memory_store=memory_store,
                 supermemory_memory=supermemory_memory,
+                user=user,
+                token=token,
+                message=turn.message,
+                conversation_id=turn.conversation_id,
+                registry=registry,
             )
-            financial_plan = await _load_financial_plan(token)
 
             # TypeSafe ingress gate, mirroring /chat. A short-circuit streams the
             # fixed reply instead of running the generator, so a jailbreak/PII/
             # vague ask never reaches it here either.
-            try:
-                ingress_decision = await ingress_gate(
-                    build_ingress_state(
-                        user_id=user.id,
-                        message=message,
-                        history=history,
-                        user_context=user_context,
-                        registry=registry,
-                    )
-                )
-            except Exception:
-                logger.exception("ingress gate failed; failing open to generator")
-                ingress_decision = None
+            ingress_decision = await _ingress_decision(
+                user_id=user.id,
+                message=turn.message,
+                registry=registry,
+                **inputs,
+            )
             if ingress_decision is not None and ingress_decision.short_circuits:
-                conv_id = conversation_id or f"conv_{user.id}"
-                reply = ingress_decision.reply or ""
-                await memory_store.store_interaction(
-                    user_id=user.id,
-                    role="user",
-                    content=message,
-                    conversation_id=conv_id,
-                    metadata={"channel": "api"},
+                # Persisted through the same finalize as /chat, so a refused
+                # turn is recorded exactly like any other exchange.
+                payload = await _finalize_turn(
+                    memory_store=memory_store,
+                    supermemory_memory=supermemory_memory,
+                    user=user,
+                    message=turn.message,
+                    result=AgentRunResult(
+                        response=ingress_decision.reply or "",
+                        conversation_id=turn.conversation_id or f"conv_{user.id}",
+                    ),
                 )
-                await memory_store.store_interaction(
-                    user_id=user.id,
-                    role="assistant",
-                    content=reply,
-                    conversation_id=conv_id,
-                    metadata={"channel": "api"},
-                )
-                await _ingest_to_supermemory(
-                    supermemory_memory,
-                    user.id,
-                    conversation_id=conv_id,
-                    user_message=message,
-                    assistant_message=reply,
-                )
-                yield _sse({"type": "token", "content": reply})
+                yield _sse({"type": "token", "content": payload["response"]})
                 yield _sse({"type": "done"})
                 return
 
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
-                message=message,
-                conversation_id=conversation_id,
-                history=history,
-                user_context=user_context,
-                memory_facts=memory_facts,
-                financial_plan=financial_plan,
+                message=turn.message,
+                conversation_id=turn.conversation_id,
+                **inputs,
             ):
                 evt = event["type"]
                 if evt == "token":
