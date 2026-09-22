@@ -63,6 +63,25 @@ class GliderState(BaseModel):
     positions: list[dict] = Field(default_factory=list)
 
 
+class VaultState(BaseModel):
+    """The Rail-owned locked dollar sleeve, when the user has one.
+
+    The vault IS the long-horizon book for a vaulted user: the planner names
+    the vault percent and unlock date in the surplus and automation lines and
+    never drafts a second Miriam book (Core/Preserve/Build) on top of it. The
+    vault tiers (Steady/Balanced/Growth) are Rail labels, not planner books,
+    and the mix stays in the Rail YAML.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    active: bool = False
+    tier_label: str = ""
+    vault_pct: Decimal = Decimal("0")
+    unlock_date: str = ""
+    total: Decimal | None = None
+
+
 class Pipeline(BaseModel):
     """Every intermediate object, kept so a test (or a support engineer) can see
     how a plan was reached without re-running it."""
@@ -77,6 +96,7 @@ class Pipeline(BaseModel):
     cashflow: CashflowSplit
     book: AllocationBook
     glider: GliderAction
+    vault: VaultState = Field(default_factory=VaultState)
 
 
 def coerce_profile(user_profile: Any) -> IntakeProfile:
@@ -107,6 +127,7 @@ def _run_pipeline(
     *,
     reference: CountryReference | None = None,
     glider_state: GliderState | dict | None = None,
+    vault_state: VaultState | dict | None = None,
     today: date | None = None,
 ) -> Pipeline:
     """Run the pipeline in order. Internal: ``build_money_plan`` is the only door.
@@ -118,12 +139,14 @@ def _run_pipeline(
     diagnosis = diagnose(intake, reference=ref, status=status)
     safety = assess_safety(intake, ref, status=status)
     book = build_book(intake, safety, ref)
+    vault = _coerce_vault(vault_state)
     glider_action = decide_glider(
         intake,
         safety,
         book,
         portfolio=_state_field(glider_state, "portfolio"),
         positions=_state_field(glider_state, "positions"),
+        vault_active=vault.active,
     )
     split = build_cashflow(safety, book)
     return Pipeline(
@@ -135,6 +158,7 @@ def _run_pipeline(
         cashflow=split,
         book=book,
         glider=glider_action,
+        vault=vault,
     )
 
 
@@ -146,10 +170,39 @@ def _state_field(state: GliderState | dict | None, field: str) -> Any:
     return getattr(state, field, None)
 
 
+def _coerce_vault(state: VaultState | dict | None) -> VaultState:
+    if state is None:
+        return VaultState()
+    if isinstance(state, VaultState):
+        return state
+    if isinstance(state, dict):
+        data = dict(state)
+        total = data.get("total")
+        try:
+            data["total"] = Decimal(str(total)) if total is not None else None
+        except (ArithmeticError, TypeError, ValueError):
+            data["total"] = None
+        try:
+            data["vault_pct"] = Decimal(str(data.get("vault_pct") or 0))
+        except (ArithmeticError, TypeError, ValueError):
+            data["vault_pct"] = Decimal("0")
+        data["active"] = bool(data.get("active"))
+        return VaultState(**{k: v for k, v in data.items() if k in VaultState.model_fields})
+    return VaultState()
+
+
+def _vault_line(vault: VaultState) -> str:
+    label = vault.tier_label or "locked dollar sleeve"
+    pct = f"{vault.vault_pct:g} percent" if vault.vault_pct else "your set percent"
+    unlock = f", opening {vault.unlock_date}" if vault.unlock_date else ""
+    return f"locked dollar sleeve ({label} at {pct}{unlock})"
+
+
 def explain_money_plan(
     user_profile: Any,
     accounts: AccountsSnapshot | dict | None = None,
     glider_state: GliderState | dict | None = None,
+    vault_state: VaultState | dict | None = None,
     *,
     reference: CountryReference | None = None,
     today: date | None = None,
@@ -161,7 +214,11 @@ def explain_money_plan(
     """
     intake = apply_accounts(coerce_profile(user_profile), accounts)
     return _run_pipeline(
-        intake, reference=reference, glider_state=glider_state, today=today
+        intake,
+        reference=reference,
+        glider_state=glider_state,
+        vault_state=vault_state,
+        today=today,
     )
 
 
@@ -211,6 +268,7 @@ def build_money_plan(
     user_profile: Any,
     accounts: AccountsSnapshot | dict | None = None,
     glider_state: GliderState | dict | None = None,
+    vault_state: VaultState | dict | None = None,
     *,
     reference: CountryReference | None = None,
     today: date | None = None,
@@ -220,7 +278,9 @@ def build_money_plan(
     ``user_profile`` is an ``IntakeProfile``, ``FinancialProfile``, onboarding
     state, or a plain dict. ``accounts`` are connected balances, which outrank
     anything stated by hand. ``glider_state`` is any existing Glider portfolio,
-    which turns a recommendation into a monitoring decision.
+    which turns a recommendation into a monitoring decision. ``vault_state``
+    is the Rail-owned locked dollar sleeve, which becomes the long-horizon
+    book and suppresses any second Miriam draft on top.
 
     No hidden globals and no I/O: same inputs, same plan, every time. The LLM
     layer sits strictly on top of this and can only reword it.
@@ -228,7 +288,11 @@ def build_money_plan(
     intake = apply_accounts(coerce_profile(user_profile), accounts)
     return build_plan(
         _run_pipeline(
-            intake, reference=reference, glider_state=glider_state, today=today
+            intake,
+            reference=reference,
+            glider_state=glider_state,
+            vault_state=vault_state,
+            today=today,
         )
     )
 
@@ -327,19 +391,33 @@ def _actions(
         )
 
     if book.investable_surplus > 0 and pipeline.glider.kind != "monitor":
-        actions.append(
-            Action(
-                when="this month",
-                what=(
-                    f"Set up the {int(book.growth_pct)}/{int(book.defensive_pct)} "
-                    f"book and fund it with "
-                    f"{format_amount(book.investable_surplus, currency)} a month"
-                ),
-                amount=book.investable_surplus,
-                currency=currency,
-                how=("Broad, low-cost index exposure, funded automatically on payday"),
+        if pipeline.vault.active:
+            actions.append(
+                Action(
+                    when="this month",
+                    what=(
+                        f"Keep funding the {_vault_line(pipeline.vault)} with "
+                        f"{format_amount(book.investable_surplus, currency)} a month"
+                    ),
+                    amount=book.investable_surplus,
+                    currency=currency,
+                    how="The locked sleeve is the long-horizon book, approved in the app",
+                )
             )
-        )
+        else:
+            actions.append(
+                Action(
+                    when="this month",
+                    what=(
+                        f"Set up the {int(book.growth_pct)}/{int(book.defensive_pct)} "
+                        f"book and fund it with "
+                        f"{format_amount(book.investable_surplus, currency)} a month"
+                    ),
+                    amount=book.investable_surplus,
+                    currency=currency,
+                    how=("Broad, low-cost index exposure, funded automatically on payday"),
+                )
+            )
 
     if pipeline.glider.kind == "monitor":
         # Someone who already holds a portfolio does not need a second one. They
@@ -430,12 +508,19 @@ def _automation_rules(
             f"{worst.label} immediately after the buffer transfer"
         )
     if pipeline.book.investable_surplus > 0:
-        rules.append(
-            "On payday, move "
-            f"{format_amount(pipeline.book.investable_surplus, currency)} "
-            f"into the {format_pct(pipeline.book.growth_pct)}/"
-            f"{format_pct(pipeline.book.defensive_pct)} book"
-        )
+        if pipeline.vault.active:
+            rules.append(
+                "On payday, move "
+                f"{format_amount(pipeline.book.investable_surplus, currency)} "
+                f"into {_vault_line(pipeline.vault)}"
+            )
+        else:
+            rules.append(
+                "On payday, move "
+                f"{format_amount(pipeline.book.investable_surplus, currency)} "
+                f"into the {format_pct(pipeline.book.growth_pct)}/"
+                f"{format_pct(pipeline.book.defensive_pct)} book"
+            )
 
     rules.append(
         "Automate the transfers themselves, not the intention to make them -- a "

@@ -111,8 +111,18 @@ def decide_glider(
     template: StrategyTemplate | None = None,
     resolved_assets: dict[str, str] | None = None,
     validation: str = "",
+    vault_active: bool = False,
 ) -> GliderAction:
     """Decide what to do about Glider, and say why when the answer is nothing."""
+    if vault_active:
+        return GliderAction(
+            kind="none",
+            blocked_reason=(
+                "The locked dollar sleeve is the long-horizon book, so there "
+                "is no second onchain draft on top of it."
+            ),
+            risks=list(GLIDER_RISKS),
+        )
     chosen = template or select_template(book)
 
     # -- refusals, in the order a user would want them explained --------

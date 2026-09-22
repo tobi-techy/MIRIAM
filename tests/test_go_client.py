@@ -300,7 +300,9 @@ def test_agent_client_exposes_no_withdrawal_method():
     from miriam_agent.integrations.go_client import GoBackendClient
 
     methods = [name for name in dir(GoBackendClient) if not name.startswith("__")]
-    assert not any("withdraw" in name for name in methods)
+    assert not any(
+        "withdraw" in name and "preview" not in name for name in methods
+    )
 
 
 def test_stash_transfers_use_real_paths_and_idempotency_header():

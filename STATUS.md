@@ -14,6 +14,9 @@ Last verified: 2026-09-19 (branch `tobi-techy/merrow`). Run the gates with:
 | User-facing agent | `miriam_agent/agents/agent_loop.py`, `api/chat.py` | Built. `POST /api/v1/chat`, `/chat/stream` |
 | System prompt | `miriam_agent/agents/system_prompt.py` | **Wired.** Operator-first `MONEY OPERATOR RULES` block inside `BASE_PROMPT` |
 | Tool registry | `miriam_agent/tools/money_definitions.py` | **Wired.** `get_money_plan`, read-only, auto-execute |
+| Vault tools | `miriam_agent/tools/vault_definitions.py` | **Wired.** `get_vault_context`, `preview_plan`, `preview_withdraw`, `propose_vault_plan` (staged), read-only, auto-execute. Copy-guarded (`money/vault_copy.py`) |
+| Vault wire | `miriam_agent/integrations/go_client.py` | **Wired.** Reads only: `get_vault`, `list_vault_strategies`, `get_vault_activity`, `preview_vault_withdraw`. No vault POST, no withdraw-submit |
+| Vault voice | `miriam_agent/agents/system_prompt.py`, `miriam_agent/voice/prompt.py` | **Wired.** Locked dollar block: Rail-owned tiers, four facts, Go preview before exit numbers |
 | Money *execution* | `RAIL_BACKEND` (Go), via `integrations/go_client.py` | Out of scope. Python never moves money |
 
 ## The one math door
@@ -30,6 +33,13 @@ decision.
 `explain_money_plan(...)` returns the same run as a reasoning trace, for tests
 and support. It delegates to the same internal core, so the two views cannot
 disagree. There is no second planner: `run_pipeline` was folded in and removed.
+
+When Go reports an active vault, the planner treats the locked dollar sleeve
+as the long-horizon book: `glider.kind` is `none`, no second Miriam draft is
+emitted on top, and surplus/automation lines name the vault percent and unlock
+date. Vault tiers (Steady/Balanced/Growth) are Rail labels, not planner books;
+the mix stays in the Rail YAML. Vault execution is the app via Go confirm +
+passcode; Python stages the draft and never POSTs.
 
 ## Wired / dead
 

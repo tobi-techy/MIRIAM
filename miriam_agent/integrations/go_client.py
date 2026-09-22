@@ -450,6 +450,7 @@ class GoBackendClient:
             f"/api/v1/investments/investors/{investor_id}/activity", token
         )
 
+<<<<<<< Updated upstream
     # ---- investments (staged mutations) ----
     #
     # Every mutation below returns HTTP 202 with a body carrying
@@ -545,6 +546,61 @@ class GoBackendClient:
             payload["reason"] = reason
         return await self._token_post(
             f"/api/v1/investments/strategies/{strategy_id}/rebalance", token, payload
+=======
+    # ---- retirement vault (Sleeve A; Rail-owned locked USD vault) ----
+    # Reads only. The app performs POST /vault with its own ConfirmationToken +
+    # passcode flow; Python never POSTs vault writes and holds no
+    # withdraw-submit. Paths mirror investments/* and must be verified against
+    # RAIL-BACKEND-SERVICE (Step 0 of the vault plan).
+
+    async def get_vault(self, token: str) -> dict[str, Any]:
+        """The user's locked dollar retirement vault, or ``{exists: False}``.
+
+        Go answers 404 when no vault exists yet; that is an empty result, not
+        a failure, so it comes back as a sentinel the planner can branch on
+        instead of an exception.
+        """
+        try:
+            data = await self._token_get("/api/v1/vault", token)
+        except IntegrationError as e:
+            message = str(e)
+            if "404" in message or "not_found" in message:
+                return {"exists": False}
+            raise
+        if not data:
+            return {"exists": False}
+        if isinstance(data, dict):
+            if data.get("exists") is False:
+                return {"exists": False}
+            out = dict(data)
+            out.setdefault("exists", True)
+            return out
+        return {"exists": False}
+
+    async def list_vault_strategies(self, token: str) -> dict[str, Any]:
+        """Seeded Rail tier strategies behind the vault (read-only)."""
+        return await self._token_get("/api/v1/vault/strategies", token)
+
+    async def get_vault_activity(
+        self, token: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        params = {"limit": limit} if limit is not None else None
+        data = await self._token_get("/api/v1/vault/activity", token, params=params)
+        return _as_list(data, "activity")
+
+    async def preview_vault_withdraw(
+        self, token: str, amount: float
+    ) -> dict[str, Any]:
+        """Go-computed early-withdrawal math (principal/earnings/penalty/payout).
+
+        Numbers pass through unchanged. Python never recomputes the 10% as a
+        second engine.
+        """
+        return await self._token_get(
+            "/api/v1/vault/preview-withdraw",
+            token,
+            params={"amount": amount},
+>>>>>>> Stashed changes
         )
 
     # ---- lookups / automations / obligations / schedules ----

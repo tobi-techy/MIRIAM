@@ -7,6 +7,7 @@ from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry, get_registr
 from miriam_agent.tools import (  # noqa: F401  # pyright: ignore[reportUnusedImport]
     investment_definitions,
     money_definitions,
+    vault_definitions,
 )
 from miriam_agent.tools.definitions import build_tool_registry
 
