@@ -742,7 +742,7 @@ class InputValidator:
         bucket[:] = [t for t in bucket if t > cutoff]
         if not bucket:
             self._local_buckets.pop(key, None)
-            return self._local_buckets.setdefault(key, [])
+            bucket = self._local_buckets.setdefault(key, [])
         if len(self._local_buckets) > self._MAX_LOCAL_BUCKETS and key in self._local_buckets:
             # Evict the oldest key (insertion order) that is not this one.
             for old_key in list(self._local_buckets.keys()):

@@ -91,6 +91,7 @@ def test_metrics_rejects_fake_bearer_in_production(monkeypatch):
 
 def test_rate_limit_falls_back_locally_when_redis_down(monkeypatch):
     import asyncio
+    import time
 
     monkeypatch.setenv("ENCRYPTION_KEY", "e" * 40)
     from miriam_agent.safety.validator import InputValidator
@@ -105,3 +106,20 @@ def test_rate_limit_falls_back_locally_when_redis_down(monkeypatch):
     allowed = [asyncio.run(v.validate_rate_limit("u-fallback", "transaction")) for _ in range(11)]
     assert allowed[:10] == [True] * 10
     assert allowed[10] is False
+
+
+def test_local_bucket_cap_evicts_on_new_keys(monkeypatch):
+    import time
+
+    monkeypatch.setenv("ENCRYPTION_KEY", "e" * 40)
+    from miriam_agent.safety.validator import InputValidator
+
+    v = InputValidator()
+    v._local_buckets.clear()
+    v._MAX_LOCAL_BUCKETS = 3
+    now = time.time()
+    for i in range(5):
+        v._prune_local_bucket(f"ratelimit:u{i}:transaction", now, 60)
+    assert len(v._local_buckets) <= 3
+    v._MAX_LOCAL_BUCKETS = 10_000
+    v._local_buckets.clear()

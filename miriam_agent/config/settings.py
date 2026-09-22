@@ -241,17 +241,27 @@ class Settings(BaseSettings):
 
         weak = {"", "change-me-in-production"}
         problems: list[str] = []
-        if self.JWT_SECRET in weak or len(self.JWT_SECRET) < 32:
+
+        def _is_dev_placeholder(value: str) -> bool:
+            # .env.example ships dev-only secrets (e.g. dev-jwt-secret-...);
+            # they are long enough to pass the length check but public, so
+            # copying .env.example into production must fail loudly here.
+            return value in weak or value.startswith("dev-")
+
+        if _is_dev_placeholder(self.JWT_SECRET) or len(self.JWT_SECRET) < 32:
             problems.append(
                 "JWT_SECRET must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if self.SECRET_KEY in weak or len(self.SECRET_KEY) < 32:
+        if _is_dev_placeholder(self.SECRET_KEY) or len(self.SECRET_KEY) < 32:
             problems.append(
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if not self.ENCRYPTION_KEY or len(self.ENCRYPTION_KEY) < 32:
+        if (
+            _is_dev_placeholder(self.ENCRYPTION_KEY)
+            or len(self.ENCRYPTION_KEY) < 32
+        ):
             problems.append(
                 "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
                 "production; deriving it from SECRET_KEY via single SHA-256 is not "
@@ -266,7 +276,7 @@ class Settings(BaseSettings):
             problems.append(
                 "JWT_ISSUER must be set (e.g. 'rail-backend') in production"
             )
-        if self.ALLOWED_ORIGINS.strip() == "*":
+        if "*" in {origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")}:
             problems.append(
                 "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
                 "allowlist of origins"
