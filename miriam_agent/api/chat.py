@@ -40,6 +40,7 @@ from miriam_agent.api.dependencies import (
     get_current_user,
     get_memory_store,
     get_supermemory_memory_dep,
+    require_rail_service_key,
 )
 from miriam_agent.config.settings import get_settings
 from miriam_agent.database.memory import MemoryStore
@@ -86,6 +87,32 @@ def _get_ledger_store() -> RedisLedgerStore:
     return _ledger_store
 
 
+async def _persist_money_audit(event: Any, result: Any) -> None:
+    """Write a finished turn's receipt to the Postgres audit store.
+
+    Injected into the Orchestrator as its audit sink. The receipt is the
+    compliance fact — what was attempted, moved, or refused — and until now
+    it lived only in the rewritable Redis ledger blob. Fail-open: the
+    orchestrator catches sink errors, so this raising never breaks a turn.
+    """
+    audit = await get_audit_system().__anext__()
+    if audit is None:
+        return
+    receipt = result.receipt
+    await audit.log_money_movement(
+        user_id=event.user_id,
+        transaction_id=receipt.id,
+        amount=float(receipt.amount or 0),
+        currency=receipt.currency,
+        action=receipt.action,
+        status=receipt.status,
+        from_account=receipt.sleeve,
+        to_account=receipt.counterparty,
+        requires_approval=False,
+        approval_id=result.confirm_id or None,
+    )
+
+
 def _orchestrator_for(token: str) -> Orchestrator:
     """The money entrypoint for one request.
 
@@ -98,6 +125,7 @@ def _orchestrator_for(token: str) -> Orchestrator:
         policy=Policy.from_settings(),
         rail=GoRail(token),
         go_token=token,
+        audit_sink=_persist_money_audit,
     )
 
 
@@ -216,7 +244,11 @@ async def _run_money_turn(
     orchestrator = _orchestrator_for(token)
     if confirm_id:
         return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-    if looks_like_inflow_alert(message):
+    if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
+        # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
+        # stable id derived from the alert so a re-paste cannot split twice.
+        # Off by default and refused in production entirely — chat text is
+        # not a payment fact, so it must not mint ledger money.
         return await orchestrator.handle_inflow(
             user.id,
             payment_id=inflow_id_for_alert(message),
@@ -441,10 +473,14 @@ async def chat_with_agent(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        # Internal error text can carry stack fragments, SQL, or provider
+        # details; the client gets an opaque message and the trace id that
+        # links it to the server log.
+        logger.exception("chat request failed", extra={"trace_id": current_trace_id()})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing chat request: {str(e)}",
+            detail="something went wrong processing that message",
         )
 
     return await _finalize_turn(
@@ -678,8 +714,11 @@ async def chat_stream(
                     yield _sse({"type": "done"})
                     return
             yield _sse({"type": "done"})
-        except Exception as e:
-            yield _sse({"type": "error", "message": str(e)})
+        except Exception:
+            logger.exception(
+                "chat stream failed", extra={"trace_id": current_trace_id()}
+            )
+            yield _sse({"type": "error", "message": "internal error; try again"})
 
     return StreamingResponse(
         event_stream(),
@@ -696,6 +735,7 @@ async def money_inflow(
     request: dict[str, Any],
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
+    _rail: None = Depends(require_rail_service_key),
 ) -> dict[str, Any]:
     """Tell the ledger that money arrived. Called by the rail, not by chat.
 
@@ -705,8 +745,10 @@ async def money_inflow(
     and the rail webhook are the same code, and ``payment_id`` is the
     idempotency key either way.
 
-    The reply carries the receipt Hands wrote, so the caller can see the split
-    rather than infer it.
+    Auth is two-factor by design: the bearer JWT names the account to credit,
+    and the ``X-Rail-Service-Key`` header proves the caller is the rail. A
+    user token alone is refused — this endpoint mints ledger money, so it is
+    never callable with ordinary user credentials.
     """
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
@@ -763,10 +805,15 @@ async def money_inflow(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        # Same rule as /chat: no internals to the caller. The rail retries on
+        # 5xx, so the message must not pretend to be a payload diagnosis.
+        logger.exception(
+            "inflow handling failed", extra={"trace_id": current_trace_id()}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error handling inflow: {str(e)}",
+            detail="internal error handling inflow",
         )
 
     return {

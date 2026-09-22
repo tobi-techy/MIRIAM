@@ -72,8 +72,8 @@ def test_removed_and_invented_tools_are_gone():
 
 
 def test_agent_has_no_withdrawal_tool():
-    from miriam_agent.tools import vault_definitions as _vault  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as _vault  # noqa: F401
 
     reg = build_tool_registry()
     assert not any(

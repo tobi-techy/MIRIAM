@@ -6,9 +6,13 @@ edits to the pipeline or unrelated processors.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
-from miriam_agent.documents.models import DocumentKind, ExtractedText, StatementExtraction
+from miriam_agent.documents.models import (
+    DocumentKind,
+    ExtractedText,
+    StatementExtraction,
+)
 from miriam_agent.documents.processors import bank_statement
 
 Handler = Callable[[ExtractedText], StatementExtraction | None]

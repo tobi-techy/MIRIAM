@@ -16,15 +16,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
 
 from miriam_agent.financial.diagnosis import (  # noqa: E402
-    PROBLEMS,
     PRIORITY_FOR_PROBLEM,
+    PROBLEMS,
     SECONDARY_FLOOR,
     diagnose,
     missing_for_diagnosis,
     ready_to_diagnose,
 )
-from miriam_agent.financial.profile import FinancialProfile, extract_profile  # noqa: E402
-
+from miriam_agent.financial.profile import (  # noqa: E402
+    FinancialProfile,
+    extract_profile,
+)
 
 # -----------------------------------------------------------------------
 # The spec's own scenarios

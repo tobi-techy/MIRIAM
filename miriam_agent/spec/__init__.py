@@ -1,20 +1,21 @@
 """Miriam specification package."""
 
-SPEC_VERSION = "1.2"
-SPEC_PATH = "../docs/miriam_spec/miriam_spec_v1.2.md"
-
 # Core registry exports
+# Loading utilities
 from miriam_agent.spec.registry import (
-    SECTIONS,
-    RULES,
-    TRANSACTION_CLASSES,
-    REASONING_ORDER,
     ANTI_PATTERNS,
+    REASONING_ORDER,
+    RULES,
+    SECTIONS,
     SPEC_HASH,
+    TRANSACTION_CLASSES,
+    content_hash,
+    load_markdown,
+    sections,
 )
 
-# Loading utilities
-from miriam_agent.spec.registry import load_markdown, sections, content_hash
+SPEC_VERSION = "1.2"
+SPEC_PATH = "../docs/miriam_spec/miriam_spec_v1.2.md"
 
 __all__ = [
     "SPEC_VERSION",

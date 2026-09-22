@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
 
 from miriam_agent.financial.profile import (  # noqa: E402
-    FinancialFact,
     FinancialProfile,
     detect_currency,
     extract_money_facts,
@@ -24,7 +23,6 @@ from miriam_agent.financial.profile import (  # noqa: E402
     horizon_months,
     profile_from_onboarding_state,
 )
-
 
 # -----------------------------------------------------------------------
 # Extraction: amounts

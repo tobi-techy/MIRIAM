@@ -72,6 +72,15 @@ class GoBackendClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def health(self) -> int:
+        """Liveness probe of the Go host (read-only, unauthenticated).
+
+        Public on purpose: readiness checks must not reach into
+        ``self._client`` internals.
+        """
+        resp = await self._client.get("/health", timeout=3.0)
+        return resp.status_code
+
     # ---- data reads (delegate to Go, which owns the ledger) ----
 
     async def get_balances(self, token: str) -> dict[str, Any]:

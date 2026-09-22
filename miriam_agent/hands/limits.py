@@ -185,7 +185,9 @@ def reserved_outbound(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
 
 def daily_usage(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
     """Settled plus reserved outbound, the number the cap is measured against."""
-    return money(settled_outbound_today(ledger, at=at) + reserved_outbound(ledger, at=at))
+    return money(
+        settled_outbound_today(ledger, at=at) + reserved_outbound(ledger, at=at)
+    )
 
 
 def _day_start(at: datetime | None) -> datetime:

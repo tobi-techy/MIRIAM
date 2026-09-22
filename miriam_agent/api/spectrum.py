@@ -79,6 +79,7 @@ def _orchestrator_for(token: str) -> Orchestrator:
         policy=Policy.from_settings(),
         rail=GoRail(token),
         go_token=token,
+        audit_sink=chatmod._persist_money_audit,
     )
 
 
@@ -330,15 +331,20 @@ async def spectrum_chat(
     # -- 3. money turns ----------------------------------------------------
     from miriam_agent.orchestrator import classify_turn
 
-    if chatmod.looks_like_inflow_alert(text) or classify_turn(text) == "orchestrator":
-        if chatmod.looks_like_inflow_alert(text):
-            result = await orchestrator.handle_inflow(
-                user.id,
-                payment_id=chatmod.inflow_id_for_alert(text),
-                amount=chatmod._alert_amount(text),
-                source_raw=text,
-            )
-        elif wallet_address:
+    if chatmod.get_settings().ALLOW_CHAT_INFLOW_SYNTH and (
+        chatmod.looks_like_inflow_alert(text)
+    ):
+        # Demo-only escape hatch, mirroring the chat path: text is not a
+        # payment fact, so it never mints ledger money unless the deployment
+        # has explicitly turned the demo behaviour on.
+        result = await orchestrator.handle_inflow(
+            user.id,
+            payment_id=chatmod.inflow_id_for_alert(text),
+            amount=chatmod._alert_amount(text),
+            source_raw=text,
+        )
+    elif classify_turn(text) == "orchestrator":
+        if wallet_address:
             result = await orchestrator.handle(
                 Event(
                     type="utterance",
@@ -349,6 +355,9 @@ async def spectrum_chat(
             )
         else:
             result = await orchestrator.handle_utterance(user.id, text)
+    else:
+        result = None
+    if result is not None:
         parts.append(_text_part(result.narration or "Noted."))
         # 70/30 proof: the split receipt carries before/after sleeves.
         if result.receipt is not None and result.receipt.action == "inflow_split":

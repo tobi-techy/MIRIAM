@@ -73,7 +73,8 @@ class Transaction(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)  # income, expense, transfer
+    # income, expense, transfer
+    type: Mapped[str] = mapped_column(String, nullable=False)
     transaction_date: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow
     )
@@ -181,7 +182,8 @@ class MemoryEntry(Base):
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)  # conversation, financial, preference
+    # conversation, financial, preference
+    type: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict

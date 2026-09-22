@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 
@@ -26,6 +27,8 @@ from miriam_agent.observability.metrics import (
 )
 from miriam_agent.observability.tracing import setup_tracing
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,13 +38,13 @@ async def lifespan(app: FastAPI):
     setup_metrics()
     setup_tracing()
 
-    print("Miriam Financial Agent API starting up...")
-    print(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
+    logger.info("Miriam Financial Agent API starting up")
+    logger.info("Environment: %s", os.getenv("ENVIRONMENT", "production"))
 
     yield
 
     # Shutdown
-    print("Miriam Financial Agent API shutting down...")
+    logger.info("Miriam Financial Agent API shutting down")
 
 
 app = FastAPI(
@@ -59,10 +62,15 @@ app = FastAPI(
 def _cors_origins() -> list[str]:
     """Parse ``ALLOWED_ORIGINS`` into a list of origins.
 
-    The raw value was used verbatim as a single origin, so a comma-separated
-    allowlist became one nonsense origin that no browser would ever match.
+    Read from Settings (the single config source) rather than a raw
+    ``os.getenv`` that could disagree with what the production guard checks.
+    The raw value used to be used verbatim as a single origin, so a
+    comma-separated allowlist became one nonsense origin no browser would
+    ever match.
     """
-    raw = os.getenv("ALLOWED_ORIGINS", "*") or "*"
+    from miriam_agent.config.settings import get_settings
+
+    raw = get_settings().ALLOWED_ORIGINS or "*"
     return [origin.strip() for origin in raw.split(",") if origin.strip()] or ["*"]
 
 
@@ -174,31 +182,27 @@ async def ready_check():
     """Readiness probe: verifies dependencies are reachable.
 
     Reports per-dependency status instead of failing hard so a degraded
-    path (e.g. Supermemory down) is visible but not fatal.
+    path (e.g. Supermemory down) is visible but not fatal. Probes reuse the
+    shared singletons rather than constructing fresh clients per scrape.
     """
-    from miriam_agent.config.settings import get_settings
-
-    settings = get_settings()
     checks: dict = {"status": "ready", "service": "miriam-agent"}
 
-    # Database
+    # Database — the shared store, initialized once and reused by probes.
     try:
-        from miriam_agent.database.memory import MemoryStore
+        from miriam_agent.api.dependencies import get_or_init_memory_store
 
-        store = MemoryStore(settings.DATABASE_URL)
-        await store.initialize()
+        await get_or_init_memory_store()
         checks["database"] = "ok"
     except Exception as e:
-        checks["database"] = f"unavailable: {e}"
+        checks["database"] = f"unavailable: {type(e).__name__}"
 
     # Go backend (the money authority)
     try:
         from miriam_agent.integrations.go_client import get_go_client
 
-        client = get_go_client()
-        resp = await client._client.get("/health", timeout=3.0)
+        status_code = await get_go_client().health()
         checks["go_backend"] = (
-            "ok" if resp.status_code < 500 else f"status={resp.status_code}"
+            "ok" if status_code < 500 else f"status={status_code}"
         )
     except Exception as e:
         checks["go_backend"] = f"unreachable: {type(e).__name__}"
@@ -210,7 +214,7 @@ async def ready_check():
         get_llm_provider()
         checks["llm"] = "ok"
     except Exception as e:
-        checks["llm"] = f"unconfigured: {e}"
+        checks["llm"] = f"unconfigured: {type(e).__name__}"
 
     return checks
 
@@ -219,25 +223,35 @@ async def ready_check():
 async def metrics(request: Request):
     """Prometheus metrics endpoint — restricted in production.
 
-    Exposed without auth in development for scraping; in production the
-    endpoint requires a valid JWT Bearer token (same issuer as the API).
-    Unauthenticated external access returns 404 to avoid leaking
-    request counts, latencies and dependency state via enumeration.
+    Exposed without auth in development for scraping; in production a caller
+    must present the rail service key (``X-Rail-Service-Key``) or a JWT
+    carrying an admin/metrics role. A plain user token is refused: request
+    counts, latencies and dependency state are infrastructure facts, not
+    user-readable data. Unauthenticated external access returns 404 to avoid
+    leaking the endpoint's existence via enumeration.
     """
+    from miriam_agent.auth.jwt import decode_token, has_role
     from miriam_agent.config.settings import get_settings
 
-    if get_settings().ENVIRONMENT == "production":
-        auth = request.headers.get("Authorization", "")
-        scheme, _, token = auth.partition(" ")
+    settings = get_settings()
+    if settings.is_production:
         valid = False
-        if scheme == "Bearer" and token.strip():
-            try:
-                from miriam_agent.auth.jwt import decode_token
-
-                decode_token(token.strip())
-                valid = True
-            except Exception:
-                valid = False
+        key = request.headers.get("X-Rail-Service-Key", "")
+        if key and settings.RAIL_SERVICE_KEY and secrets.compare_digest(
+            key, settings.RAIL_SERVICE_KEY
+        ):
+            valid = True
+        if not valid:
+            auth = request.headers.get("Authorization", "")
+            scheme, _, token = auth.partition(" ")
+            if scheme == "Bearer" and token.strip():
+                try:
+                    payload = decode_token(token.strip())
+                    valid = has_role(payload, "admin") or has_role(
+                        payload, "metrics"
+                    )
+                except Exception:
+                    valid = False
         if not valid:
             # Return 404 (not 401) to avoid confirming the endpoint exists to scanners.
             return JSONResponse(status_code=404, content={"detail": "Not found"})

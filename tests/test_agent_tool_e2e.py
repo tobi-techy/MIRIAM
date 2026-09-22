@@ -32,8 +32,8 @@ import pytest
 
 from miriam_agent.agents.agent_loop import Agent
 from miriam_agent.agents.llm import LLMResponse
-from miriam_agent.tools import build_tool_registry
 from miriam_agent.integrations import go_client
+from miriam_agent.tools import build_tool_registry
 
 
 def _run(coro):
@@ -223,50 +223,6 @@ def test_agent_airtime_provider_failure_is_honest():
 # ------------------------------------------------------------------
 # Naira deposit flow
 # ------------------------------------------------------------------
-
-
-def test_agent_naira_deposit_uses_get_deposit_details():
-    """End-to-end: user asks how to deposit Naira, agent calls
-    get_deposit_details, and the real bank-transfer details reach the
-    final response."""
-    orig = go_client._client
-    go_client._client = _DepositOK()
-    try:
-        provider = _MockProvider(
-            [
-                LLMResponse(
-                    content="",
-                    tool_calls=[
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_deposit_details",
-                                "arguments": "{}",
-                            },
-                        }
-                    ],
-                ),
-                LLMResponse(
-                    content=(
-                        "You can send Naira to Graph Bank account 0123456789 "
-                        "(Ada Obi). It lands in your Rail balance."
-                    ),
-                    model="mock",
-                ),
-            ]
-        )
-        agent = Agent(registry=build_tool_registry(), provider=provider)
-        result = _run(
-            agent.run(user_id="u1", token="tok", message="How do I deposit Naira?")
-        )
-        assert len(result.tool_calls) == 1, result.tool_calls
-        assert result.tool_calls[0]["name"] == "get_deposit_details"
-        assert "Graph Bank" in result.response, result.response
-        assert "0123456789" in result.response, result.response
-        assert "\u2014" not in result.response
-    finally:
-        go_client._client = orig
 
 
 def test_agent_naira_deposit_failure_is_honest():

@@ -19,12 +19,13 @@ from typing import Any, Protocol
 from miriam_agent.core.exceptions import IntegrationError, ValidationError
 from miriam_agent.documents import evidence as evidence_mod
 from miriam_agent.documents.classify import classify
-from miriam_agent.documents.extraction.native_pdf import assess_quality, extract_native_text
+from miriam_agent.documents.extraction.native_pdf import (
+    assess_quality,
+    extract_native_text,
+)
 from miriam_agent.documents.models import (
-    DocumentKind,
     ExtractedText,
     ExtractionMethod,
-    ReconResult,
     StatementExtraction,
 )
 from miriam_agent.documents.processors import registry as processor_registry
@@ -35,7 +36,9 @@ logger = logging.getLogger(__name__)
 
 
 class OCRProvider(Protocol):
-    async def recognize(self, data: bytes, mime_type: str, *, doc_hint: str = "") -> ExtractedText: ...
+    async def recognize(
+        self, data: bytes, mime_type: str, *, doc_hint: str = ""
+    ) -> ExtractedText: ...
 
 
 @dataclass
@@ -67,12 +70,23 @@ def detect_mime(data: bytes) -> str:
 def redact_for_llm(text: str) -> str:
     """PII minimization for future LLM calls: mask 8+ digit runs (account
     numbers, BVN/NIN, cards). Deterministic stages see original text."""
-    return re.sub(r"\b\d{8,}\b", lambda m: "*" * (len(m.group(0)) - 4) + m.group(0)[-4:], text)
+    return re.sub(
+        r"\b\d{8,}\b",
+        lambda m: "*" * (len(m.group(0)) - 4) + m.group(0)[-4:],
+        text,
+    )
 
 
-async def process_document(data, *, document_id, mime_type="", ocr=None, config=None, llm_extractor=None):
+async def process_document(
+    data, *, document_id, mime_type="", ocr=None, config=None, llm_extractor=None
+):
     from miriam_agent.documents.processors.statement_dict import statement_to_dict
-    from miriam_agent.documents.schemas import CONTRACT_VERSION, DocumentData, DocumentResult, DocumentValidation
+    from miriam_agent.documents.schemas import (
+        CONTRACT_VERSION,
+        DocumentData,
+        DocumentResult,
+        DocumentValidation,
+    )
 
     cfg = config or PipelineConfig()
     started = time.perf_counter()
@@ -85,7 +99,10 @@ async def process_document(data, *, document_id, mime_type="", ocr=None, config=
     handler = processor_registry.get_processor(kind)
     if handler is not None:
         ext = handler(text)
-        stages["extraction"] = {"processor": kind, "transactions": len(ext.transactions)}
+        stages["extraction"] = {
+            "processor": kind,
+            "transactions": len(ext.transactions),
+        }
     else:
         void = (llm_extractor, cfg)
         del void
@@ -103,18 +120,59 @@ async def process_document(data, *, document_id, mime_type="", ocr=None, config=
     raw: dict[str, Any] = {"extraction_method": method, "pages": len(text.pages)}
     if kind == "bank_statement":
         raw["statement"] = statement_to_dict(ext)
-    data_out = DocumentData(merchant=ext.institution or None, amount=str(ext.closing_balance.normalized) if ext.closing_balance else None, currency=ext.currency or None, document_date=ext.period_end.normalized.isoformat() if ext.period_end else None, account_name=ext.account_name or None, opening_balance=str(ext.opening_balance.normalized) if ext.opening_balance else None, closing_balance=str(ext.closing_balance.normalized) if ext.closing_balance else None, raw=raw)
+    data_out = DocumentData(
+        merchant=ext.institution or None,
+        amount=str(ext.closing_balance.normalized) if ext.closing_balance else None,
+        currency=ext.currency or None,
+        document_date=(
+            ext.period_end.normalized.isoformat() if ext.period_end else None
+        ),
+        account_name=ext.account_name or None,
+        opening_balance=(
+            str(ext.opening_balance.normalized) if ext.opening_balance else None
+        ),
+        closing_balance=(
+            str(ext.closing_balance.normalized) if ext.closing_balance else None
+        ),
+        raw=raw,
+    )
     if recon.status == "reconciled":
         vstatus = "valid"
     elif recon.status == "mismatch":
         vstatus = "invalid"
     else:
         vstatus = "unknown"
-    validation = DocumentValidation(status=vstatus, reconciled=recon.status == "reconciled", difference=str(recon.difference.quantize(Decimal("0.00"))), checks=[{"name": c.name, "passed": c.passed, "message": c.message} for c in recon.checks], errors=list(recon.errors))
-    result = DocumentResult(schema_version=CONTRACT_VERSION, document_id=document_id, document_type=kind, status=status, confidence=conf.score, data=data_out, validation=validation, evidence=evidence)
+    validation = DocumentValidation(
+        status=vstatus,
+        reconciled=recon.status == "reconciled",
+        difference=str(recon.difference.quantize(Decimal("0.00"))),
+        checks=[
+            {"name": c.name, "passed": c.passed, "message": c.message}
+            for c in recon.checks
+        ],
+        errors=list(recon.errors),
+    )
+    result = DocumentResult(
+        schema_version=CONTRACT_VERSION,
+        document_id=document_id,
+        document_type=kind,
+        status=status,
+        confidence=conf.score,
+        data=data_out,
+        validation=validation,
+        evidence=evidence,
+    )
     stages["duration_s"] = round(time.perf_counter() - started, 3)
     stages["trace_id"] = current_trace_id()
-    logger.info("document pipeline complete", extra={"document_id": document_id, "type": kind, "method": method, "status": status})
+    logger.info(
+        "document pipeline complete",
+        extra={
+            "document_id": document_id,
+            "type": kind,
+            "method": method,
+            "status": status,
+        },
+    )
     return PipelineRun(result=result, method=method, stages=stages)
 
 
@@ -129,7 +187,13 @@ async def _extract_text(data, mime, ocr, cfg, stages):
             native = None
         if native is not None:
             quality = assess_quality(native, min_chars=cfg.min_text_chars)
-            stages["native_pdf"] = {"ok": True, "chars": quality.chars, "lines": quality.lines, "usable": quality.usable, "term_hits": quality.term_hits}
+            stages["native_pdf"] = {
+                "ok": True,
+                "chars": quality.chars,
+                "lines": quality.lines,
+                "usable": quality.usable,
+                "term_hits": quality.term_hits,
+            }
             if quality.usable or not cfg.ocr_enabled or ocr is None:
                 native.method = "native_pdf"
                 return native, "native_pdf"

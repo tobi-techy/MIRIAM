@@ -45,7 +45,9 @@ _ACCT_NAME_RE = re.compile(r"(?i)account name\s*[:\-]\s*([A-Za-z ,.'\-]{3,60})")
 _ACCT_NUM_RE = re.compile(r"(?i)account (?:number|no\.?)\s*[:\-]?\s*([\d\s\-]{8,20})")
 _HEADER_DATE = re.compile(r"(?i)\b(date|transaction date|value date|tran date)\b")
 _HEADER_DESC = re.compile(r"(?i)\b(description|narration|details|particulars)\b")
-_HEADER_MONEY = re.compile(r"(?i)\b(debit|withdrawal|credit|deposit|lodgement|amount)\b")
+_HEADER_MONEY = re.compile(
+    r"(?i)\b(debit|withdrawal|credit|deposit|lodgement|amount)\b"
+)
 _MONEY_TOKEN_RE = re.compile(r"\(?[\d,]+\.\d{2}\)?|\(?[\d,]{4,}\)?")
 
 # Institutions whose statements are NGN by convention. Used only to fill a
@@ -216,7 +218,11 @@ def _direction_from(
         return RawMoney(raw=credit.raw, normalized=abs(credit.normalized)), "credit", ""
     if single is not None:
         if single.normalized < 0:
-            return RawMoney(raw=single.raw, normalized=abs(single.normalized)), "debit", ""
+            return (
+                RawMoney(raw=single.raw, normalized=abs(single.normalized)),
+                "debit",
+                "",
+            )
         return single, "credit", ""
     return None, None, ""
 
@@ -236,7 +242,11 @@ def _heuristic_rows(
         if _OPENING_RE.search(low) or _CLOSING_RE.search(low):
             continue
         row_date = _row_date(text, text)
-        money = [m for tok in _MONEY_TOKEN_RE.findall(text) if (m := parse_money(tok)) is not None]
+        money = [
+            m
+            for tok in _MONEY_TOKEN_RE.findall(text)
+            if (m := parse_money(tok)) is not None
+        ]
         if row_date is None:
             if pending is not None and text.strip() and not money:
                 pending.description += " " + text.strip()
@@ -285,7 +295,11 @@ def _mapped_rows(
 
     def flush() -> None:
         nonlocal pending
-        if pending is not None and pending.amount is not None and pending.direction is not None:
+        if (
+            pending is not None
+            and pending.amount is not None
+            and pending.direction is not None
+        ):
             txns.append(pending)
         elif pending is not None:
             logger.debug("dropping amount-less row: %r", pending.raw_description[:80])
@@ -293,7 +307,11 @@ def _mapped_rows(
 
     for line_idx, (page, text) in enumerate(lines):
         low = text.lower()
-        if _OPENING_RE.search(low) or _CLOSING_RE.search(low) or low.startswith("page "):
+        if (
+            _OPENING_RE.search(low)
+            or _CLOSING_RE.search(low)
+            or low.startswith("page ")
+        ):
             continue
         row_date = _row_date(_cell(text, (date_start, date_end)), text)
         assigned = _assign_columns(text, money_cols) if money_cols else {}

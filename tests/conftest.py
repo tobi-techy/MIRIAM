@@ -33,6 +33,12 @@ from fastapi.testclient import TestClient
 # miriam_agent module is imported so the cached Settings pick it up.
 os.environ["TYPESAFE_ENABLED"] = "false"
 
+# The inflow endpoint mints ledger money, so it demands the rail service key
+# (a user JWT alone is refused). Tests exercise that rule: this key is what
+# test inflow calls must present in the X-Rail-Service-Key header. Set before
+# any miriam_agent import so cached Settings see it.
+os.environ.setdefault("RAIL_SERVICE_KEY", "test-rail-service-key-0123456789abcdef")
+
 from miriam_agent.api.main import app
 
 

@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from tests.benchmark.models import (
     BenchmarkScenario,
+    ConfirmationRequired,
     ConversationTurn,
     EvaluationRubric,
     ExpectedToolCall,
     FinancialState,
     ForbiddenBehavior,
     ScenarioCategory,
-    ToolType,
     UserProfile,
-    ConfirmationRequired,
 )
 
 
@@ -37,21 +35,21 @@ def _dict_to_scenario(data: dict[str, Any]) -> BenchmarkScenario:
     """Convert a dictionary to a BenchmarkScenario."""
     user_profile = UserProfile(**data.get("user_profile", {}))
     financial_state = FinancialState(**data.get("financial_state", {}))
-    
+
     conversation_history = [
         ConversationTurn(**turn) for turn in data.get("conversation_history", [])
     ]
-    
+
     required_tool_calls = [
         ExpectedToolCall(**tc) for tc in data.get("required_tool_calls", [])
     ]
-    
+
     forbidden_behaviors = [
         ForbiddenBehavior(**fb) for fb in data.get("forbidden_behaviors", [])
     ]
-    
+
     rubric = EvaluationRubric(**data.get("rubric", {}))
-    
+
     return BenchmarkScenario(
         id=data["id"],
         name=data["name"],
@@ -65,7 +63,9 @@ def _dict_to_scenario(data: dict[str, Any]) -> BenchmarkScenario:
         expected_reasoning_path=data["expected_reasoning_path"],
         allowed_tools=data.get("allowed_tools", []),
         required_tool_calls=required_tool_calls,
-        confirmation_required=ConfirmationRequired(data.get("confirmation_required", "not_required")),
+        confirmation_required=ConfirmationRequired(
+            data.get("confirmation_required", "not_required")
+        ),
         expected_final_outcome=data.get("expected_final_outcome", ""),
         forbidden_behaviors=forbidden_behaviors,
         rubric=rubric,
@@ -79,7 +79,7 @@ def save_scenario(scenario: BenchmarkScenario, scenarios_dir: str | Path) -> Pat
     """Save a scenario to a JSON file."""
     dir_path = Path(scenarios_dir)
     dir_path.mkdir(parents=True, exist_ok=True)
-    
+
     data = {
         "id": scenario.id,
         "name": scenario.name,
@@ -152,11 +152,11 @@ def save_scenario(scenario: BenchmarkScenario, scenarios_dir: str | Path) -> Pat
         "difficulty": scenario.difficulty,
         "version": scenario.version,
     }
-    
+
     file_path = dir_path / f"{scenario.id}.json"
     with open(file_path, "w") as f:
         json.dump(data, f, indent=2)
-    
+
     return file_path
 
 

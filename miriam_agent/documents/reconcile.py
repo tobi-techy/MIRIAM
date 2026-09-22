@@ -22,18 +22,43 @@ def reconcile(ext: StatementExtraction, *, tolerance: Decimal) -> ReconResult:
     checks: list[ReconCheck] = []
     errors: list[str] = []
     if ext.opening_balance is None or ext.closing_balance is None:
-        return ReconResult(status="skipped", difference=Decimal("0.00"), checks=[], errors=["missing opening or closing balance"])
+        return ReconResult(
+            status="skipped",
+            difference=Decimal("0.00"),
+            checks=[],
+            errors=["missing opening or closing balance"],
+        )
     credits = ext.total_credits if ext.total_credits is not None else Decimal("0")
     debits = ext.total_debits if ext.total_debits is not None else Decimal("0")
     if ext.total_credits is None and ext.total_debits is None:
-        return ReconResult(status="skipped", difference=Decimal("0.00"), checks=[], errors=["no transactions with amounts"])
+        return ReconResult(
+            status="skipped",
+            difference=Decimal("0.00"),
+            checks=[],
+            errors=["no transactions with amounts"],
+        )
     expected = ext.opening_balance.normalized + credits - debits
     diff = (expected - ext.closing_balance.normalized).copy_abs()
     if diff <= tolerance:
-        checks.append(ReconCheck(name="statement_balance", passed=True, message=f"opening + credits - debits = closing within {tolerance}"))
+        checks.append(
+            ReconCheck(
+                name="statement_balance",
+                passed=True,
+                message=f"opening + credits - debits = closing within {tolerance}",
+            )
+        )
         status: str = "reconciled"
     else:
-        checks.append(ReconCheck(name="statement_balance", passed=False, message=f"expected {expected}, closing {ext.closing_balance.normalized}"))
+        checks.append(
+            ReconCheck(
+                name="statement_balance",
+                passed=False,
+                message=(
+                    f"expected {expected}, closing "
+                    f"{ext.closing_balance.normalized}"
+                ),
+            )
+        )
         errors.append("opening + credits - debits does not equal closing balance")
         status = "mismatch"
     running = _running_balance_checks(ext, tolerance)
@@ -44,7 +69,9 @@ def reconcile(ext: StatementExtraction, *, tolerance: Decimal) -> ReconResult:
     return ReconResult(status=status, difference=diff, checks=checks, errors=errors)  # type: ignore[arg-type]
 
 
-def _running_balance_checks(ext: StatementExtraction, tolerance: Decimal) -> list[ReconCheck]:
+def _running_balance_checks(
+    ext: StatementExtraction, tolerance: Decimal
+) -> list[ReconCheck]:
     out: list[ReconCheck] = []
     prev: Decimal | None = None
     for txn in ext.transactions:
@@ -62,6 +89,15 @@ def _running_balance_checks(ext: StatementExtraction, tolerance: Decimal) -> lis
         if drift <= tolerance:
             out.append(ReconCheck(name="running_balance", passed=True))
         else:
-            out.append(ReconCheck(name="running_balance", passed=False, message=f"row {txn.line_index}: expected {expected}, got {txn.balance_after.normalized}"))
+            out.append(
+                ReconCheck(
+                    name="running_balance",
+                    passed=False,
+                    message=(
+                        f"row {txn.line_index}: expected {expected}, "
+                        f"got {txn.balance_after.normalized}"
+                    ),
+                )
+            )
         prev = txn.balance_after.normalized
     return out

@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     # of accepting any token signed with the shared secret.
     JWT_AUDIENCE: str = Field(default="")
     JWT_ISSUER: str = Field(default="")
+    # Shared service credential for rail -> Python calls (e.g. the inflow
+    # webhook). A user JWT must never be enough to mint ledger inflows, so
+    # POST /money/inflow requires this key via the X-Rail-Service-Key header.
+    # Must be set in production (guarded below); empty in development keeps
+    # local runs working with the dev fallback.
+    RAIL_SERVICE_KEY: str = Field(default="")
+    # Demo escape hatch: let chat text like "I just got paid 100" split the
+    # ledger as if the rail had reported an inflow. Off by default; the
+    # production guard refuses to boot with it on. Only the rail turns text
+    # into money in any real deployment.
+    ALLOW_CHAT_INFLOW_SYNTH: bool = Field(default=False)
 
     # CORS
     ALLOWED_ORIGINS: str = Field(default="*")
@@ -226,6 +237,17 @@ class Settings(BaseSettings):
         "case_sensitive": True,
     }
 
+    @property
+    def is_production(self) -> bool:
+        """True for any production spelling.
+
+        The check used to be an exact ``== "production"``, so
+        ``ENVIRONMENT=Production`` or ``prod`` silently bypassed every
+        production guard below (weak secrets, wildcard CORS, default DB
+        password) while operators believed the guard was on.
+        """
+        return self.ENVIRONMENT.strip().lower() in {"production", "prod"}
+
     @model_validator(mode="after")
     def _guard_production_secrets(self):
         """Refuse to run in production with placeholder/weak signing secrets.
@@ -236,7 +258,7 @@ class Settings(BaseSettings):
         signing secret and the app secret key must be strong, real values.
         Development is untouched so local runs and tests keep working.
         """
-        if self.ENVIRONMENT != "production":
+        if not self.is_production:
             return self
 
         weak = {"", "change-me-in-production"}
@@ -285,6 +307,19 @@ class Settings(BaseSettings):
             problems.append(
                 "DATABASE_URL must not contain the default password 'miriam_password' "
                 "in production; inject via secrets"
+            )
+        if _is_dev_placeholder(self.RAIL_SERVICE_KEY) or (
+            len(self.RAIL_SERVICE_KEY) < 32
+        ):
+            problems.append(
+                "RAIL_SERVICE_KEY must be a strong value (>= 32 chars) in "
+                "production; it is the only credential allowed to mint ledger "
+                "inflows"
+            )
+        if self.ALLOW_CHAT_INFLOW_SYNTH:
+            problems.append(
+                "ALLOW_CHAT_INFLOW_SYNTH must be false in production: chat text "
+                "must never mint ledger inflows"
             )
         if problems:
             raise ValueError("; ".join(problems))

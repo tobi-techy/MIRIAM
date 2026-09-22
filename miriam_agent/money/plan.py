@@ -187,7 +187,9 @@ def _coerce_vault(state: VaultState | dict | None) -> VaultState:
         except (ArithmeticError, TypeError, ValueError):
             data["vault_pct"] = Decimal("0")
         data["active"] = bool(data.get("active"))
-        return VaultState(**{k: v for k, v in data.items() if k in VaultState.model_fields})
+        return VaultState(
+            **{k: v for k, v in data.items() if k in VaultState.model_fields}
+        )
     return VaultState()
 
 
@@ -401,7 +403,10 @@ def _actions(
                     ),
                     amount=book.investable_surplus,
                     currency=currency,
-                    how="The locked sleeve is the long-horizon book, approved in the app",
+                    how=(
+                        "The locked sleeve is the long-horizon book, "
+                        "approved in the app"
+                    ),
                 )
             )
         else:
@@ -415,7 +420,10 @@ def _actions(
                     ),
                     amount=book.investable_surplus,
                     currency=currency,
-                    how=("Broad, low-cost index exposure, funded automatically on payday"),
+                    how=(
+                        "Broad, low-cost index exposure, funded "
+                        "automatically on payday"
+                    ),
                 )
             )
 

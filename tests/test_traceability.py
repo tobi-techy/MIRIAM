@@ -7,19 +7,22 @@ One trace id per request must appear on:
 - Onboarding trace records
 - OpenTelemetry spans (if tracing is enabled)
 
-This test ensures no step is missing the id and that IDs flow through async boundaries and nested calls.
+This test ensures no step is missing the id and that IDs flow through async
+boundaries and nested calls.
 """
 
 import pytest
 from fastapi.testclient import TestClient
-from miriam_agent.observability.correlation import bind_trace_id, get_trace_id, new_trace_id
-from miriam_agent.observability.correlation import TRACE_HEADER
-from miriam_agent.observability.correlation import normalize_trace_id, current_trace_id
 
-from miriam_agent.api.main import app
 from miriam_agent.agents.agent_loop import Agent
+from miriam_agent.observability.correlation import (
+    TRACE_HEADER,
+    bind_trace_id,
+    get_trace_id,
+    new_trace_id,
+    normalize_trace_id,
+)
 from miriam_agent.safety.audit import AuditSystem
-from miriam_agent.onboarding.trace import TraceRecord
 
 # ---- Test helpers ----
 
@@ -127,7 +130,11 @@ async def test_trace_id_flows_into_tool_result_and_observer():
 def test_trace_id_in_response_and_header(client: TestClient):
     """Send a request with X-Miriam-Trace-Id and verify it in response."""
     trace_id = new_trace_id()
-    resp = client.post("/api/v1/chat", json={"message": "hi"}, headers={TRACE_HEADER: trace_id})
+    resp = client.post(
+        "/api/v1/chat",
+        json={"message": "hi"},
+        headers={TRACE_HEADER: trace_id},
+    )
     # The response should include the trace_id in the payload.
     data = resp.json()
     assert "trace_id" in data
@@ -138,13 +145,12 @@ def test_trace_id_in_response_and_header(client: TestClient):
 
 def test_trace_id_in_onboarding_trace_record(mocker):
     """Onboarding service must record the trace id in TraceRecord."""
-    from miriam_agent.onboarding.trace import TraceRecord
 
     # The service uses the bound contextvar, which defaults to empty.
     # We'll verify that the default factory uses current_trace_id().
     # This is a unit test: we can set the contextvar and ensure TraceRecord uses it.
+
     from miriam_agent.observability.correlation import _trace_id
-    import contextvars
 
     token = _trace_id.set("test-trace")
     try:
@@ -157,9 +163,9 @@ def test_trace_id_in_onboarding_trace_record(mocker):
     finally:
         _trace_id.reset(token)
 
-    # Since the service uses the TraceRecord defined with field(default_factory=current_trace_id),
-    # we cannot easily instantiate it without the full module graph.
-    # We'll rely on the integration test below.
+    # Since the service uses the TraceRecord defined with
+    # field(default_factory=current_trace_id), we cannot easily instantiate it
+    # without the full module graph. We'll rely on the integration test below.
 
 
 def test_no_trace_id_leakage_between_requests():

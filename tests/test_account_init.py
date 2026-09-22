@@ -146,8 +146,7 @@ def test_authenticated_user_id_reaches_tool_context():
         seen.update(ctx)
         return {"ok": True}
 
-    from miriam_agent.agents.tools import get_registry
-    from miriam_agent.agents.tools import Tool
+    from miriam_agent.agents.tools import Tool, get_registry
 
     registry = get_registry()
     name = "ctx_probe_account_test_tool"

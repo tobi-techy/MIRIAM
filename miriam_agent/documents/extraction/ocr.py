@@ -74,7 +74,9 @@ class SidecarOCRProvider:
         client = self._client or httpx.AsyncClient(timeout=self.timeout_seconds)
         owned = self._client is None
         try:
-            resp = await client.post(f"{self.base_url}/ocr", json=payload, headers=headers)
+            resp = await client.post(
+                f"{self.base_url}/ocr", json=payload, headers=headers
+            )
         except httpx.HTTPError as e:
             raise IntegrationError(f"OCR service unreachable: {e}") from e
         finally:

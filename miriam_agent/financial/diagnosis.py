@@ -25,7 +25,8 @@ concrete ``priorities`` the allocation engine should act on first.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -343,7 +344,9 @@ def _rule_cashflow_imbalance(s: _Signals) -> tuple[float, list[str]]:
     if ratio < 0.05:
         return 0.9, [f"only {_pct(s.surplus, s.income)} of income is left unspoken for"]
     if ratio < 0.15:
-        return 0.65, [f"only {_pct(s.surplus, s.income)} of income is left unspoken for"]
+        return 0.65, [
+            f"only {_pct(s.surplus, s.income)} of income is left unspoken for"
+        ]
     if ratio < 0.25:
         return 0.35, [f"{_pct(s.surplus, s.income)} of income is left unspoken for"]
     return 0.1, []

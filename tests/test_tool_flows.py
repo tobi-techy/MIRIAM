@@ -17,10 +17,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
 
+import miriam_agent.tools.definitions  # noqa: E402, F401  (registration side effect)
 from miriam_agent.agents.tools import get_registry  # noqa: E402
 from miriam_agent.integrations import go_client  # noqa: E402
-
-import miriam_agent.tools.definitions  # noqa: E402, F401  (registration side effect)
 
 
 def _run(coro):
@@ -87,7 +86,9 @@ def test_airtime_provider_failure_is_structured_not_silent():
     go_client._client = _BillDown()
     result = _run(
         _registry().execute(
-            "detect_network", {"phone": "08012345678"}, {"user_id": "u1", "token": "tok"}
+            "detect_network",
+            {"phone": "08012345678"},
+            {"user_id": "u1", "token": "tok"},
         )
     )
     assert "_tool_error" in result
@@ -108,7 +109,9 @@ def test_airtime_missing_auth_is_structured():
 def test_naira_deposit_returns_real_bank_transfer_details():
     go_client._client = _DepositOK()
     result = _run(
-        _registry().execute("get_deposit_details", {}, {"user_id": "u1", "token": "tok"})
+        _registry().execute(
+            "get_deposit_details", {}, {"user_id": "u1", "token": "tok"}
+        )
     )
     assert result["rail"] == "bank_transfer"
     assert result["currency"] == "NGN"
@@ -119,7 +122,9 @@ def test_naira_deposit_returns_real_bank_transfer_details():
 def test_naira_deposit_failure_is_honest_not_invented():
     go_client._client = _NoDepositAnywhere()
     result = _run(
-        _registry().execute("get_deposit_details", {}, {"user_id": "u1", "token": "tok"})
+        _registry().execute(
+            "get_deposit_details", {}, {"user_id": "u1", "token": "tok"}
+        )
     )
     assert "_tool_error" in result
     assert "virtual_account" not in result

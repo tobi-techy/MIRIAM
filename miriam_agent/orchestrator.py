@@ -152,6 +152,7 @@ class Orchestrator:
         judge: Judge | None = None,
         clock: Callable[[], datetime] | None = None,
         go_token: str | None = None,
+        audit_sink: Callable[[Event, TurnResult], Any] | None = None,
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -165,6 +166,11 @@ class Orchestrator:
         # leg (Glider stage 1/2 via /api/v1/investments/*). None means the
         # invest path fails closed.
         self.go_token = go_token
+        # Durable audit sink, injected by the API layer (which owns Postgres).
+        # Called with the event and the finished TurnResult for every turn
+        # that produced a receipt. Fail-open by contract: an audit outage is
+        # logged, never allowed to break a settled money turn.
+        self.audit_sink = audit_sink
 
     # -- the door ---------------------------------------------------------
 
@@ -177,12 +183,33 @@ class Orchestrator:
         failure rather than as a chat reply the rail never sees.
         """
         try:
-            return await self._dispatch(event)
+            result = await self._dispatch(event)
         except LedgerUnavailable:
             if event.type == "inflow":
                 raise
             logger.error("ledger unavailable for %s; refusing the turn", event.user_id)
             return TurnResult(narration=UNAVAILABLE_LINE)
+        await self._emit_audit(event, result)
+        return result
+
+    async def _emit_audit(self, event: Event, result: TurnResult) -> None:
+        """Persist what the turn did, via the injected sink.
+
+        Only turns with a receipt are emitted: a receipt is the fact that
+        money was attempted, moved, or refused, and it is what the durable
+        store must show later. The sink is fail-open — the receipt already
+        lives in the ledger, so an audit outage degrades the paper trail
+        without turning a settled turn into an error.
+        """
+        if self.audit_sink is None or result.receipt is None:
+            return
+        try:
+            await self.audit_sink(event, result)
+        except Exception:
+            logger.exception(
+                "audit sink failed; receipt %s kept in ledger only",
+                result.receipt.id,
+            )
 
     async def _dispatch(self, event: Event) -> TurnResult:
         ledger = await self.store.load(event.user_id)
@@ -212,7 +239,8 @@ class Orchestrator:
         amount: Decimal,
         source_raw: str = "",
     ) -> TurnResult:
-        """Handle money arriving. Called by the rail webhook, never by chat.
+        """Handle money arriving. Called by the rail webhook; reachable from
+        chat only through the demo escape hatch (ALLOW_CHAT_INFLOW_SYNTH).
 
         ``payment_id`` is the rail's id for the payment and doubles as the
         idempotency key, so a webhook that is delivered twice splits once.
@@ -487,7 +515,9 @@ class Orchestrator:
             reasons=list(challenge.reasons),
             confirm_id=challenge.id,
         )
-        stored_destination = challenge.destination or challenge.counterparty or challenge.sleeve
+        stored_destination = (
+            challenge.destination or challenge.counterparty or challenge.sleeve
+        )
         action_destination = action.counterparty or action.sleeve
         if challenge.user_id and challenge.user_id != ledger.user_id:
             bound = False
