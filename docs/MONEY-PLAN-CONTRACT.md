@@ -130,7 +130,7 @@ Miriam may recommend a Glider strategy **only if**:
 2. the surplus can be left untouched through a 40% drawdown (`R-HOUSEL-1`);
 3. the user can self-custody and complete the two-stage, user-signed enrollment;
 4. the strategy weights match the approved book;
-5. assets validate via `POST /v2/strategies/validate`;
+5. assets validate against Glider (via the Go host, never directly);
 6. the user has been told: smart contract risk, stablecoin depeg risk, no
    deposit insurance, and that they can lose principal.
 
@@ -149,9 +149,9 @@ Miriam may recommend a Glider strategy **only if**:
 - `weights`: percent values that **sum to exactly 100**, ordered growth first
 - `schedule`: the rebalance cadence Glider stores on the strategy
 - `status`, one of:
-  - `draft_local` — built and inspectable, **not submitted**. This is the answer
-    whenever `GLIDER_API_KEY` is unset, and the note says so.
-  - `validated` — Glider accepted it on a `POST /v2/strategies/validate` dry run.
+  - `draft_local` — built and inspectable, **not submitted**. Asset ids stay
+    empty until the Go host resolves them from the live catalogue.
+  - `validated` — the Go host accepted the allocation on a Glider dry run.
     Still not submitted; enrollment remains user-signed.
   - `rejected` — Glider refused the allocation, with its reason in `note`.
 - `submitted`: pinned to `false` by the schema. A submitted draft is not a

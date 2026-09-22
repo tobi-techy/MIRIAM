@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from miriam_agent.api.chat import router as chat_router
 from miriam_agent.api.proactive import router as proactive_router
+from miriam_agent.api.spectrum import router as spectrum_router
 from miriam_agent.observability.correlation import (
     TRACE_HEADER,
     bind_trace_id,
@@ -251,3 +252,4 @@ async def metrics(request: Request):
 # Include routers
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(proactive_router, prefix="/api/v1")
+app.include_router(spectrum_router, prefix="/api/v1")

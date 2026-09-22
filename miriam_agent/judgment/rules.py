@@ -207,11 +207,17 @@ def apply_rules(
         return outcome
 
     # -- the money rules --------------------------------------------------
-    free = free_after_obligations(
-        ledger.balance("spendable"),
-        ledger.rent_first.required,
-        ledger.rent_first.reserved,
-    )
+    # Invest draws on the stash (savings) sleeve, never the spend pot, so its
+    # affordability is measured there. Everything else is measured against
+    # free spendable.
+    if proposed.type == "invest":
+        free = ledger.balance("savings")
+    else:
+        free = free_after_obligations(
+            ledger.balance("spendable"),
+            ledger.rent_first.required,
+            ledger.rent_first.reserved,
+        )
 
     if policy.is_locked(proposed.sleeve):
         outcome.add(Reason.LOCKED_SLEEVE)

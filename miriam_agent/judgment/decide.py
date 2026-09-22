@@ -58,6 +58,10 @@ def _utcnow() -> datetime:
 
 def cap_for(*, state: HandlerState, ledger: Ledger, policy: Policy) -> Decimal:
     """The largest safe movement right now, computed by Hands."""
+    proposed = state.proposed_action
+    if proposed is not None and proposed.type == "invest":
+        # Invest draws on the stash, so the smaller offer is capped by it.
+        return ledger.balance("savings")
     return affordable_cap(
         policy=policy,
         spendable=ledger.balance("spendable"),
