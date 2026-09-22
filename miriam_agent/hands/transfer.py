@@ -452,6 +452,17 @@ async def execute_transfer(
         # to be, or the incident is invisible and a later turn re-sends against a
         # ledger that never heard about it.
         rolled_back = pre_rail
+        if reversal.ok:
+            reversal_fact = "the rail move was reversed"
+        else:
+            # The Go rail cannot reverse a settled transfer. The receipt must
+            # say so plainly: the move is live on the rail and reconciliation
+            # is owed against the reference, not "asked for" and forgotten.
+            reversal_fact = (
+                f"the rail could NOT reverse it ({reversal.error}); the move is "
+                f"live on the rail and reconciliation is owed against "
+                f"reference {outcome.reference}"
+            )
         receipt = _rejected(
             ledger=rolled_back,
             action="transfer",
@@ -462,8 +473,8 @@ async def execute_transfer(
             idempotency_key=idempotency_key,
             at=timestamp,
             detail=(
-                f"the ledger could not record the movement ({exc}); the rail was "
-                f"asked to reverse it ({'ok' if reversal.ok else reversal.error})"
+                f"the ledger could not record the movement ({exc}); "
+                f"{reversal_fact}"
             ),
         )
         # Keep the rail reference on the receipt, not only in a log line: this is

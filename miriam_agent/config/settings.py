@@ -215,6 +215,10 @@ class Settings(BaseSettings):
     # never moves money, and enrollment stays user-signed and two-stage.
     MONEY_DEFAULT_COUNTRY: str = Field(default="NG")
     MONEY_DEFAULT_CURRENCY: str = Field(default="NGN")
+    # The timezone whose midnight bounds the daily transfer cap. The old
+    # boundary was the server's local zone, so cap resets moved with whatever
+    # machine ran the process; it is now pinned to the product's home market.
+    MONEY_DAY_TIMEZONE: str = Field(default="Africa/Lagos")
     # Debt triage bands (MONEY-RULES.md §3). APR >= fire is attacked; APR in the
     # judgment band is compared against the local risk-free rate from
     # money/reference.py; below that, debt is kept.

@@ -39,6 +39,14 @@ CENTS = Decimal("0.01")
 # How far back the velocity window looks.
 WINDOW_DAYS = 30
 
+# Journal bounds. Every save rewrites the whole ledger JSON through CAS, so an
+# untrimmed journal made every mutation linearly slower and the blob bigger
+# forever. Receipt bodies and movements older than these bounds are dropped;
+# the ``processed`` idempotency keys are never trimmed (see ``receipt_for``),
+# and the durable audit rows live in the audit store.
+RECEIPT_RETENTION = 500
+MOVEMENT_RETENTION = 2000
+
 
 class LedgerError(Exception):
     """A ledger operation that the ledger itself refused."""
@@ -278,28 +286,53 @@ class Ledger(BaseModel):
 
     def record_movement(self, movement: Movement) -> None:
         self.movements.append(movement)
+        del self.movements[:-MOVEMENT_RETENTION]
 
     def remember_receipt(self, receipt: Receipt) -> None:
         """Keep the receipt, and remember its idempotency key if it has one.
 
-        The journal is deliberately not trimmed. An idempotency key only guards
-        anything while the receipt proving it was used is still here, so dropping
-        old receipts would quietly turn a replay into a second movement. The
-        durable audit rows live in the audit store; this is the ledger's own
-        record of what it did, and STATE carries only the most recent few.
+        Receipt bodies are trimmed to ``RECEIPT_RETENTION`` (they exist for
+        narration, joins to the turn, and recent reconciliation), but the
+        ``processed`` keys are never dropped: a key is proof the movement
+        happened, it is a few dozen bytes, and ``receipt_for`` relies on it to
+        keep a replay of an archived receipt on the already-done path instead
+        of moving money a second time. The durable, untrimmed audit rows live
+        in the audit store; STATE carries only the most recent few receipts.
         """
         self.receipts.append(receipt)
+        del self.receipts[:-RECEIPT_RETENTION]
         if receipt.idempotency_key:
             self.processed.setdefault(receipt.idempotency_key, receipt.id)
 
     def receipt_for(self, idempotency_key: str) -> Receipt | None:
+        """The receipt a prior movement left for this key, if any.
+
+        A key in ``processed`` proves the movement happened even after its
+        receipt body has been trimmed. That case returns an archived stub
+        rather than None — None would send the caller down the execute path
+        and turn a replay into a second movement. The stub claims nothing
+        about what the original did beyond the id; its status is ``noop``
+        because the correct action now is exactly that: nothing.
+        """
         receipt_id = self.processed.get(idempotency_key)
         if receipt_id is None:
             return None
         for receipt in self.receipts:
             if receipt.id == receipt_id:
                 return receipt
-        return None
+        return Receipt(
+            id=receipt_id,
+            at=_now(),
+            status="noop",
+            action="archived",
+            currency=self.currency,
+            idempotency_key=idempotency_key,
+            detail=(
+                f"receipt {receipt_id} for key {idempotency_key!r} was already "
+                "processed; its body has been trimmed from the journal, so "
+                "nothing is re-executed"
+            ),
+        )
 
     def window(self, *, days: int = WINDOW_DAYS, at: datetime | None = None) -> Last30d:
         """Inflow, spend and leak-by-category over the velocity window."""

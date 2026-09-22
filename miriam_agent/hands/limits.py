@@ -191,12 +191,28 @@ def daily_usage(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
 
 
 def _day_start(at: datetime | None) -> datetime:
+    """Midnight that starts the user's financial day, in the money timezone.
+
+    The boundary used to be the server's local timezone, so the day a user's
+    cap reset on depended on wherever the process happened to run. It is now
+    pinned by ``MONEY_DAY_TIMEZONE`` (default: Africa/Lagos, the product's
+    home market) with a UTC fallback for an unset or unknown zone.
+    """
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
     moment = at or datetime.now().astimezone()
     if moment.tzinfo is None:
-        from datetime import UTC
-
         moment = moment.replace(tzinfo=UTC)
-    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        from miriam_agent.config.settings import get_settings
+
+        zone = ZoneInfo(get_settings().MONEY_DAY_TIMEZONE)
+    except Exception:
+        zone = UTC
+    return (
+        moment.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    )
 
 
 def evaluate_limits(
@@ -231,7 +247,10 @@ def evaluate_limits(
     used = Decimal("0")
     if ledger is not None:
         used = daily_usage(ledger, at=at)
-        if money(used) + money(amount) >= policy.max_daily:
+        # The cap is inclusive: a send that brings the day's total to exactly
+        # max_daily is allowed; only exceeding it is a breach. The old `>=`
+        # refused the final slot of the allowance forever.
+        if money(used) + money(amount) > policy.max_daily:
             reasons.append("DAILY_CAP")
     known = [
         r

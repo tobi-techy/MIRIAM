@@ -45,7 +45,12 @@ from miriam_agent.api.dependencies import (
 from miriam_agent.config.settings import get_settings
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
-from miriam_agent.hands.ledger import LedgerUnavailable, RedisLedgerStore, money
+from miriam_agent.hands.ledger import (
+    LedgerConflictError,
+    LedgerUnavailable,
+    RedisLedgerStore,
+    money,
+)
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import InsufficientState
 from miriam_agent.hands.transfer import GoRail, parse_amount
@@ -240,22 +245,34 @@ async def _run_money_turn(
     A confirmation tap is settled by id and nothing else. Everything else is an
     utterance, except an inflow alert pasted into chat, which is split against a
     stable id derived from the alert so a re-paste cannot split twice.
+
+    Two turns for the same user race on the ledger's compare-and-set; the loser
+    gets a typed conflict mapped to a retryable 409, not a 500 that tells the
+    client the server is broken.
     """
     orchestrator = _orchestrator_for(token)
-    if confirm_id:
-        return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-    if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
-        # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
-        # stable id derived from the alert so a re-paste cannot split twice.
-        # Off by default and refused in production entirely — chat text is
-        # not a payment fact, so it must not mint ledger money.
-        return await orchestrator.handle_inflow(
-            user.id,
-            payment_id=inflow_id_for_alert(message),
-            amount=_alert_amount(message),
-            source_raw=message,
-        )
-    return await orchestrator.handle_utterance(user.id, message)
+    try:
+        if confirm_id:
+            return await orchestrator.handle_confirm(user.id, confirm_id, yes)
+        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(
+            message
+        ):
+            # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
+            # stable id derived from the alert so a re-paste cannot split twice.
+            # Off by default and refused in production entirely — chat text is
+            # not a payment fact, so it must not mint ledger money.
+            return await orchestrator.handle_inflow(
+                user.id,
+                payment_id=inflow_id_for_alert(message),
+                amount=_alert_amount(message),
+                source_raw=message,
+            )
+        return await orchestrator.handle_utterance(user.id, message)
+    except LedgerConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="that ledger is busy; try again in a moment",
+        ) from exc
 
 
 def _alert_amount(message: str) -> Decimal:
@@ -714,6 +731,13 @@ async def chat_stream(
                     yield _sse({"type": "done"})
                     return
             yield _sse({"type": "done"})
+        except HTTPException as e:
+            # Typed refusals (e.g. the 409 for a lost ledger race) carry a
+            # message the client can act on; anything else stays opaque.
+            logger.exception(
+                "chat stream failed", extra={"trace_id": current_trace_id()}
+            )
+            yield _sse({"type": "error", "message": str(e.detail)})
         except Exception:
             logger.exception(
                 "chat stream failed", extra={"trace_id": current_trace_id()}
@@ -795,6 +819,13 @@ async def money_inflow(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"insufficient_state: {', '.join(exc.missing)}",
+        )
+    except LedgerConflictError:
+        # Two deliveries for the same user raced on the compare-and-set. The
+        # rail retries; it must not read the 500 that says "server broken".
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ledger busy; retry the delivery",
         )
     except LedgerUnavailable as exc:
         # The rail must retry: money arriving is a fact it can deliver again,
