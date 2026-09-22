@@ -121,6 +121,8 @@ async def _obtain_and_replay(
     The replay sends the byte-identical payload plus the issued token, so the
     backend's payload-hash binding rejects anything mutated in between.
     """
+    if "confirmation_token" in payload:
+        raise RuntimeError("staged payload must not pre-carry a confirmation token")
     first = await call(dict(payload))
     if not isinstance(first, dict):
         raise RuntimeError(f"go host returned no staged response: {first!r}")
@@ -138,7 +140,7 @@ async def _obtain_and_replay(
                 else {}
             )
             token = conf.get("token") if isinstance(conf, dict) else None
-        if not token:
+        if not isinstance(token, str) or not token.strip():
             raise RuntimeError("go host staged a confirmation without a token")
         second = await call({**payload, "confirmation_token": token})
         if not isinstance(second, dict):
@@ -208,6 +210,8 @@ async def prepare_allocate(
         return _reject(
             ["BAD_INVEST_SOURCE"], "investing draws on the stash sleeve only"
         )
+    if amount <= 0:
+        return _reject(["BAD_AMOUNT"], "the allocate amount must be greater than zero")
     if amount > ledger.balance(INVEST_SLEEVE):
         return _reject(
             ["OVER_BALANCE"],
@@ -248,12 +252,18 @@ async def prepare_allocate(
             owner_account = owner_account_for(owner_address)
         else:
             owner_doc = await get_owner()
+            if not isinstance(owner_doc, dict):
+                raise ValueError("owner lookup returned no account document")
             owner_account = str(
                 owner_doc.get("owner_account_id")
                 or owner_doc.get("ownerAccountId")
                 or ""
             )
-            parse_caip10(owner_account)
+            parsed_owner = parse_caip10(owner_account)
+            if parsed_owner.get("namespace") != "solana":
+                raise ValueError(
+                    f"owner wallet is not a Solana account: {owner_account!r}"
+                )
     except Exception as exc:  # noqa: BLE001 - surfaced below, never swallowed
         return _reject(
             ["NO_OWNER_WALLET"],
@@ -420,10 +430,27 @@ async def settle_allocate(
         return _reject(["FLOW_CLOSED"], "that flow already settled")
     if not (signed_tx or "").strip():
         return _reject(["MISSING_SIGNATURE"], "no wallet signature was provided")
+    if (
+        not binding.strategy_id.strip()
+        or not binding.owner_account_id.strip()
+        or binding.source != "stash"
+    ):
+        return _reject(
+            ["FLOW_UNBOUND"],
+            "that flow is not bound to the stock sleeve; nothing moved",
+        )
 
-    from miriam_agent.tools.glider_sleeve import SOLANA_CHAIN_ID
+    from miriam_agent.tools.glider_sleeve import SOLANA_CHAIN_ID, parse_caip10
 
-    amount = money(binding.amount)
+    try:
+        parsed_binding_owner = parse_caip10(binding.owner_account_id)
+        if parsed_binding_owner.get("namespace") != "solana":
+            raise ValueError("bound owner is not a Solana account")
+        amount = money(binding.amount)
+    except Exception as exc:  # noqa: BLE001 - a corrupt binding is a refusal
+        return _reject(
+            ["FLOW_UNBOUND"], f"that flow carries an invalid binding ({exc})"
+        )
     try:
         enrolled = await _obtain_and_replay(
             complete_call,
@@ -454,7 +481,18 @@ async def settle_allocate(
         )
 
     enrollment = enrolled.get("enrollment", {}) if isinstance(enrolled, dict) else {}
-    funding = enrolled.get("funding", {}) if isinstance(enrollment, dict) else {}
+    if not isinstance(enrollment, dict):
+        enrollment = {}
+    # Funding may ride nested inside the enrollment or top-level beside it,
+    # depending on the Go handler shape. Either location counts: a FAILED
+    # funding anywhere must block the sleeve debit.
+    nested = enrollment.get("funding", {})
+    top = enrolled.get("funding", {}) if isinstance(enrolled, dict) else {}
+    funding = (
+        nested
+        if isinstance(nested, dict) and nested
+        else (top if isinstance(top, dict) else {})
+    )
     if (
         isinstance(funding, dict)
         and str(funding.get("status") or "").upper() == "FAILED"
@@ -463,9 +501,7 @@ async def settle_allocate(
         ledger.pending_invest[flow_id] = binding
         await store.save(ledger)
         reason = (
-            funding.get("failure_reason")
-            or funding.get("FailureReason")
-            or "unknown"
+            funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
         )
         return _reject(
             ["FUNDING_FAILED"],
@@ -519,12 +555,13 @@ async def settle_allocate(
     )
     ledger.remember_receipt(receipt)
     await store.save(ledger)
+    positions = enrolled.get("positions") if isinstance(enrolled, dict) else None
     result: dict[str, Any] = {
         "ok": True,
         "flow_id": flow_id,
         "enrollment": enrollment,
         "funding": funding,
-        "positions": (enrolled.get("positions") or []),
+        "positions": positions if isinstance(positions, list) else [],
     }
     return receipt, result, ledger
 

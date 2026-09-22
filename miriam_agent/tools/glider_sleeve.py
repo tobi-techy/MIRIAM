@@ -116,8 +116,30 @@ async def _glider_get_strategy(
     Never hardcodes mint addresses. If the sleeve is missing, returns the
     exact catalogue received so the caller escalates instead of faking tickers.
     """
+    token = (ctx or {}).get("token") if isinstance(ctx, dict) else None
+    if not token:
+        return {
+            "sleeve": None,
+            "live": False,
+            "error": "no Go host token on this path",
+            "catalogue": [],
+            "hint": "Seed the Rail-owned 'Rail Stock Sleeve' strategy row "
+            "bound to the live Glider tenant strategy before enrolling. "
+            "Do not hardcode mint addresses.",
+        }
     client = get_go_client()
-    data = await client.list_investment_strategies(ctx["token"], status="active")
+    try:
+        data = await client.list_investment_strategies(token, status="active")
+    except Exception as e:  # fail closed, nothing invented
+        return {
+            "sleeve": None,
+            "live": False,
+            "error": f"strategy catalogue unreadable: {e}",
+            "catalogue": [],
+            "hint": "Seed the Rail-owned 'Rail Stock Sleeve' strategy row "
+            "bound to the live Glider tenant strategy before enrolling. "
+            "Do not hardcode mint addresses.",
+        }
     strategies = data.get("strategies") if isinstance(data, dict) else None
     strategies = strategies if isinstance(strategies, list) else []
     sleeve = _sleeve_from_strategies(strategies)
@@ -165,8 +187,14 @@ registry.register(
 async def _glider_get_portfolio(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
+    token = (ctx or {}).get("token") if isinstance(ctx, dict) else None
+    if not token:
+        return {"_tool_error": "no Go host token on this path"}
     client = get_go_client()
-    return await client.get_investment_portfolio(ctx["token"])
+    try:
+        return await client.get_investment_portfolio(token)
+    except Exception as e:  # fail closed, never invent a portfolio
+        return {"_tool_error": f"portfolio unreadable: {e}"}
 
 
 registry.register(
@@ -185,8 +213,14 @@ registry.register(
 async def _glider_get_positions(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
+    token = (ctx or {}).get("token") if isinstance(ctx, dict) else None
+    if not token:
+        return {"positions": [], "_tool_error": "no Go host token on this path"}
     client = get_go_client()
-    data = await client.get_investment_positions(ctx["token"])
+    try:
+        data = await client.get_investment_positions(token)
+    except Exception as e:  # fail closed, charts say indexing instead
+        return {"positions": [], "_tool_error": f"positions unreadable: {e}"}
     positions = data.get("positions") if isinstance(data, dict) else None
     if not positions:
         return {

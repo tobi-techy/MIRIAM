@@ -637,6 +637,10 @@ class Orchestrator:
             prepare_call=calls["prepare_call"],
             at=now,
         )
+        # prepare_allocate only saves on paths that change provider state, so
+        # persist here as well: the consumed challenge and the rejected receipt
+        # must survive the request even when nothing moved.
+        await self.store.save(ledger)
         execution = self._execution_from(receipt)
         state = build_state(
             ledger=ledger,
@@ -697,6 +701,10 @@ class Orchestrator:
             complete_call=calls["complete_call"],
             at=now,
         )
+        # settle_allocate only saves on paths that change provider state, so
+        # persist here as well: rejections must land in the audit trail even
+        # when the sleeve did not move.
+        await self.store.save(ledger)
         execution = self._execution_from(receipt)
         state = build_state(
             ledger=ledger,
@@ -935,7 +943,6 @@ _INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
 
 # Frames that ask whether something is affordable. A judgement question, not a
 # statement of fact, so it goes to Judgment rather than to the answer path.
-_INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
 _AFFORD_FRAMES = (
     "can i afford",
     "can i buy",
