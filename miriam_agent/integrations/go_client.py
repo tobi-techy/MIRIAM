@@ -451,6 +451,55 @@ class GoBackendClient:
             f"/api/v1/investments/investors/{investor_id}/activity", token
         )
 
+    async def get_investment_owner(self, token: str) -> dict[str, Any]:
+        """The caller's Solana owner account id (CAIP-10) for user-signed enroll.
+
+        Read-only. An account without a Solana wallet gets an explicit error,
+        never an invented address.
+        """
+        return await self._token_get("/api/v1/investments/owner", token)
+
+    # ---- investments (user-signed Glider enroll, via the Go host) ----
+    #
+    # The only investment writes Miriam makes. Stage 1 returns the base64
+    # Solana transaction the wallet signs; stage 2 submits it (idempotent on
+    # flowId). Both are driven from the hands layer after a confirm_id tap,
+    # never from a chat-turn tool.
+
+    async def prepare_user_enroll(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Glider stage 1 for a user-held Solana wallet (Model B).
+
+        Returns the base64 Solana transaction to sign plus the confirmation
+        the allocate card binds to. Fail-closed: a simulated backend answers
+        with an explicit not-live error and no sign payload.
+        """
+        return await self._token_post(
+            "/api/v1/investments/enroll/prepare",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
+
+    async def complete_user_enroll(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Glider stage 2: submit the wallet-signed transaction.
+
+        Idempotent on flowId. The confirmation token binds flowId + amount +
+        strategyId; mutated payloads are rejected by the backend.
+        """
+        return await self._token_post(
+            "/api/v1/investments/enroll/complete",
+            token,
+            _with_confirmation(payload, confirmation_token),
+        )
     # ---- lookups / automations / obligations / schedules ----
 
     async def lookup_recipient(self, token: str, identifier: str) -> dict[str, Any]:
@@ -709,6 +758,21 @@ class GoBackendClient:
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return await self._request_json(method, path, token=token, payload=payload)
+
+
+def _with_confirmation(
+    payload: dict[str, Any], confirmation_token: str | None
+) -> dict[str, Any]:
+    """Merge a staged-action confirmation token into a request body.
+
+    The Go investment API accepts the token either as the ``confirmation_token``
+    body field or the ``X-Investment-Confirmation`` header; the user-signed
+    enroll endpoints use the body field. The token must accompany the exact
+    same payload it was issued for.
+    """
+    if not confirmation_token:
+        return payload
+    return {**payload, "confirmation_token": confirmation_token}
 
 
 def _as_list(data: Any, key: str) -> list[dict[str, Any]]:

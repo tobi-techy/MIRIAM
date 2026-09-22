@@ -412,3 +412,35 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
+
+
+def test_user_enroll_hits_prepare_and_complete_paths():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        seen.append((request.url.path, body.get("confirmation_token")))
+        if request.url.path == "/api/v1/investments/owner":
+            return httpx.Response(200, json={"owner_account_id": "solana:x:y"})
+        return httpx.Response(200, json={"status": "COMPLETED"})
+
+    client = _client_for(handler)
+    owner = _run(client.get_investment_owner("tok"))
+    assert owner["owner_account_id"] == "solana:x:y"
+    out = _run(
+        client.prepare_user_enroll("tok", {"strategy_id": "s1"})
+    )
+    assert out["status"] == "COMPLETED"
+    out = _run(
+        client.complete_user_enroll(
+            "tok", {"flow_id": "f1"}, confirmation_token="cfm-2"
+        )
+    )
+    assert out["status"] == "COMPLETED"
+    paths = [p for p, _ in seen]
+    assert "/api/v1/investments/enroll/prepare" in paths
+    assert "/api/v1/investments/enroll/complete" in paths
+    assert "/api/v1/investments/owner" in paths
+    complete_bodies = [b for p, b in seen if p == "/api/v1/investments/enroll/complete"]
+    assert complete_bodies[0] == "cfm-2"
+    _run(client.close())

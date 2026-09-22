@@ -99,3 +99,5 @@ covhtml/
 *.pyd
 *.dylib
 .cube
+
+.commandcode/buzz/
