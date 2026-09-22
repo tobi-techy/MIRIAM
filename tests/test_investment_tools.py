@@ -72,8 +72,13 @@ def test_removed_and_invented_tools_are_gone():
 
 
 def test_agent_has_no_withdrawal_tool():
+    from miriam_agent.tools import vault_definitions as _vault  # noqa: F401
+    from miriam_agent.tools import build_tool_registry
+
     reg = build_tool_registry()
-    assert not any("withdraw" in name for name in reg.list_names())
+    assert not any(
+        "withdraw" in name and "preview" not in name for name in reg.list_names()
+    )
 
 
 def test_descriptions_are_honest_about_what_glider_publishes():

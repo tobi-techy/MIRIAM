@@ -20,6 +20,12 @@ from miriam_agent.core.exceptions import IntegrationError
 
 logger = logging.getLogger(__name__)
 
+# Settlement binding headers. Persisted on every Python receipt and sent with
+# every rail mutation, so Go can enforce confirm_id binding without another
+# Python rewrite even if it is not ready to check them yet.
+CONFIRM_ID_HEADER = "X-Miriam-Confirm-Id"
+RECEIPT_ID_HEADER = "X-Miriam-Receipt-Id"
+
 # Statuses worth retrying: the request never reached the business logic, or
 # the backend was shedding load.
 _RETRYABLE_STATUS = {429, 502, 503, 504}
@@ -302,6 +308,8 @@ class GoBackendClient:
         amount: float,
         message: str | None = None,
         idempotency_key: str | None = None,
+        confirm_id: str | None = None,
+        receipt_id: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "identifier": recipient,
@@ -309,18 +317,37 @@ class GoBackendClient:
             "note": message,
             "idempotencyKey": idempotency_key,
         }
+        if confirm_id:
+            payload["confirm_id"] = confirm_id
+        if receipt_id:
+            payload["receipt_id"] = receipt_id
         return await self._token_post(
-            "/api/v1/p2p/send", token, payload, idempotency_key=idempotency_key
+            "/api/v1/p2p/send",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=_binding_headers(confirm_id, receipt_id),
         )
 
     async def transfer_to_stash(
-        self, token: str, amount: float, idempotency_key: str | None = None
+        self,
+        token: str,
+        amount: float,
+        idempotency_key: str | None = None,
+        confirm_id: str | None = None,
+        receipt_id: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"amount": str(amount)}
+        if confirm_id:
+            payload["confirm_id"] = confirm_id
+        if receipt_id:
+            payload["receipt_id"] = receipt_id
         return await self._token_post(
             "/api/v1/funding/stash/from-spending",
             token,
-            {"amount": str(amount)},
+            payload,
             idempotency_key=idempotency_key,
+            extra_headers=_binding_headers(confirm_id, receipt_id),
         )
 
     async def transfer_to_spending(
@@ -500,6 +527,62 @@ class GoBackendClient:
             token,
             _with_confirmation(payload, confirmation_token),
         )
+
+    # ---- retirement vault (Sleeve A; Rail-owned locked USD vault) ----
+    # Reads only. The app performs POST /vault with its own ConfirmationToken +
+    # passcode flow; Python never POSTs vault writes and holds no
+    # withdraw-submit. Paths mirror investments/* and must be verified against
+    # RAIL-BACKEND-SERVICE (Step 0 of the vault plan).
+
+    async def get_vault(self, token: str) -> dict[str, Any]:
+        """The user's locked dollar retirement vault, or ``{exists: False}``.
+
+        Go answers 404 when no vault exists yet; that is an empty result, not
+        a failure, so it comes back as a sentinel the planner can branch on
+        instead of an exception.
+        """
+        try:
+            data = await self._token_get("/api/v1/vault", token)
+        except IntegrationError as e:
+            message = str(e)
+            if "404" in message or "not_found" in message:
+                return {"exists": False}
+            raise
+        if not data:
+            return {"exists": False}
+        if isinstance(data, dict):
+            if data.get("exists") is False:
+                return {"exists": False}
+            out = dict(data)
+            out.setdefault("exists", True)
+            return out
+        return {"exists": False}
+
+    async def list_vault_strategies(self, token: str) -> dict[str, Any]:
+        """Seeded Rail tier strategies behind the vault (read-only)."""
+        return await self._token_get("/api/v1/vault/strategies", token)
+
+    async def get_vault_activity(
+        self, token: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        params = {"limit": limit} if limit is not None else None
+        data = await self._token_get("/api/v1/vault/activity", token, params=params)
+        return _as_list(data, "activity")
+
+    async def preview_vault_withdraw(
+        self, token: str, amount: float
+    ) -> dict[str, Any]:
+        """Go-computed early-withdrawal math (principal/earnings/penalty/payout).
+
+        Numbers pass through unchanged. Python never recomputes the 10% as a
+        second engine.
+        """
+        return await self._token_get(
+            "/api/v1/vault/preview-withdraw",
+            token,
+            params={"amount": amount},
+        )
+
     # ---- lookups / automations / obligations / schedules ----
 
     async def lookup_recipient(self, token: str, identifier: str) -> dict[str, Any]:
@@ -668,6 +751,7 @@ class GoBackendClient:
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Perform an authenticated Go call, with bounded retries.
 
@@ -683,6 +767,8 @@ class GoBackendClient:
         headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if extra_headers:
+            headers.update(extra_headers)
 
         last_error: Exception | None = None
         for attempt in range(attempts + 1):
@@ -733,6 +819,7 @@ class GoBackendClient:
         payload: dict[str, Any],
         *,
         idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         return await self._request_json(
             "POST",
@@ -740,6 +827,7 @@ class GoBackendClient:
             token=token,
             payload=payload,
             idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
         )
 
     async def _token_patch(
@@ -773,6 +861,18 @@ def _with_confirmation(
     if not confirmation_token:
         return payload
     return {**payload, "confirmation_token": confirmation_token}
+
+
+def _binding_headers(
+    confirm_id: str | None, receipt_id: str | None
+) -> dict[str, str]:
+    """Settlement binding headers for a rail mutation."""
+    headers: dict[str, str] = {}
+    if confirm_id:
+        headers[CONFIRM_ID_HEADER] = confirm_id
+    if receipt_id:
+        headers[RECEIPT_ID_HEADER] = receipt_id
+    return headers
 
 
 def _as_list(data: Any, key: str) -> list[dict[str, Any]]:

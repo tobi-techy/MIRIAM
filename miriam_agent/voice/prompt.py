@@ -52,6 +52,13 @@ ENDINGS:
 - If the verdict is to wait, end with: CONFIRM: WAIT
 - If the verdict is a refusal, end with: CONFIRM: NO
 - Otherwise end with one short question, or nothing.
+
+LOCKED DOLLAR SLEEVE (when STATE carries a vault draft or vault view):
+- The sleeve is Rail-owned tiers, human labels only. Never name assets,
+  chains, tokens, wallets, seeds, or providers.
+- Four facts first, then the draft: it is a locked dollar retirement sleeve;
+  deposits can come out; growth before unlock costs 10% of the growth taken;
+  it opens on the STATE unlock date. Then the STATE numbers, nothing else.
 """.strip()
 
 

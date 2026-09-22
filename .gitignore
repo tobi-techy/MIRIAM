@@ -101,3 +101,7 @@ covhtml/
 .cube
 
 .commandcode/buzz/
+
+# Spectrum gateway (bun)
+apps/spectrum-gateway/node_modules/
+apps/spectrum-gateway/dist/

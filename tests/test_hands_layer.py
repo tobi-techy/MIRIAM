@@ -31,7 +31,7 @@ from miriam_agent.hands.ledger import (
     money,
     new_ledger,
 )
-from miriam_agent.hands.limits import evaluate_limits
+from miriam_agent.hands.limits import Policy, evaluate_limits
 from miriam_agent.hands.split import split_inflow, split_parts
 from miriam_agent.hands.state import (
     HandlerState,
@@ -41,10 +41,16 @@ from miriam_agent.hands.state import (
     require_complete,
 )
 from miriam_agent.hands.transfer import (
+    GoRail,
     InMemoryRail,
+    TransferInstruction,
     execute_transfer,
+    handle_debit,
+    handle_reversal,
     move_between_sleeves,
+    parse_amount,
     parse_transfer_utterance,
+    record_refusal,
     route_yield,
 )
 from miriam_agent.orchestrator import Event, Orchestrator
@@ -591,3 +597,249 @@ async def test_the_rollback_receipt_carries_the_rail_reference():
     # The same reference the rail was asked to reverse, so the reversed movement
     # can be found on the rail's side.
     assert outcome.receipt.rail_reference in rail.reversals
+
+
+# ---------------------------------------------------------------------------
+# Daily cap (limits.py / Policy.max_daily)
+# ---------------------------------------------------------------------------
+
+
+async def test_nine_under_cap_pass_and_tenth_rejects():
+    """Nine sends under the daily cap succeed; the tenth is rejected."""
+    ledger = ledger_with(spendable=500000)
+    store = await _seeded(ledger)
+    rail = InMemoryRail()
+    cap = Decimal("10000")
+    policy = Policy(max_daily=cap)
+    amount = Decimal("1000")
+
+    for i in range(9):
+        state, action = _authorised(ledger, str(amount), counterparty=f"Femi{i}")
+        outcome = await execute_transfer(
+            store=store, ledger=ledger, state=state, policy=policy, rail=rail
+        )
+        ledger = await store.load("u1")
+        assert outcome.receipt.status == "executed", f"send {i+1} should pass"
+
+    state, action = _authorised(ledger, str(amount), counterparty="Femi9")
+    outcome = await execute_transfer(
+        store=store, ledger=ledger, state=state, policy=policy, rail=rail
+    )
+    assert outcome.receipt.status == "rejected"
+    assert "DAILY_CAP" in outcome.receipt.reasons
+
+
+async def test_untapped_confirm_does_not_block_next_send():
+    """A pending confirm holds its amount off the cap until it expires or declines."""
+    ledger = ledger_with(spendable=500000)
+    store = await _seeded(ledger)
+    rail = InMemoryRail()
+    policy = Policy(max_daily=Decimal("10000"))
+
+    # Send 9,000: 9 under the 10k cap, one slot left.
+    state, action = _authorised(ledger, "9000", counterparty="Femi")
+    outcome = await execute_transfer(
+        store=store, ledger=ledger, state=state, policy=policy, rail=rail
+    )
+    ledger = await store.load("u1")
+    assert outcome.receipt.status == "executed"
+
+    # A new send of 2,000 needs a confirm (above max_auto=2000), so it
+    # creates a challenge that reserves 2,000 against the cap.
+    state2, action2 = _authorised(ledger, "2000", counterparty="Ada")
+    outcome2 = await execute_transfer(
+        store=store, ledger=ledger, state=state2, policy=policy, rail=rail
+    )
+    ledger = await store.load("u1")
+    assert outcome2.receipt.status == "rejected"
+    assert "DAILY_CAP" in outcome2.receipt.reasons
+
+
+# ---------------------------------------------------------------------------
+# Sleeve parse
+# ---------------------------------------------------------------------------
+
+
+def test_move_to_sleeve_is_internal_move():
+    """move/transfer + sleeve destination is internal_move, never P2P."""
+    for text in ("move 1k to savings", "move 1k to stash", "move 1k to yield", "move 1k to locked"):
+        action = parse_transfer_utterance(text)
+        assert action is not None, text
+        assert action.type == "internal_move", text
+        assert action.counterparty == "", text
+
+
+def test_move_to_person_is_p2p():
+    """move + person name is still a P2P transfer."""
+    action = parse_transfer_utterance("move 1k to Femi")
+    assert action is not None
+    assert action.type == "transfer"
+    assert action.counterparty == "Femi"
+
+
+def test_send_to_sleeve_is_internal_move():
+    """send + sleeve destination is internal_move."""
+    action = parse_transfer_utterance("send 500 to savings")
+    assert action is not None
+    assert action.type == "internal_move"
+    assert action.counterparty == ""
+
+
+# ---------------------------------------------------------------------------
+# Debit / reversal
+# ---------------------------------------------------------------------------
+
+
+async def test_debit_reduces_spendable():
+    ledger = ledger_with(spendable=10000)
+    store = await _seeded(ledger)
+    outcome = await handle_debit(
+        store=store,
+        ledger=ledger,
+        payment_id="pay_debit_1",
+        amount=Decimal("500"),
+        reason="go_debit",
+    )
+    after = await store.load("u1")
+    assert outcome.receipt.status == "executed"
+    assert after.balance("spendable") == Decimal("9500")
+
+
+async def test_debit_idempotent_on_replay():
+    ledger = ledger_with(spendable=10000)
+    store = await _seeded(ledger)
+    outcome1 = await handle_debit(
+        store=store, ledger=ledger, payment_id="pay_dup", amount=Decimal("500"), reason="go_debit"
+    )
+    outcome2 = await handle_debit(
+        store=store, ledger=await store.load("u1"), payment_id="pay_dup", amount=Decimal("500"), reason="go_debit"
+    )
+    assert outcome1.receipt.id == outcome2.receipt.id
+    assert outcome2.receipt.idempotent_replay is True
+
+
+async def test_debit_short_fails_closed():
+    ledger = ledger_with(spendable=100)
+    store = await _seeded(ledger)
+    outcome = await handle_debit(
+        store=store, ledger=ledger, payment_id="pay_short", amount=Decimal("500"), reason="go_debit"
+    )
+    assert outcome.receipt.status == "rejected"
+    assert "INSUFFICIENT_SPENDABLE" in outcome.receipt.reasons
+    after = await store.load("u1")
+    assert after.balance("spendable") == Decimal("100")
+
+
+async def test_reversal_does_not_credit_income():
+    """A reversal debits spendable (like the original credit), never credits income."""
+    ledger = ledger_with(spendable=10000)
+    store = await _seeded(ledger)
+    outcome = await handle_debit(
+        store=store, ledger=ledger, payment_id="pay_rev", amount=Decimal("500"), reason="go_reversal"
+    )
+    after = await store.load("u1")
+    assert outcome.receipt.status == "executed"
+    assert after.balance("spendable") == Decimal("9500")
+
+
+# ---------------------------------------------------------------------------
+# APPROVAL_REQUIRED_ABOVE default is 0
+# ---------------------------------------------------------------------------
+
+
+def test_approval_required_above_default_is_zero():
+    from miriam_agent.config.settings import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.APPROVAL_REQUIRED_ABOVE == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Confirm challenge binding
+# ---------------------------------------------------------------------------
+
+
+async def test_challenge_stores_required_fields():
+    """A challenge must carry confirm_id, user_id, amount, destination, sleeve, created_at, expires_at."""
+    ledger = ledger_with(spendable=50000)
+    store = await _seeded(ledger)
+    orchestrator = Orchestrator(
+        store=store,
+        policy=POLICY,
+        rail=InMemoryRail(),
+        provider=FakeProvider("Asking first."),
+        judge=judge_of(jev(intent="order", afford=0.9)),
+    )
+
+    asked = await orchestrator.handle(
+        Event(type="utterance", user_id="u1", text="send 5k to Ada")
+    )
+    assert asked.confirm_id
+
+    loaded = await store.load("u1")
+    challenge = loaded.challenges[asked.confirm_id]
+    assert challenge.id == asked.confirm_id
+    assert challenge.user_id == "u1"
+    assert challenge.amount == money(2000)
+    assert challenge.counterparty == "Ada"
+    assert challenge.sleeve == "spendable"
+    assert challenge.created_at is not None
+    assert challenge.expires_at is not None
+    assert challenge.status == "pending"
+
+
+async def test_settle_only_if_all_match():
+    """Settle requires confirm_id + user_id + amount + destination + sleeve to all match."""
+    ledger = ledger_with(spendable=50000)
+    store = await _seeded(ledger)
+    orchestrator = Orchestrator(
+        store=store,
+        policy=POLICY,
+        rail=InMemoryRail(),
+        provider=FakeProvider("Asking first."),
+        judge=judge_of(jev(intent="order", afford=0.9)),
+    )
+
+    asked = await orchestrator.handle(
+        Event(type="utterance", user_id="u1", text="send 5k to Ada")
+    )
+    confirm_id = asked.confirm_id
+
+    # Wrong user_id should not settle
+    loaded = await store.load("u1")
+    challenge = loaded.challenges[confirm_id]
+    assert challenge.user_id == "u1"
+
+    # Correct settle
+    tapped = await orchestrator.handle(
+        Event(type="confirm", user_id="u1", confirm_id=confirm_id)
+    )
+    assert tapped.receipt is not None
+    assert tapped.receipt.status == "executed"
+
+
+async def test_decline_burns_challenge():
+    """A declined challenge is consumed and cannot be settled."""
+    ledger = ledger_with(spendable=50000)
+    store = await _seeded(ledger)
+    orchestrator = Orchestrator(
+        store=store,
+        policy=POLICY,
+        rail=InMemoryRail(),
+        provider=FakeProvider("Asking first."),
+        judge=judge_of(jev(intent="order", afford=0.9)),
+    )
+
+    asked = await orchestrator.handle(
+        Event(type="utterance", user_id="u1", text="send 5k to Ada")
+    )
+    confirm_id = asked.confirm_id
+
+    result = await orchestrator.handle_confirm("u1", confirm_id, yes=False)
+    assert result.receipt is not None
+    assert result.receipt.status == "rejected"
+    assert "USER_DECLINED" in result.receipt.reasons
+
+    # Challenge is consumed
+    after = await store.load("u1")
+    assert after.challenges[confirm_id].status == "consumed"

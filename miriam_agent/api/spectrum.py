@@ -272,10 +272,24 @@ async def spectrum_chat(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="text-carried signatures are refused (RAIL_ALLOW_DEV_SIGN=0)",
             )
-        ledger = await chatmod._get_ledger_store().load(user.id)
+        try:
+            ledger = await chatmod._get_ledger_store().load(user.id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ledger unavailable; signature not accepted",
+            )
         pending = list((ledger.pending_invest if ledger else {}) or {})
         if len(pending) == 1:
             signed_tx, flow_id = text.strip(), pending[0]
+        elif len(pending) != 0:
+            # Ambiguous: more than one open flow, so a bare pasted signature
+            # cannot be bound. The wallet must resubmit with an explicit
+            # flow_id; nothing is accepted here.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="flow_id is required with signed_tx",
+            )
     if signed_tx:
         if not flow_id:
             raise HTTPException(

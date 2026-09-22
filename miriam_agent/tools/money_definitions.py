@@ -84,6 +84,48 @@ def _merge_accounts(supplied: Any, connected: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+async def _vault_view(ctx: dict[str, Any]) -> dict[str, Any] | None:
+    """Connected vault view from Go, or ``None`` when unavailable.
+
+    Fails open like balances: a missing vault read must not break the turn,
+    it must produce a plan that says what is missing.
+    """
+    token = ctx.get("token")
+    if not token:
+        return None
+    try:
+        from miriam_agent.integrations.go_client import get_go_client
+
+        return await get_go_client().get_vault(token)
+    except (IntegrationError, Exception) as e:  # noqa: BLE001
+        logger.info("money plan: connected vault unavailable: %s", e)
+        return None
+
+
+def _vault_state(view: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalise a Go vault view into planner ``vault_state``.
+
+    Active means Go reports an open vault. Anything else (no vault, 404
+    sentinel, error shape) is no-vault, so the planner may still propose
+    activating one of the three Rail tiers.
+    """
+    if not isinstance(view, dict):
+        return None
+    if view.get("exists") is False:
+        return None
+    status = str(view.get("status") or "").lower()
+    if status in ("", "none", "closed", "empty"):
+        if view.get("total") is None and view.get("principal") is None:
+            return None
+    return {
+        "active": True,
+        "tier_label": str(view.get("tier") or view.get("tier_label") or ""),
+        "vault_pct": view.get("auto_pct") or view.get("vault_pct") or 0,
+        "unlock_date": str(view.get("unlock_at") or view.get("unlock_date") or ""),
+        "total": view.get("total"),
+    }
+
+
 async def _get_money_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     profile = dict(args.get("profile") or {})
     accounts = args.get("accounts")
@@ -100,7 +142,9 @@ async def _get_money_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     if portfolio or positions:
         glider_state = GliderState(portfolio=portfolio, positions=positions or [])
 
-    plan = build_money_plan(profile, accounts, glider_state)
+    vault_state = _vault_state(await _vault_view(ctx))
+
+    plan = build_money_plan(profile, accounts, glider_state, vault_state)
     return {
         "plan": plan.model_dump(mode="json"),
         "spoken": render_spoken(plan),
@@ -110,6 +154,7 @@ async def _get_money_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
         "next_action": plan.actions_90d[0].what if plan.actions_90d else "",
         "investing": plan.is_investing(),
         "glider_kind": plan.glider.kind,
+        "vault_active": bool(vault_state),
     }
 
 

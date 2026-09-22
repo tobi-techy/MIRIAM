@@ -50,12 +50,16 @@ from miriam_agent.hands.ledger import (
     new_ledger,
 )
 from miriam_agent.hands.limits import (
+    DAILY_CAP_DEFAULT,
     Policy,
     affordable_cap,
     check_amount,
+    daily_usage,
     evaluate_limits,
     free_after_obligations,
     needs_confirm,
+    reserved_outbound,
+    settled_outbound_today,
 )
 from miriam_agent.hands.split import SplitOutcome, split_inflow, split_parts
 from miriam_agent.hands.state import (
@@ -76,6 +80,8 @@ from miriam_agent.hands.transfer import (
     TransferInstruction,
     TransferOutcome,
     execute_transfer,
+    handle_debit,
+    handle_reversal,
     move_between_sleeves,
     parse_amount,
     parse_transfer_utterance,
@@ -84,6 +90,7 @@ from miriam_agent.hands.transfer import (
 
 __all__ = [
     "SLEEVES",
+    "DAILY_CAP_DEFAULT",
     "AuditLog",
     "AuditRow",
     "Bill",
@@ -118,9 +125,12 @@ __all__ = [
     "affordable_cap",
     "build_state",
     "check_amount",
+    "daily_usage",
     "evaluate_limits",
     "execute_transfer",
     "free_after_obligations",
+    "handle_debit",
+    "handle_reversal",
     "money",
     "move_between_sleeves",
     "needs_confirm",
@@ -128,7 +138,9 @@ __all__ = [
     "parse_amount",
     "parse_transfer_utterance",
     "require_complete",
+    "reserved_outbound",
     "route_yield",
+    "settled_outbound_today",
     "sleeves_snapshot",
     "split_inflow",
     "split_parts",

@@ -11,9 +11,6 @@ start_uvicorn() {
 }
 
 start_uvicorn "$PORT"
-if [ "$PORT" != "3000" ]; then
-    start_uvicorn 3000
-fi
 
 trap 'kill $(jobs -p) 2>/dev/null' TERM INT
 wait
