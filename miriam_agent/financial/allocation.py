@@ -159,7 +159,7 @@ def calculate_allocation(
     buffer = profile.money("emergency_fund")
     if buffer is None:
         buffer = profile.money("savings") or 0.0
-    volatile = profile.volatile_income()
+    volatile = profile.volatile_income
     horizon = horizon_months(profile)
 
     alloc = Allocation(income=_round(income), currency=currency, frequency=frequency)

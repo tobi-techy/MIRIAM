@@ -36,7 +36,22 @@ from miriam_agent.hands.ledger import (
 from miriam_agent.hands.limits import Policy
 
 ActionType = Literal[
-    "transfer", "purchase", "lock", "unlock", "yield", "invest", "internal_move", "none"
+    "transfer",
+    "purchase",
+    "lock",
+    "unlock",
+    "yield",
+    "invest",
+    "internal_move",
+    "order",
+    "rebalance",
+    "set_allocation",
+    "pause",
+    "resume",
+    "onramp",
+    "offramp",
+    "save_rule",
+    "none",
 ]
 
 # How many recent receipts travel in STATE. Enough for the user to be told what
@@ -68,6 +83,8 @@ class ProposedAction(BaseModel):
     sleeve: str = "spendable"
     source: Literal["user", "voice", "event", "system"] = "user"
     raw: str = ""
+    # Buy/sell side for order actions. None for non-order actions.
+    side: Literal["buy", "sell"] | None = None
 
     def signature(self) -> str:
         """A stable identity for this action, used for idempotency keys."""
@@ -88,6 +105,11 @@ class Execution(BaseModel):
     rail_reference: str = ""
     idempotent_replay: bool = False
     at: datetime
+    # Funding facts Voice may state (account number, bank, rate, order id).
+    # Written by Hands settlement from the Go result, read by Voice. Every
+    # figure the narration states must be in STATE, so a funding turn puts
+    # its speakable facts here rather than only in the receipt detail string.
+    funding: dict[str, str] = Field(default_factory=dict)
 
 
 class HandlerState(BaseModel):

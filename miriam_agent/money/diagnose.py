@@ -115,16 +115,16 @@ def _resolve(
 ) -> _Signals:
     sig = _Signals(
         currency=(intake.currency or reference.currency).upper(),
-        income=intake.monthly_income(),
-        fixed=intake.monthly_fixed(),
-        variable=intake.monthly_variable() or Decimal("0"),
-        buffer=intake.buffer_source(),
+        income=intake.monthly_income,
+        fixed=intake.monthly_fixed,
+        variable=intake.monthly_variable or Decimal("0"),
+        buffer=intake.buffer_source,
         investments=intake.existing_investments or Decimal("0"),
-        horizon=intake.horizon_months(),
+        horizon=intake.horizon_months,
         inflation_pct=reference.inflation_pct,
         erosion_pct=reference.annual_erosion_pct(),
-        volatile=intake.volatile_income(),
-        missing=intake.missing_required(),
+        volatile=intake.volatile_income,
+        missing=intake.missing_required,
     )
 
     if sig.fixed is not None:
@@ -138,7 +138,7 @@ def _resolve(
     if sig.fixed is not None and sig.fixed > 0:
         sig.buffer_months = sig.buffer / sig.fixed
 
-    sig.debt_total = intake.total_debt()
+    sig.debt_total = intake.total_debt
     sig.fire_debts = [
         d for d in intake.debts if d.apr_pct is not None and d.apr_pct >= fire_apr_pct
     ]

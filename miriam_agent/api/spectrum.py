@@ -78,6 +78,7 @@ class SpectrumRequest(BaseModel):
     channel: str = "terminal"
     space_id: str = ""
     user_id: str = ""
+    sender_id: str = ""
     text: str = ""
     confirm_id: str = ""
     yes: bool | None = None
@@ -102,12 +103,20 @@ _PORTFOLIO_ASKS = (
 
 
 def _orchestrator_for(token: str) -> Orchestrator:
+    settings = get_settings()
+    channels = [
+        part.strip().lower()
+        for part in (settings.GO_CONFIRM_CARD_CHANNELS or "").split(",")
+        if part.strip()
+    ]
     return Orchestrator(
         store=chatmod._get_ledger_store(),
         policy=Policy.from_settings(),
         rail=GoRail(token),
         go_token=token,
         audit_sink=chatmod._persist_money_audit,
+        cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
+        card_channels=tuple(channels) if channels else ("imessage",),
     )
 
 
@@ -212,11 +221,30 @@ async def spectrum_chat(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Text cannot be empty"
         )
 
+    # Bind the channel handle to the stable JWT user on every turn
+    # (first-seen auto-link). A handle owned by someone else never breaks
+    # the turn — it is logged and the message still persists under the
+    # bearer user; the verified merge endpoint owns the move.
+    sender_id = (body.sender_id or "").strip()
+    if sender_id:
+        try:
+            await memory_store.ensure_user(user)
+            await memory_store.link_identity(user.id, channel, sender_id)
+        except Exception:  # noqa: BLE001 - identity never breaks the turn
+            logger.warning(
+                "spectrum: identity link failed for %s:%s (non-blocking)",
+                channel,
+                sender_id,
+            )
+
     orchestrator = _orchestrator_for(token)
     confirm_id_out = ""
     wallet_address = body.wallet_address.strip()
     parts: list[dict[str, Any]] = []
     conv_id = f"spectrum:{channel}:{space_id or user.id}"
+    # The turn result when the money layers own it; None when the turn falls
+    # through to the agent loop further down.
+    result: TurnResult | None
 
     async def _remember(
         user_text: str, reply: str, extra: dict[str, Any] | None = None
@@ -226,6 +254,8 @@ async def spectrum_chat(
             "space_id": space_id,
             "spectrum": True,
         }
+        if sender_id:
+            meta["sender_id"] = sender_id
         if extra:
             meta.update(extra)
         try:
@@ -393,10 +423,14 @@ async def spectrum_chat(
                     user_id=user.id,
                     text=text,
                     wallet_address=wallet_address,
+                    channel=channel,
+                    thread_id=space_id,
                 )
             )
         else:
-            result = await orchestrator.handle_utterance(user.id, text)
+            result = await orchestrator.handle_utterance(
+                user.id, text, channel=channel, thread_id=space_id
+            )
     else:
         result = None
     if result is not None:
@@ -428,8 +462,14 @@ async def spectrum_chat(
             except (ArithmeticError, TypeError, ValueError, KeyError):
                 pass
         if result.confirm_id and result.card is None:
-            # A non-invest challenge (transfer/lock/...): nothing to render
-            # beyond the narration on this surface.
+            # A non-invest challenge (transfer/stash/save-rule/...): the
+            # narration already carries "confirm <id>", plus the Face ID line
+            # when a live card was minted for this challenge
+            # (result.card_action_id, imessage only). Nothing else to render:
+            # the card lives in the iMessage transcript and Go edits it in
+            # place. The invest branch above is unchanged: a first tap may
+            # arrive via the settle endpoint, and the wallet-sign flow after
+            # it is untouched.
             pass
         await _remember(
             text, parts[0].get("text", ""), {"confirm_id": result.confirm_id}

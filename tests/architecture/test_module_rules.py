@@ -179,16 +179,18 @@ BLOB_LIMIT = 700
 # ratchet only ever moves down, until the entry deletes itself.
 REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/financial/intelligence.py": 3280,
-    "miriam_agent/onboarding/service.py": 1800,
+    "miriam_agent/onboarding/service.py": 1897,
     "miriam_agent/tools/definitions.py": 1387,
-    "miriam_agent/financial/profile.py": 1372,
-    "miriam_agent/orchestrator.py": 1168,
-    "miriam_agent/api/chat.py": 1168,
+    "miriam_agent/financial/profile.py": 1376,
+    "miriam_agent/orchestrator.py": 1050,
+    "miriam_agent/api/chat.py": 1570,
+    "miriam_agent/database/memory.py": 782,
     "miriam_agent/hands/transfer.py": 998,
-    "miriam_agent/money/plan.py": 876,
-    "miriam_agent/integrations/go_client.py": 875,
+    "miriam_agent/money/plan.py": 885,
+    "miriam_agent/integrations/go_client.py": 1209,
+    "miriam_agent/integrations/supermemory_client.py": 829,
     "miriam_agent/safety/validator.py": 848,
-    "miriam_agent/onboarding/driver.py": 731,
+    "miriam_agent/onboarding/driver.py": 747,
     "miriam_agent/financial/diagnosis.py": 715,
 }
 

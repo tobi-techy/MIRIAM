@@ -50,6 +50,19 @@ class RateLimitError(MiriamError):
     """Raised when rate limit is exceeded."""
 
 
+class CoolingDownError(MiriamError):
+    """Raised when a strategy rebalance is refused by a 429 cooldown.
+
+    Carries the ``retry_after`` seconds the Go backend asked the caller to wait,
+    so the hands layer can present a "try again in X" message rather than a
+    generic failure.
+    """
+
+    def __init__(self, message: str = "strategy is cooling down", retry_after: int | None = None):
+        super().__init__(message, {"retry_after": retry_after})
+        self.retry_after = retry_after
+
+
 class ToolExecutionError(MiriamError):
     """Raised when a tool fails to execute."""
 

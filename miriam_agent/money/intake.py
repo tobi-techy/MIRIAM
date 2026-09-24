@@ -157,15 +157,19 @@ class IntakeProfile(BaseModel):
 
     # -- derived reads --------------------------------------------------
 
+    @property
     def monthly_income(self) -> Decimal | None:
         return to_monthly(self.income_amount, self.income_frequency)
 
+    @property
     def monthly_fixed(self) -> Decimal | None:
         return self.fixed_costs
 
+    @property
     def monthly_variable(self) -> Decimal | None:
         return self.variable_spend
 
+    @property
     def volatile_income(self) -> bool:
         """True when income is not steady. Unknown counts as volatile.
 
@@ -177,6 +181,7 @@ class IntakeProfile(BaseModel):
             return True
         return self.income_volatility.strip().casefold() in _VOLATILE_VALUES
 
+    @property
     def buffer_source(self) -> Decimal:
         """The liquid money that counts toward the buffer."""
         if self.emergency_fund is not None:
@@ -185,18 +190,21 @@ class IntakeProfile(BaseModel):
             return self.cash_on_hand
         return Decimal("0")
 
+    @property
     def horizon_months(self) -> int | None:
         """The longest goal horizon. ``None`` when no goal has a horizon."""
         horizons = [g.horizon_months for g in self.goals if g.horizon_months]
         return max(horizons) if horizons else None
 
+    @property
     def total_debt(self) -> Decimal:
         return sum((d.balance for d in self.debts), Decimal("0"))
 
+    @property
     def missing_required(self) -> list[str]:
         """Required fields that are still absent (drives ``data_gap``)."""
         missing: list[str] = []
-        if self.monthly_income() is None:
+        if self.monthly_income is None:
             missing.append("income_amount")
         if self.fixed_costs is None:
             missing.append("fixed_costs")
@@ -356,7 +364,7 @@ def from_financial_profile(
             "country is unknown from the profile; local inflation and rates are "
             "not localized"
         )
-    if intake.buffer_source() == 0 and cash is None and fund is None:
+    if intake.buffer_source == 0 and cash is None and fund is None:
         intake = intake.with_assumption(
             "no cash or buffer on record; treated as no buffer rather than assumed"
         )

@@ -204,6 +204,57 @@ def _vehicle(name: str, kind: str, insured: bool, notes: str = "") -> SafetyVehi
     return SafetyVehicle(name=name, kind=kind, insured=insured, notes=notes)
 
 
+def reference_from_env() -> CountryReference | None:
+    """Operator-supplied live reference via environment (no code change).
+
+    Reads ``MONEY_REF_*`` vars pinned in ``docs/MONEY-REFERENCE-OPS.md``::
+
+        MONEY_REF_COUNTRY=NG MONEY_REF_CURRENCY=NGN
+        MONEY_REF_INFLATION_PCT=24.0 MONEY_REF_RISK_FREE_PCT=19.0
+        MONEY_REF_FIRE_APR_PCT=25.0 MONEY_REF_JUDGMENT_APR_PCT=10.0
+        MONEY_REF_AS_OF=2026-09-24 MONEY_REF_SOURCE="CBN MPR release ..."
+
+    Returns a ``sourced=True`` override or ``None`` when unset/incomplete, so
+    the placeholder table keeps working until an operator wires the feed.
+    """
+    import os
+
+    inflation = (os.environ.get("MONEY_REF_INFLATION_PCT") or "").strip()
+    risk_free = (os.environ.get("MONEY_REF_RISK_FREE_PCT") or "").strip()
+    if not inflation or not risk_free:
+        return None
+    try:
+        from decimal import Decimal as _Decimal
+
+        inflation_pct = _Decimal(inflation)
+        risk_free_pct = _Decimal(risk_free)
+    except Exception:
+        return None
+    fire = (os.environ.get("MONEY_REF_FIRE_APR_PCT") or "").strip()
+    judgment = (os.environ.get("MONEY_REF_JUDGMENT_APR_PCT") or "").strip()
+    try:
+        fire_pct = _Decimal(fire) if fire else None
+        judgment_pct = _Decimal(judgment) if judgment else None
+    except Exception:
+        return None
+    return CountryReference(
+        country_code=(os.environ.get("MONEY_REF_COUNTRY") or "NG").strip().upper(),
+        currency=(os.environ.get("MONEY_REF_CURRENCY") or "NGN").strip().upper(),
+        as_of=(os.environ.get("MONEY_REF_AS_OF") or REFERENCE_AS_OF).strip(),
+        inflation_pct=inflation_pct,
+        risk_free_rate_pct=risk_free_pct,
+        fire_apr_pct=fire_pct,
+        judgment_apr_pct=judgment_pct,
+        safety_vehicles=list(_DEFAULT.safety_vehicles),
+        tax_wrappers=[],
+        sourced=True,
+        source_note=(
+            (os.environ.get("MONEY_REF_SOURCE") or "").strip()
+            or "operator-supplied via MONEY_REF_* env"
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # The table. Every row is a PLACEHOLDER until someone fills in source_note.
 # ---------------------------------------------------------------------------

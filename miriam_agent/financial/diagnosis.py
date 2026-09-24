@@ -249,7 +249,7 @@ def _resolve(
     if sig.debt is not None and sig.income and sig.income > 0:
         sig.debt_income_months = sig.debt / sig.income
 
-    sig.volatile = profile.volatile_income()
+    sig.volatile = profile.volatile_income
     goal = profile.value("financial_goal")
     sig.has_goal = bool(isinstance(goal, str) and goal.strip())
     sig.goal_text = str(goal).strip() if sig.has_goal else ""

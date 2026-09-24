@@ -192,6 +192,14 @@ class Challenge(BaseModel):
     # account and source here, so the settle step can reject anything that
     # does not match what the card showed.
     meta: dict[str, str] = Field(default_factory=dict)
+    # Live Face ID card join (iMessage). Empty unless the orchestrator minted
+    # a Go confirmation card for this challenge: card_action_id is the Go
+    # action id, card_state its last known state, channel the surface that
+    # asked for the card. All optional with defaults so Redis-stored ledgers
+    # written before this field existed load unchanged.
+    card_action_id: str = ""
+    card_state: str = ""
+    channel: str = ""
 
     def is_open(self, at: datetime) -> bool:
         return self.status == "pending" and at < self.expires_at
@@ -235,6 +243,28 @@ class PendingInvest(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class PendingOrder(BaseModel):
+    """A staged Glider order between confirm tap and server-signed settle.
+
+    Orders and all-allocations are Rail-signed server-side (no wallet
+    signature). The binding records what was ordered so a retap cannot
+    double-execute and so the receipt can be replayed idempotently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    confirm_id: str
+    strategy_id: str
+    glider_strategy_id: str = ""
+    side: str = ""  # "buy" or "sell"
+    asset_id: str = ""
+    symbol: str = ""
+    amount_usd: str = "0"
+    status: Literal["pending", "completed", "failed"] = "pending"
+    created_at: datetime = Field(default_factory=_now)
+
+
 class Ledger(BaseModel):
     """One user's balances, policy state and history."""
 
@@ -255,6 +285,9 @@ class Ledger(BaseModel):
     # flow_id -> PendingInvest. A tap that approved Glider enrollment waits
     # here for the wallet signature; settle refuses anything unbound.
     pending_invest: dict[str, PendingInvest] = Field(default_factory=dict)
+    # order_id -> PendingOrder. A tap that approved a buy/sell or all-allocation
+    # waits here for the server-signed settle; a retap replays the receipt.
+    pending_order: dict[str, PendingOrder] = Field(default_factory=dict)
     # idempotency key -> receipt id. The presence of a key is the whole
     # idempotency mechanism: a repeated inflow or transfer finds its key here
     # and replays the receipt instead of moving money again.
@@ -561,6 +594,7 @@ __all__ = [
     "Movement",
     "PendingInflow",
     "PendingInvest",
+    "PendingOrder",
     "RedisLedgerStore",
     "RentFirst",
     "Track",

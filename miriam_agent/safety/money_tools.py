@@ -77,6 +77,17 @@ MONEY_TOOL_NAMES: frozenset[str] = frozenset(
         "glider_prepare_enroll",
         "glider_complete_enroll",
         "glider_prepare_deposit_intent",
+        # NGN <-> crypto funding verbs. Reads are registry tools; these
+        # mutations run in hands/funding.py after a confirm_id tap (Paj OTP
+        # for onramp; staged envelope + rail://authorize for offramp) and
+        # must never become registry tools.
+        "buy_crypto",
+        "sell_crypto",
+        "sell_crypto_now",
+        "create_onramp",
+        "verify_paj_otp",
+        "initiate_paj_session",
+        "create_offramp",
     }
 )
 

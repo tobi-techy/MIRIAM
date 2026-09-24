@@ -181,12 +181,15 @@ def test_investment_reads_use_agent_paths():
     _run(client.close())
 
 
-def test_the_client_has_no_investment_mutation_methods():
-    """The rail-calling investment client is deleted, not just unwired.
+def test_the_client_has_no_strategy_or_withdrawal_writers():
+    """The rail-calling strategy/withdrawal writers stay deleted.
 
-    Every one of these methods existed to carry a mutation out of the agent, and
-    the agent has no money path. ``hands/`` is the only thing that moves money,
-    and it reaches the rail through its own two verbs.
+    Order/allocations/rebalance/pause/resume are now real client methods, but
+    they are reachable only from ``hands/orders.py`` after a confirm_id tap --
+    never from a chat-turn tool (pinned in test_money_tools.py). The app-only
+    writers that hands never calls must not come back, and the withdrawal
+    endpoint is app-only. Strategy create/version-publish stay absent because
+    no hands verb reaches them.
     """
     from miriam_agent.integrations.go_client import GoBackendClient
 
@@ -194,17 +197,26 @@ def test_the_client_has_no_investment_mutation_methods():
         "create_investment_strategy",
         "publish_investment_strategy_version",
         "enroll_investment",
-        "create_investment_order",
-        "set_investment_allocation",
-        "pause_investment_strategy",
-        "resume_investment_strategy",
-        "rebalance_investment_strategy",
+        "create_withdrawal",
+        "submit_withdrawal",
     ):
         assert not hasattr(GoBackendClient, gone), gone
 
     # The reads the agent still answers from stay.
     for kept in ("get_investment_portfolio", "list_investment_strategies"):
         assert hasattr(GoBackendClient, kept), kept
+
+    # The server-signed Glider transaction writers exist on the client, for the
+    # hands layer only. Each is paired with a hands verb; the registry scan in
+    # test_money_tools.py is what proves they are not chat-reachable.
+    for writer in (
+        "create_investment_order",
+        "set_investment_allocation",
+        "rebalance_investment_strategy",
+        "pause_investment_strategy",
+        "resume_investment_strategy",
+    ):
+        assert hasattr(GoBackendClient, writer), writer
 
 
 def test_agent_client_exposes_no_withdrawal_method():

@@ -174,6 +174,10 @@ for await (const [space, message] of spec.messages) {
       channel: miriamChannel(platform, CHANNEL) as MiriamRequest["channel"],
       space_id: miriamSpace(platform, space.id),
       user_id: MIRIAM_USER,
+      // Raw channel handle (phone/email). The brain binds it to the stable
+      // JWT user on every turn, so a changed number keeps pointing at the
+      // same memory until a verified merge moves it.
+      ...(sender ? { sender_id: sender } : {}),
       text: inboundText(message),
       ...(devKeypair ? { wallet_address: devKeypair.publicKey.toBase58() } : {}),
     };
@@ -192,6 +196,7 @@ for await (const [space, message] of spec.messages) {
           channel: miriamChannel(platform, CHANNEL) as MiriamRequest["channel"],
           space_id: miriamSpace(platform, space.id),
           user_id: MIRIAM_USER,
+          ...(sender ? { sender_id: sender } : {}),
           text: "",
           signed_tx: signed,
           flow_id: meta.flow_id,

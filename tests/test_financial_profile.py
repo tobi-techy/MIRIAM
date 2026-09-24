@@ -239,10 +239,10 @@ def test_missing_reports_only_what_we_lack():
 def test_volatile_income_helper():
     profile = FinancialProfile()
     profile.set_fact("income_volatility", "variable")
-    assert profile.volatile_income() is True
+    assert profile.volatile_income is True
     steady = FinancialProfile()
     steady.set_fact("income_volatility", "steady")
-    assert steady.volatile_income() is False
+    assert steady.volatile_income is False
 
 
 def test_currency_defaults_to_ngn():

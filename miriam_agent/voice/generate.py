@@ -195,6 +195,45 @@ def _fmt(value: Any) -> str:
         return str(value)
 
 
+def _funding_line(state: HandlerState, execution: Any) -> str:
+    """The bank-transfer facts for a funding turn, from STATE only.
+
+    Voice may only state figures already in STATE, so the account the user
+    must pay renders here from ``execution.funding`` (written by Hands from
+    the Go result). Anything missing is skipped, never guessed.
+    """
+    funding = getattr(execution, "funding", None) or {}
+    if not isinstance(funding, dict) or not funding:
+        return ""
+
+    def _get(key: str) -> str:
+        return str(funding.get(key) or "").strip()
+
+    if execution.action == "onramp_initiate":
+        to = f" to {_get('recipient')}" if _get("recipient") else ""
+        rate = f" Rate {_get('rate')}." if _get("rate") else ""
+        return (
+            f"Verification code sent{to}. Reply with the code,"
+            f" nothing moves until it verifies.{rate}"
+        )
+    amount = _fmt(execution.amount)
+    who = " ".join(
+        part for part in (_get("account_name"), _get("account_number")) if part
+    )
+    if not who:
+        return ""
+    bank = f" ({_get('bank')})" if _get("bank") else ""
+    token = (
+        f" {_get('token_amount')} USDC credits automatically."
+        if _get("token_amount")
+        else ""
+    )
+    rate = f" Rate {_get('rate')}." if _get("rate") else ""
+    return (
+        f"Send exactly {amount} {state.currency} to {who}{bank}.{token}{rate}"
+    )
+
+
 def deterministic_message(state: HandlerState) -> str:
     """The line Voice would have written, from STATE alone.
 
@@ -212,6 +251,9 @@ def deterministic_message(state: HandlerState) -> str:
         parts.append(
             f"{execution.action} {amount} {state.currency}{to} ({execution.status})."
         )
+        funding_line = _funding_line(state, execution)
+        if funding_line:
+            parts.append(funding_line)
         parts.append(f"Spendable is now {_fmt(state.spendable)} {state.currency}.")
     elif state.pending_inflow is not None:
         amount = _fmt(state.pending_inflow.amount)

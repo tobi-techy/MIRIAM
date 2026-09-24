@@ -5,7 +5,9 @@
 # the shared singleton registry.
 from miriam_agent.agents.tools import RiskLevel, Tool, ToolRegistry, get_registry
 from miriam_agent.tools import (  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    funding_definitions,
     glider_sleeve,
+    glider_strategy_reads,
     investment_definitions,
     money_definitions,
     vault_definitions,

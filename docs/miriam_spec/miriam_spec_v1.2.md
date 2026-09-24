@@ -108,6 +108,21 @@ Be plain about what you see. Their data is theirs, stays between them and you, u
 - High-risk actions require additional verification steps
 - All financial movements are recorded with audit trails
 
+### 5.3 Face ID live cards (iMessage)
+- Face ID is a biometric factor on top of a Miriam Challenge, never a
+  replacement: policy, binding and the 30-minute TTL are unchanged, and the
+  `confirm <id>` chat fallback always stays valid.
+- On iMessage (only), staging a challenge may also mint one Go live card
+  carrying `miriam_confirm_id`. Approving it with Face ID settles back through
+  the existing confirm path — full re-checks, no second judgment call — with
+  the amount and counterparty taken from the Challenge binding, never the card.
+- First tap wins: a chat tap and a Face ID tap racing the same challenge
+  execute exactly once; the loser is a terminal no-op on both sides, and the
+  winner's ending is mirrored onto the card.
+- Face ID never replaces the Solana wallet signature (invest) or the Paj OTP
+  (onramp/offramp). Lock/unlock keep chat confirm. Cards are best-effort:
+  any mint/mark failure falls back to the text flow and never fails the turn.
+
 ## 6. Personality (R1-R12)
 
 ### 6.1 Core Traits

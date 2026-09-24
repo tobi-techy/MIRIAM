@@ -204,6 +204,7 @@ class FinancialProfile(BaseModel):
             return fact.currency.upper()
         return "NGN"
 
+    @property
     def volatile_income(self) -> bool:
         """True when the profile says the income is not steady."""
         fact = self.fact("income_volatility")
@@ -1224,6 +1225,9 @@ _FIELD_BY_KEY: tuple[tuple[str, str], ...] = (
     ("bill", "essential_expenses"),
     ("rent", "essential_expenses"),
     ("outgo", "essential_expenses"),
+    ("fixed", "essential_expenses"),
+    ("food", "essential_expenses"),
+    ("transport", "essential_expenses"),
     ("goal", "financial_goal"),
     ("rich_life", "financial_goal"),
     ("desired_life", "financial_goal"),

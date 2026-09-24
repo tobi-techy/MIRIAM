@@ -259,15 +259,15 @@ def assess_safety(
     )
 
     currency = (intake.currency or reference.currency).upper()
-    income = intake.monthly_income() or Decimal("0")
+    income = intake.monthly_income or Decimal("0")
     debt_minimums = sum((d.minimum_monthly for d in intake.debts), Decimal("0"))
     # Debt minimums join fixed costs: the buffer target and the surplus both
     # have to respect them, or the plan quietly assumes the user skips a payment.
-    fixed = (intake.monthly_fixed() or Decimal("0")) + debt_minimums
-    variable = intake.monthly_variable() or Decimal("0")
+    fixed = (intake.monthly_fixed or Decimal("0")) + debt_minimums
+    variable = intake.monthly_variable or Decimal("0")
     spend = fixed + variable
     surplus = income - spend
-    buffer_current = intake.buffer_source()
+    buffer_current = intake.buffer_source
 
     stack = SafetyStack(
         currency=currency,
@@ -312,7 +312,7 @@ def assess_safety(
         why = (
             "debt is on fire, so one month is enough to stop a shock becoming new debt"
         )
-    elif intake.volatile_income():
+    elif intake.volatile_income:
         target_months = _VOLATILE_TARGET_MONTHS
         why = "income moves around, so the buffer has to cover a gap of unknown length"
     else:
@@ -341,7 +341,7 @@ def assess_safety(
         if not stack.bleed:
             # Distinguish "we do not know" from "there is genuinely nothing
             # left". The first is a question; the second is a finding.
-            unknown = intake.monthly_income() is None or intake.monthly_fixed() is None
+            unknown = intake.monthly_income is None or intake.monthly_fixed is None
             stack.blocked_reasons.append(
                 "the income and cost figures needed to work out a surplus are not "
                 "recorded yet"
@@ -399,9 +399,12 @@ def assess_safety(
             "a fire"
         )
     if stale_reference:
+        # Scoped: a stale macro table blocks *investing* (hurdle rate unknown),
+        # never the savings plan. Buffer, debt attack, and cashflow still run on
+        # the user's own numbers plus the settings debt bands.
         stack.blocked_reasons.append(
-            "the local rate reference is out of date, so the debt threshold and "
-            "the inflation read cannot be trusted"
+            "the local rate reference is out of date, so investing is paused "
+            "until it is refreshed — your savings split below still stands"
         )
 
     stack.investing_allowed = not stack.blocked_reasons

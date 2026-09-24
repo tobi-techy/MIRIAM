@@ -394,3 +394,13 @@ def test_hands_never_imports_a_model_or_a_judge():
         assert "get_llm_provider" not in source, path
         assert "typesafe" not in source, path
         assert "ChatMessage" not in source, path
+
+
+def test_service_down_line_matches_voice():
+    """hands/settlement.py mirrors voice's outage string (hands may not
+    import voice per the architecture rules). If voice rewords it, update
+    the mirror in lockstep so outage turns keep speaking one line."""
+    from miriam_agent.hands.settlement import _SERVICE_DOWN_LINE
+    from miriam_agent.voice.generate import UNAVAILABLE_LINE
+
+    assert _SERVICE_DOWN_LINE == UNAVAILABLE_LINE

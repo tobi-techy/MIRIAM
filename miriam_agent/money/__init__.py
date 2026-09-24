@@ -46,6 +46,7 @@ from miriam_agent.money.reference import (
     ReferenceStatus,
     available_countries,
     lookup,
+    reference_from_env,
     reference_status,
     resolve_thresholds,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "lookup",
     "narrate",
     "narrate_with_report",
+    "reference_from_env",
     "reference_status",
     "render_plan",
     "render_spoken",

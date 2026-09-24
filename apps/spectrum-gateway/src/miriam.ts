@@ -39,6 +39,7 @@ export interface MiriamRequest {
   channel: "imessage" | "whatsapp" | "terminal";
   space_id: string;
   user_id: string;
+  sender_id?: string;
   text: string;
   wallet_address?: string;
   confirm_id?: string;

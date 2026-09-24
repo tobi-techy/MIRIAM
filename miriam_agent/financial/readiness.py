@@ -111,7 +111,7 @@ def assess_readiness(
     buffer_months = _buffer_months(profile)
     debt_months = debt / income if income else None
     horizon = horizon_months(profile)
-    volatile = profile.volatile_income()
+    volatile = profile.volatile_income
 
     blockers: list[str] = []
     signals = {

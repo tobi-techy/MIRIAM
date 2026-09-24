@@ -3,7 +3,15 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import JSON as SQLAlchemyJSON
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 from miriam_agent.core.timeutil import utcnow_naive
@@ -31,6 +39,7 @@ class User(Base):
     conversations = relationship("Conversation", back_populates="user")
     memory_entries = relationship("MemoryEntry", back_populates="user")
     audit_logs = relationship("AuditLog", back_populates="user")
+    channel_identities = relationship("ChannelIdentity", back_populates="user")
 
 
 class FinancialProfile(Base):
@@ -198,6 +207,40 @@ class MemoryEntry(Base):
 
     # Relationships
     user = relationship("User", back_populates="memory_entries")
+
+
+class ChannelIdentity(Base):
+    """A channel handle (phone, iMessage, WhatsApp) bound to a stable user.
+
+    The Go backend owns the stable ``users.id``; a phone number is just one
+    handle that can die (SIM swap, reinstall, new device). Binding every
+    handle the user ever contacts us from to the same ``user_id`` is what
+    lets Miriam keep knowledge when the number changes: history stays keyed
+    by ``user_id``, handles are only pointers.
+
+    ``(channel, handle)`` is globally unique — one handle points at exactly
+    one user at a time. Moving a handle between users (number recycled, user
+    claims old history) goes through the rail-authenticated merge endpoint,
+    never through a bare user call, so user A cannot steal user B's history
+    by guessing their old number.
+    """
+
+    __tablename__ = "channel_identities"
+    __table_args__ = (UniqueConstraint("channel", "handle", name="uq_channel_handle"),)
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    handle: Mapped[str] = mapped_column(String, nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
+    )
+
+    user = relationship("User", back_populates="channel_identities")
 
 
 class AuditLog(Base):

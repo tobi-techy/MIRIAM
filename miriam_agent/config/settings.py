@@ -88,6 +88,15 @@ class Settings(BaseSettings):
     # a hard failure the user saw as "couldn't do that".
     GO_REQUEST_TIMEOUT: float = Field(default=15.0)
     GO_MAX_RETRIES: int = Field(default=2)
+    # Live Face ID confirmation cards (Go card <-> Miriam challenge join).
+    # Off until the imessage e2e passes; when on, the orchestrator mints a Go
+    # card best-effort after staging a challenge and falls back to the text
+    # flow whenever minting fails. The flag decides routing, never authority:
+    # settle always runs the existing _handle_confirm path.
+    GO_CONFIRM_CARDS_ENABLED: bool = Field(default=False)
+    # Comma-separated channels allowed to mint cards. iMessage owns the Face
+    # ID extension; web/voice/terminal never mint.
+    GO_CONFIRM_CARD_CHANNELS: str = Field(default="imessage")
 
     # Supermemory (long-term memory of the agent)
     # Leave empty to disable semantic memory (the agent degrades gracefully).
