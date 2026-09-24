@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -69,28 +69,38 @@ def period_to_window(
 ) -> tuple[str | None, str | None]:
     """Map a health-audit period to an (from, to) YYYY-MM-DD window.
 
-    Returns (None, None) for unknown periods, which lets the backend use its
-    current-calendar-month default.
+    The implementation lives in ``core.periods``; this re-export keeps the
+    historical import path working.
     """
-    today = today or date.today()
-    if period == "this_month":
-        return today.strftime("%Y-%m-01"), today.strftime("%Y-%m-%d")
-    if period == "last_month":
-        last_month_last = today.replace(day=1) - timedelta(days=1)
-        return last_month_last.strftime("%Y-%m-01"), last_month_last.strftime(
-            "%Y-%m-%d"
-        )
-    if period == "last_90_days":
-        return (today - timedelta(days=89)).strftime("%Y-%m-%d"), today.strftime(
-            "%Y-%m-%d"
-        )
-    if period == "last_6_months":
-        first = (today - timedelta(days=183)).strftime("%Y-%m-%d")
-        return first, today.strftime("%Y-%m-%d")
-    if period == "last_12_months":
-        first = (today - timedelta(days=365)).strftime("%Y-%m-%d")
-        return first, today.strftime("%Y-%m-%d")
-    return None, None
+    from miriam_agent.core.periods import period_to_window as _impl
+
+    return _impl(period, today)
+
+
+async def financial_plan_live(client: Any, token: str) -> dict[str, Any]:
+    """Real financial plan, computed by this engine from Go's snapshot.
+
+    The composition used to live on the Go client, which made the
+    integration layer import the domain engine. The client now stays a raw
+    adapter and is injected here instead.
+    """
+    snapshot = await client.engine_snapshot(token)
+    return compute_financial_plan(snapshot)
+
+
+async def cash_flow_forecast_live(client: Any, token: str) -> dict[str, Any]:
+    """Forecast computed from the ledger-backed financial snapshot."""
+    snapshot = await client.engine_snapshot(token)
+    return compute_cash_flow_forecast(snapshot)
+
+
+async def financial_health_live(
+    client: Any, token: str, period: str = "last_90_days"
+) -> dict[str, Any]:
+    """Health score computed from the windowed ledger-backed snapshot."""
+    from_date, to_date = period_to_window(period)
+    snapshot = await client.engine_snapshot(token, from_date, to_date)
+    return compute_financial_health(snapshot, period=period)
 
 
 def _period_bounds(snapshot: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -1695,7 +1705,9 @@ class FinancialIntelligence:
                         balance, monthly_required, interest_rate / 12
                     )
                 else:
-                    months = int(balance / monthly_required) if monthly_required > 0 else 0
+                    months = (
+                        int(balance / monthly_required) if monthly_required > 0 else 0
+                    )
 
                 total_months += months
                 remaining_payment -= monthly_required
@@ -1705,7 +1717,7 @@ class FinancialIntelligence:
                         "debt_id": debt.get("id", "unknown"),
                         "name": debt.get("name", "Unknown Debt"),
                         "balance": balance,
-                       "interest_rate": interest_rate,
+                        "interest_rate": interest_rate,
                         "minimum_payment": min_payment,
                         "monthly_payment": monthly_required,
                         "payoff_time_months": months,
@@ -1734,11 +1746,16 @@ class FinancialIntelligence:
                     for schedule in payoff_schedule
                 ),
                 "savings_percentage": (
-                    (total_interest_saved / sum(d.get("balance", 0) for d in sorted_debts))
-                    * 100
-                )
-                if sum(d.get("balance", 0) for d in sorted_debts) > 0
-                else 0,
+                    (
+                        (
+                            total_interest_saved
+                            / sum(d.get("balance", 0) for d in sorted_debts)
+                        )
+                        * 100
+                    )
+                    if sum(d.get("balance", 0) for d in sorted_debts) > 0
+                    else 0
+                ),
                 "recommendations": self._generate_debt_avalanche_recommendations(
                     payoff_schedule, monthly_payment
                 ),
@@ -1749,9 +1766,7 @@ class FinancialIntelligence:
                 "Error analyzing debt avalanche strategy",
                 exc_info=True,
             )
-            raise FinancialError(
-                f"Failed to analyze debt avalanche strategy: {str(e)}"
-            )
+            raise FinancialError(f"Failed to analyze debt avalanche strategy: {str(e)}")
 
     def _calculate_months_to_payoff(
         self, balance: float, monthly_payment: float, monthly_rate: float
@@ -1765,14 +1780,8 @@ class FinancialIntelligence:
         if monthly_payment <= balance * monthly_rate:
             return float("inf")
 
-        numerator = (
-            balance
-            * (1 + monthly_rate) ** 10000
-            * (1 + monthly_rate - 1)
-        )
-        denominator = (
-            (1 + monthly_rate) ** 10000 - 1
-        ) * monthly_payment
+        numerator = balance * (1 + monthly_rate) ** 10000 * (1 + monthly_rate - 1)
+        denominator = ((1 + monthly_rate) ** 10000 - 1) * monthly_payment
 
         if denominator <= 0:
             return float("inf")
@@ -1792,9 +1801,7 @@ class FinancialIntelligence:
         total_interest = total_paid - principal
         return max(0, total_interest)
 
-    def _calculate_total_interest_saved(
-        self, debts: list[dict[str, Any]]
-    ) -> float:
+    def _calculate_total_interest_saved(self, debts: list[dict[str, Any]]) -> float:
         """Calculate total interest saved by using debt avalanche vs minimum payments."""
         try:
             # Calculate total interest with minimum payments only
@@ -1839,9 +1846,7 @@ class FinancialIntelligence:
             )
             return 0.0
 
-    def _calculate_min_payment_interest(
-        self, debt: dict[str, Any]
-    ) -> float:
+    def _calculate_min_payment_interest(self, debt: dict[str, Any]) -> float:
         """Calculate total interest paid if only minimum payments are made."""
         try:
             balance = debt.get("balance", 0)
@@ -1889,9 +1894,11 @@ class FinancialIntelligence:
                     d["payoff_time_months"] for d in payoff_schedule
                 )
                 total_min_payment_time = sum(
-                    d["balance"] / d["minimum_payment"]
-                    if d["minimum_payment"] > 0
-                    else 0
+                    (
+                        d["balance"] / d["minimum_payment"]
+                        if d["minimum_payment"] > 0
+                        else 0
+                    )
                     for d in payoff_schedule
                 )
 
@@ -2008,7 +2015,9 @@ class FinancialIntelligence:
             savings_target = monthly_income * 0.10
 
             # Adjust based on debt situation
-            total_debt = sum(d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0)
+            total_debt = sum(
+                d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0
+            )
 
             if total_debt > 10000:
                 # Higher savings for high debt
@@ -2026,9 +2035,7 @@ class FinancialIntelligence:
             )
             return monthly_income * 0.10
 
-    async def _calculate_fixed_monthly_obligations(
-        self, user_id: str
-    ) -> float:
+    async def _calculate_fixed_monthly_obligations(self, user_id: str) -> float:
         """Calculate fixed monthly obligations (rent, utilities, insurance, etc.)."""
         try:
             # Get user profile for fixed obligations
@@ -2066,7 +2073,9 @@ class FinancialIntelligence:
     ) -> dict[str, Any]:
         """Calculate financial goals based on debt situation."""
         try:
-            total_debt = sum(d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0)
+            total_debt = sum(
+                d.get("balance", 0) for d in debt_data if d.get("balance", 0) > 0
+            )
 
             goals = []
 
@@ -2084,7 +2093,9 @@ class FinancialIntelligence:
                     {
                         "type": "debt_reduction",
                         "target": f"Reduce debt to ${total_debt/2:,.0f}",
-                        "timeline_months": int((total_debt / 2) / (monthly_income * 0.10)),
+                        "timeline_months": int(
+                            (total_debt / 2) / (monthly_income * 0.10)
+                        ),
                         "priority": "medium",
                     }
                 )

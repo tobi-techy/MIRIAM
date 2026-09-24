@@ -114,7 +114,9 @@ def _next_step(
     if crushing_debt:
         return "clear_high_cost_debt"
     if alloc.future > 0:
-        return "automate_the_investment" if alloc.buffer_gap == 0 else "build_safety_first"
+        if alloc.buffer_gap == 0:
+            return "automate_the_investment"
+        return "build_safety_first"
     if alloc.safety > 0:
         return "build_emergency_buffer"
     if diagnosis is not None and diagnosis.top_action():
@@ -157,7 +159,7 @@ def calculate_allocation(
     buffer = profile.money("emergency_fund")
     if buffer is None:
         buffer = profile.money("savings") or 0.0
-    volatile = profile.volatile_income()
+    volatile = profile.volatile_income
     horizon = horizon_months(profile)
 
     alloc = Allocation(income=_round(income), currency=currency, frequency=frequency)

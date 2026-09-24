@@ -35,6 +35,15 @@ READ_TOOLS = {
     "get_investor",
     "get_investor_activity",
     "list_investors",
+    # new Glider transaction detail reads
+    "get_strategy_performance",
+    "get_enrollment_performance",
+    "get_sector_exposure",
+    "get_allocation_breakdown",
+    "get_strategy_schedule",
+    "get_strategy_preferences",
+    "get_strategy_fees",
+    "get_provider_versions",
 }
 
 
@@ -60,7 +69,6 @@ def test_removed_and_invented_tools_are_gone():
     reg = build_tool_registry()
     for name in (
         "execute_investment",
-        "get_strategy_performance",
         "preview_strategy",
         "get_order",
         "get_transaction",
@@ -72,8 +80,8 @@ def test_removed_and_invented_tools_are_gone():
 
 
 def test_agent_has_no_withdrawal_tool():
-    from miriam_agent.tools import vault_definitions as _vault  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as _vault  # noqa: F401
 
     reg = build_tool_registry()
     assert not any(

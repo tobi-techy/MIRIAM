@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     # of accepting any token signed with the shared secret.
     JWT_AUDIENCE: str = Field(default="")
     JWT_ISSUER: str = Field(default="")
+    # Shared service credential for rail -> Python calls (e.g. the inflow
+    # webhook). A user JWT must never be enough to mint ledger inflows, so
+    # POST /money/inflow requires this key via the X-Rail-Service-Key header.
+    # Must be set in production (guarded below); empty in development keeps
+    # local runs working with the dev fallback.
+    RAIL_SERVICE_KEY: str = Field(default="")
+    # Demo escape hatch: let chat text like "I just got paid 100" split the
+    # ledger as if the rail had reported an inflow. Off by default; the
+    # production guard refuses to boot with it on. Only the rail turns text
+    # into money in any real deployment.
+    ALLOW_CHAT_INFLOW_SYNTH: bool = Field(default=False)
 
     # CORS
     ALLOWED_ORIGINS: str = Field(default="*")
@@ -77,6 +88,15 @@ class Settings(BaseSettings):
     # a hard failure the user saw as "couldn't do that".
     GO_REQUEST_TIMEOUT: float = Field(default=15.0)
     GO_MAX_RETRIES: int = Field(default=2)
+    # Live Face ID confirmation cards (Go card <-> Miriam challenge join).
+    # Off until the imessage e2e passes; when on, the orchestrator mints a Go
+    # card best-effort after staging a challenge and falls back to the text
+    # flow whenever minting fails. The flag decides routing, never authority:
+    # settle always runs the existing _handle_confirm path.
+    GO_CONFIRM_CARDS_ENABLED: bool = Field(default=False)
+    # Comma-separated channels allowed to mint cards. iMessage owns the Face
+    # ID extension; web/voice/terminal never mint.
+    GO_CONFIRM_CARD_CHANNELS: str = Field(default="imessage")
 
     # Supermemory (long-term memory of the agent)
     # Leave empty to disable semantic memory (the agent degrades gracefully).
@@ -204,6 +224,10 @@ class Settings(BaseSettings):
     # never moves money, and enrollment stays user-signed and two-stage.
     MONEY_DEFAULT_COUNTRY: str = Field(default="NG")
     MONEY_DEFAULT_CURRENCY: str = Field(default="NGN")
+    # The timezone whose midnight bounds the daily transfer cap. The old
+    # boundary was the server's local zone, so cap resets moved with whatever
+    # machine ran the process; it is now pinned to the product's home market.
+    MONEY_DAY_TIMEZONE: str = Field(default="Africa/Lagos")
     # Debt triage bands (MONEY-RULES.md §3). APR >= fire is attacked; APR in the
     # judgment band is compared against the local risk-free rate from
     # money/reference.py; below that, debt is kept.
@@ -226,6 +250,17 @@ class Settings(BaseSettings):
         "case_sensitive": True,
     }
 
+    @property
+    def is_production(self) -> bool:
+        """True for any production spelling.
+
+        The check used to be an exact ``== "production"``, so
+        ``ENVIRONMENT=Production`` or ``prod`` silently bypassed every
+        production guard below (weak secrets, wildcard CORS, default DB
+        password) while operators believed the guard was on.
+        """
+        return self.ENVIRONMENT.strip().lower() in {"production", "prod"}
+
     @model_validator(mode="after")
     def _guard_production_secrets(self):
         """Refuse to run in production with placeholder/weak signing secrets.
@@ -236,7 +271,7 @@ class Settings(BaseSettings):
         signing secret and the app secret key must be strong, real values.
         Development is untouched so local runs and tests keep working.
         """
-        if self.ENVIRONMENT != "production":
+        if not self.is_production:
             return self
 
         weak = {"", "change-me-in-production"}
@@ -258,10 +293,7 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if (
-            _is_dev_placeholder(self.ENCRYPTION_KEY)
-            or len(self.ENCRYPTION_KEY) < 32
-        ):
+        if _is_dev_placeholder(self.ENCRYPTION_KEY) or len(self.ENCRYPTION_KEY) < 32:
             problems.append(
                 "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
                 "production; deriving it from SECRET_KEY via single SHA-256 is not "
@@ -285,6 +317,19 @@ class Settings(BaseSettings):
             problems.append(
                 "DATABASE_URL must not contain the default password 'miriam_password' "
                 "in production; inject via secrets"
+            )
+        if _is_dev_placeholder(self.RAIL_SERVICE_KEY) or (
+            len(self.RAIL_SERVICE_KEY) < 32
+        ):
+            problems.append(
+                "RAIL_SERVICE_KEY must be a strong value (>= 32 chars) in "
+                "production; it is the only credential allowed to mint ledger "
+                "inflows"
+            )
+        if self.ALLOW_CHAT_INFLOW_SYNTH:
+            problems.append(
+                "ALLOW_CHAT_INFLOW_SYNTH must be false in production: chat text "
+                "must never mint ledger inflows"
             )
         if problems:
             raise ValueError("; ".join(problems))

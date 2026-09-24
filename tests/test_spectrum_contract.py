@@ -15,6 +15,7 @@ from layer_fakes import POLICY, FakeProvider, jev, judge_of, ledger_with
 
 from miriam_agent.api import dependencies, spectrum
 from miriam_agent.api.main import app
+from miriam_agent.config.settings import get_settings
 from miriam_agent.database.models import User
 from miriam_agent.hands.ledger import InMemoryLedgerStore
 from miriam_agent.hands.state import ProposedAction
@@ -148,6 +149,10 @@ def _base(text: str = "", **extra: Any) -> dict[str, Any]:
 
 
 def test_inflow_splits_and_proves_70_30(monkeypatch) -> None:
+    # The pasted-alert demo path is off by default; this contract pins what it
+    # renders when a deployment explicitly turns it on.
+    monkeypatch.setenv("ALLOW_CHAT_INFLOW_SYNTH", "true")
+    get_settings.cache_clear()
     _wire(monkeypatch, go=FakeGo())
     client = TestClient(app, raise_server_exceptions=False)
     out = _post(client, _base("i just got paid 100"))

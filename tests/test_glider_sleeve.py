@@ -21,7 +21,8 @@ from miriam_agent.hands.invest import (
 )
 from miriam_agent.hands.ledger import InMemoryLedgerStore, Ledger, money
 from miriam_agent.hands.limits import Policy
-from miriam_agent.orchestrator import Orchestrator, _action_type
+from miriam_agent.hands.settlement import _action_type
+from miriam_agent.orchestrator import Orchestrator
 from miriam_agent.tools.glider_sleeve import (
     deposit_address_from_caip,
     parse_caip10,

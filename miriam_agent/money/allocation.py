@@ -72,7 +72,7 @@ def score_capacity(intake: IntakeProfile) -> Capacity:
     factors: list[str] = []
     score = 0
 
-    horizon = intake.horizon_months()
+    horizon = intake.horizon_months
     if horizon is None:
         factors.append("no goal horizon recorded")
     elif horizon >= _LONG_HORIZON:
@@ -99,7 +99,7 @@ def score_capacity(intake: IntakeProfile) -> Capacity:
         score += 1
         factors.append("no dependents recorded")
 
-    volatile = intake.volatile_income()
+    volatile = intake.volatile_income
     if volatile:
         factors.append("variable income")
     else:
@@ -137,7 +137,7 @@ def build_book(
     """
     currency = stack.currency
     capacity = score_capacity(intake)
-    horizon = intake.horizon_months()
+    horizon = intake.horizon_months
     overrides: list[str] = []
 
     # -- gated by the safety stack --------------------------------------
@@ -201,7 +201,7 @@ def build_book(
             "drawdown arriving at the wrong moment."
         )
     elif horizon < _LONG_HORIZON:
-        if intake.volatile_income():
+        if intake.volatile_income:
             growth = Decimal("60")
             rule = "R-BACH-2:mid-horizon-volatile"
             reason = (

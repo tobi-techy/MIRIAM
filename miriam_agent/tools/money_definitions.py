@@ -47,9 +47,10 @@ async def _connected_balances(ctx: dict[str, Any]) -> dict[str, Any] | None:
     if not token:
         return None
     try:
+        from miriam_agent.financial.intelligence import financial_health_live
         from miriam_agent.integrations.go_client import get_go_client
 
-        health = await get_go_client().get_financial_health(token)
+        health = await financial_health_live(get_go_client(), token)
     except (IntegrationError, Exception) as e:  # noqa: BLE001
         logger.info("money plan: connected balances unavailable: %s", e)
         return None

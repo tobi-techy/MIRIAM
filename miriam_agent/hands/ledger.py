@@ -39,6 +39,14 @@ CENTS = Decimal("0.01")
 # How far back the velocity window looks.
 WINDOW_DAYS = 30
 
+# Journal bounds. Every save rewrites the whole ledger JSON through CAS, so an
+# untrimmed journal made every mutation linearly slower and the blob bigger
+# forever. Receipt bodies and movements older than these bounds are dropped;
+# the ``processed`` idempotency keys are never trimmed (see ``receipt_for``),
+# and the durable audit rows live in the audit store.
+RECEIPT_RETENTION = 500
+MOVEMENT_RETENTION = 2000
+
 
 class LedgerError(Exception):
     """A ledger operation that the ledger itself refused."""
@@ -184,6 +192,14 @@ class Challenge(BaseModel):
     # account and source here, so the settle step can reject anything that
     # does not match what the card showed.
     meta: dict[str, str] = Field(default_factory=dict)
+    # Live Face ID card join (iMessage). Empty unless the orchestrator minted
+    # a Go confirmation card for this challenge: card_action_id is the Go
+    # action id, card_state its last known state, channel the surface that
+    # asked for the card. All optional with defaults so Redis-stored ledgers
+    # written before this field existed load unchanged.
+    card_action_id: str = ""
+    card_state: str = ""
+    channel: str = ""
 
     def is_open(self, at: datetime) -> bool:
         return self.status == "pending" and at < self.expires_at
@@ -227,6 +243,28 @@ class PendingInvest(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class PendingOrder(BaseModel):
+    """A staged Glider order between confirm tap and server-signed settle.
+
+    Orders and all-allocations are Rail-signed server-side (no wallet
+    signature). The binding records what was ordered so a retap cannot
+    double-execute and so the receipt can be replayed idempotently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    confirm_id: str
+    strategy_id: str
+    glider_strategy_id: str = ""
+    side: str = ""  # "buy" or "sell"
+    asset_id: str = ""
+    symbol: str = ""
+    amount_usd: str = "0"
+    status: Literal["pending", "completed", "failed"] = "pending"
+    created_at: datetime = Field(default_factory=_now)
+
+
 class Ledger(BaseModel):
     """One user's balances, policy state and history."""
 
@@ -247,6 +285,9 @@ class Ledger(BaseModel):
     # flow_id -> PendingInvest. A tap that approved Glider enrollment waits
     # here for the wallet signature; settle refuses anything unbound.
     pending_invest: dict[str, PendingInvest] = Field(default_factory=dict)
+    # order_id -> PendingOrder. A tap that approved a buy/sell or all-allocation
+    # waits here for the server-signed settle; a retap replays the receipt.
+    pending_order: dict[str, PendingOrder] = Field(default_factory=dict)
     # idempotency key -> receipt id. The presence of a key is the whole
     # idempotency mechanism: a repeated inflow or transfer finds its key here
     # and replays the receipt instead of moving money again.
@@ -278,28 +319,53 @@ class Ledger(BaseModel):
 
     def record_movement(self, movement: Movement) -> None:
         self.movements.append(movement)
+        del self.movements[:-MOVEMENT_RETENTION]
 
     def remember_receipt(self, receipt: Receipt) -> None:
         """Keep the receipt, and remember its idempotency key if it has one.
 
-        The journal is deliberately not trimmed. An idempotency key only guards
-        anything while the receipt proving it was used is still here, so dropping
-        old receipts would quietly turn a replay into a second movement. The
-        durable audit rows live in the audit store; this is the ledger's own
-        record of what it did, and STATE carries only the most recent few.
+        Receipt bodies are trimmed to ``RECEIPT_RETENTION`` (they exist for
+        narration, joins to the turn, and recent reconciliation), but the
+        ``processed`` keys are never dropped: a key is proof the movement
+        happened, it is a few dozen bytes, and ``receipt_for`` relies on it to
+        keep a replay of an archived receipt on the already-done path instead
+        of moving money a second time. The durable, untrimmed audit rows live
+        in the audit store; STATE carries only the most recent few receipts.
         """
         self.receipts.append(receipt)
+        del self.receipts[:-RECEIPT_RETENTION]
         if receipt.idempotency_key:
             self.processed.setdefault(receipt.idempotency_key, receipt.id)
 
     def receipt_for(self, idempotency_key: str) -> Receipt | None:
+        """The receipt a prior movement left for this key, if any.
+
+        A key in ``processed`` proves the movement happened even after its
+        receipt body has been trimmed. That case returns an archived stub
+        rather than None — None would send the caller down the execute path
+        and turn a replay into a second movement. The stub claims nothing
+        about what the original did beyond the id; its status is ``noop``
+        because the correct action now is exactly that: nothing.
+        """
         receipt_id = self.processed.get(idempotency_key)
         if receipt_id is None:
             return None
         for receipt in self.receipts:
             if receipt.id == receipt_id:
                 return receipt
-        return None
+        return Receipt(
+            id=receipt_id,
+            at=_now(),
+            status="noop",
+            action="archived",
+            currency=self.currency,
+            idempotency_key=idempotency_key,
+            detail=(
+                f"receipt {receipt_id} for key {idempotency_key!r} was already "
+                "processed; its body has been trimmed from the journal, so "
+                "nothing is re-executed"
+            ),
+        )
 
     def window(self, *, days: int = WINDOW_DAYS, at: datetime | None = None) -> Last30d:
         """Inflow, spend and leak-by-category over the velocity window."""
@@ -528,6 +594,7 @@ __all__ = [
     "Movement",
     "PendingInflow",
     "PendingInvest",
+    "PendingOrder",
     "RedisLedgerStore",
     "RentFirst",
     "Track",

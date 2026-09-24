@@ -72,6 +72,9 @@ _GENERIC_PRAISE = (
     "awesome",
     "i feel you",
     "no worries at all",
+    # pidgin/Naija-register equivalents of the same empty praise
+    "nice one",
+    "well done",
 )
 
 # spec §17: generic one-size-fits-all advice frames. Specific advice earned

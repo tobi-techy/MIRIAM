@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(curl -sS -X POST https://ping.buzzkit.dev/pair/claim -H 'content-type: application/json' -d '{\"code\":\"123181\",\"agent\":\"command-code\"}')",
+      "Shell(command -v jq python3 curl 2>/dev/null; echo \"---\"; jq --version 2>/dev/null; python3 --version 2>/dev/null)",
+      "Shell(chmod +x .commandcode/buzz/buzz.sh && echo \"executable: $(stat -f '%Lp' .commandcode/buzz/buzz.sh)\" && echo \"--- cmd binary:\" && command -v cmd command-code 2>/dev/null; echo \"--- json valid:\"; jq -e . .commandcode/settings.json >/dev/null && echo ok; jq -e . .commandcode/buzz/config.json >/dev/null && echo ok)",
+      "Shell(jq -e . .commandcode/settings.json >/dev/null && echo \"settings.json valid\"; cmd mcp add --transport http --scope local buzz \"$(cat .commandcode/buzz/endpoint)/mcp\" 2>&1 | tail -3)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$COMMANDCODE_PROJECT_DIR\"/.commandcode/buzz/buzz.sh session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$COMMANDCODE_PROJECT_DIR\"/.commandcode/buzz/buzz.sh stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

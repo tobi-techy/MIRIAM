@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from miriam_agent.core.timeutil import utcnow_naive
 from miriam_agent.database.models import AuditLog, Base
 from miriam_agent.observability.correlation import current_trace_id
 
@@ -15,11 +16,15 @@ logger = logging.getLogger(__name__)
 class AuditSystem:
     """Audit and compliance system for Miriam Financial Agent."""
 
+    # 7 years for financial compliance. This is also clean_old_logs' default:
+    # the constant used to be declared and never read, so the only delete
+    # path defaulted to silently discarding logs after a year.
+    RETENTION_DAYS = 2555
+
     def __init__(self, database_url: str):
         self.database_url = database_url
         self.engine = None
         self.async_session = None
-        self.retention_days = 2555  # 7 years for financial compliance
 
     async def initialize(self):
         """Initialize the audit database connection."""
@@ -74,7 +79,7 @@ class AuditSystem:
                     resource=resource,
                     resource_id=resource_id,
                     details=self._with_trace(details),
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow_naive(),
                 )
 
                 # Add risk level if provided
@@ -145,10 +150,10 @@ class AuditSystem:
                             "to_account": to_account,
                             "requires_approval": requires_approval,
                             "approval_id": approval_id,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": utcnow_naive().isoformat(),
                         }
                     ),
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow_naive(),
                 )
 
                 session.add(audit_log)
@@ -248,12 +253,12 @@ class AuditSystem:
             )
             raise
 
-    async def clean_old_logs(self, days_old: int = 365) -> int:
-        """Clean up old audit logs for compliance."""
+    async def clean_old_logs(self, days_old: int = RETENTION_DAYS) -> int:
+        """Clean up old audit logs once they pass the retention window."""
         try:
             async with self.async_session() as session:
                 # Calculate cutoff date
-                cutoff_date = datetime.utcnow() - timedelta(days=days_old)
+                cutoff_date = utcnow_naive() - timedelta(days=days_old)
 
                 # Delete old logs
                 query = select(AuditLog).where(AuditLog.created_at < cutoff_date)
@@ -301,7 +306,7 @@ class AuditSystem:
 
                 # Format export data
                 export_data = {
-                    "export_date": datetime.utcnow().isoformat(),
+                    "export_date": utcnow_naive().isoformat(),
                     "date_range": {
                         "start": start_date.isoformat(),
                         "end": end_date.isoformat(),

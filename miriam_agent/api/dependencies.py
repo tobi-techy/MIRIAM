@@ -1,9 +1,10 @@
 """FastAPI dependency injection for Miriam Financial Agent."""
 
+import secrets
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from miriam_agent.auth.jwt import decode_token
@@ -87,13 +88,50 @@ async def get_bearer_token(
     return credentials.credentials
 
 
-async def get_memory_store() -> AsyncGenerator[MemoryStore, None]:
-    """Get or create the memory store singleton."""
+async def require_rail_service_key(
+    x_rail_service_key: str | None = Header(default=None, alias="X-Rail-Service-Key"),
+) -> None:
+    """Rail-only credential for endpoints that write ledger facts.
+
+    ``POST /money/inflow`` mints money in the ledger. A user JWT names an
+    account but must never be authority enough to credit it, so the endpoint
+    additionally requires the shared rail service key, constant-time
+    compared. Refuses closed when the key is not configured: the production
+    settings guard forces it to be set, and any other environment that has
+    not configured it has no working inflow webhook rather than an
+    unauthenticated one.
+    """
+    expected = get_settings().RAIL_SERVICE_KEY
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="inflow endpoint not configured: RAIL_SERVICE_KEY is unset",
+        )
+    if not x_rail_service_key or not secrets.compare_digest(
+        x_rail_service_key, expected
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="a valid X-Rail-Service-Key header is required here",
+        )
+
+
+async def get_or_init_memory_store() -> MemoryStore:
+    """Return the shared memory store, initializing it on first use.
+
+    Public accessor so readiness probes reuse the same store as request
+    handlers instead of building a fresh one per scrape.
+    """
     global _memory_store
     if _memory_store is None:
         _memory_store = MemoryStore(_settings.DATABASE_URL)
         await _memory_store.initialize()
-    yield _memory_store
+    return _memory_store
+
+
+async def get_memory_store() -> AsyncGenerator[MemoryStore, None]:
+    """Get or create the memory store singleton."""
+    yield await get_or_init_memory_store()
 
 
 async def get_financial_intelligence(

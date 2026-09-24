@@ -45,7 +45,9 @@ _ACCT_NAME_RE = re.compile(r"(?i)account name\s*[:\-]\s*([A-Za-z ,.'\-]{3,60})")
 _ACCT_NUM_RE = re.compile(r"(?i)account (?:number|no\.?)\s*[:\-]?\s*([\d\s\-]{8,20})")
 _HEADER_DATE = re.compile(r"(?i)\b(date|transaction date|value date|tran date)\b")
 _HEADER_DESC = re.compile(r"(?i)\b(description|narration|details|particulars)\b")
-_HEADER_MONEY = re.compile(r"(?i)\b(debit|withdrawal|credit|deposit|lodgement|amount)\b")
+_HEADER_MONEY = re.compile(
+    r"(?i)\b(debit|withdrawal|credit|deposit|lodgement|amount)\b"
+)
 _MONEY_TOKEN_RE = re.compile(r"\(?[\d,]+\.\d{2}\)?|\(?[\d,]{4,}\)?")
 
 # Institutions whose statements are NGN by convention. Used only to fill a
@@ -131,7 +133,7 @@ def _column_roles(
 
 
 def _find_header(
-    lines: list[tuple[int, str]]
+    lines: list[tuple[int, str]],
 ) -> tuple[int, dict[str, tuple[int, int]], dict[str, int]] | None:
     for idx, (_, text) in enumerate(lines):
         if (
@@ -216,7 +218,11 @@ def _direction_from(
         return RawMoney(raw=credit.raw, normalized=abs(credit.normalized)), "credit", ""
     if single is not None:
         if single.normalized < 0:
-            return RawMoney(raw=single.raw, normalized=abs(single.normalized)), "debit", ""
+            return (
+                RawMoney(raw=single.raw, normalized=abs(single.normalized)),
+                "debit",
+                "",
+            )
         return single, "credit", ""
     return None, None, ""
 
@@ -236,7 +242,11 @@ def _heuristic_rows(
         if _OPENING_RE.search(low) or _CLOSING_RE.search(low):
             continue
         row_date = _row_date(text, text)
-        money = [m for tok in _MONEY_TOKEN_RE.findall(text) if (m := parse_money(tok)) is not None]
+        money = [
+            m
+            for tok in _MONEY_TOKEN_RE.findall(text)
+            if (m := parse_money(tok)) is not None
+        ]
         if row_date is None:
             if pending is not None and text.strip() and not money:
                 pending.description += " " + text.strip()
@@ -285,7 +295,11 @@ def _mapped_rows(
 
     def flush() -> None:
         nonlocal pending
-        if pending is not None and pending.amount is not None and pending.direction is not None:
+        if (
+            pending is not None
+            and pending.amount is not None
+            and pending.direction is not None
+        ):
             txns.append(pending)
         elif pending is not None:
             logger.debug("dropping amount-less row: %r", pending.raw_description[:80])
@@ -293,7 +307,11 @@ def _mapped_rows(
 
     for line_idx, (page, text) in enumerate(lines):
         low = text.lower()
-        if _OPENING_RE.search(low) or _CLOSING_RE.search(low) or low.startswith("page "):
+        if (
+            _OPENING_RE.search(low)
+            or _CLOSING_RE.search(low)
+            or low.startswith("page ")
+        ):
             continue
         row_date = _row_date(_cell(text, (date_start, date_end)), text)
         assigned = _assign_columns(text, money_cols) if money_cols else {}
@@ -321,9 +339,7 @@ def _mapped_rows(
             # PURCHASE FROM ONLINE STORE" kept, "NIGERIA REF 993201" dropped).
             continuation = _continuation_text(text, assigned)
             if continuation:
-                pending.description = (
-                    f"{pending.description} {continuation}".strip()
-                )
+                pending.description = f"{pending.description} {continuation}".strip()
                 pending.raw_description += "\n" + text
             if pending.amount is None and (debit or credit or single):
                 amount, direction, _ = _direction_from(debit, credit, single)
@@ -351,9 +367,7 @@ def _mapped_rows(
     return txns
 
 
-def _continuation_text(
-    text: str, assigned: dict[str, tuple[int, int, str]]
-) -> str:
+def _continuation_text(text: str, assigned: dict[str, tuple[int, int, str]]) -> str:
     """The descriptive part of a wrapped row: everything but its money cells."""
     spans = sorted((start, end) for start, end, _ in assigned.values())
     if not spans:
@@ -434,6 +448,8 @@ def extract_statement(text: ExtractedText) -> StatementExtraction:
         out.total_credits = credits
         out.total_debits = debits
     return out
+
+
 def _text_lines(text: ExtractedText) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     for page in text.pages:
@@ -448,5 +464,3 @@ def _text_lines(text: ExtractedText) -> list[tuple[int, str]]:
     if not out and text.full_text:
         out = [(1, ln.strip()) for ln in text.full_text.splitlines() if ln.strip()]
     return out
-
-

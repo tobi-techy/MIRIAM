@@ -39,16 +39,17 @@ def _verify_options() -> dict[str, Any]:
     return options
 
 
-def decode_token(token: str, secret: str | None = None) -> dict[str, Any]:
+def decode_token(token: str) -> dict[str, Any]:
     """Validate and decode a JWT signed by the Go backend.
 
     The Go backend signs JWTs with the same JWT_SECRET. The algorithm is
     pinned to configuration (never the token's own ``alg`` header, which is
     what blocks ``alg: none`` / algorithm confusion), and ``exp``/``sub`` are
-    required.
+    required. There is deliberately no secret override here: the verify path
+    must always use the configured secret.
     """
     settings = get_settings()
-    jwt_secret = secret or settings.JWT_SECRET
+    jwt_secret = settings.JWT_SECRET
     kwargs: dict[str, Any] = {}
     if settings.JWT_AUDIENCE:
         kwargs["audience"] = settings.JWT_AUDIENCE
@@ -78,15 +79,11 @@ def create_token(
     user_id: str,
     claims: dict[str, Any] | None = None,
     expires_minutes: int | None = None,
-    secret: str | None = None,
 ) -> str:
     """Create a signed JWT for the given user."""
     settings = get_settings()
-    jwt_secret = secret or settings.JWT_SECRET
-    if (
-        jwt_secret in ("", "change-me-in-production")
-        and settings.ENVIRONMENT == "production"
-    ):
+    jwt_secret = settings.JWT_SECRET
+    if jwt_secret in ("", "change-me-in-production") and settings.is_production:
         raise AuthenticationError(
             "Refusing to mint JWTs with the default JWT_SECRET in production"
         )

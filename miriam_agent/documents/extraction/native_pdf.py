@@ -46,7 +46,6 @@ class NativeTextQuality:
 def extract_native_text(data: bytes, *, max_pages: int = MAX_PAGES) -> ExtractedText:
     """Extract embedded text page-by-page. Raises on corrupt/encrypted PDFs."""
     from pypdf import PdfReader
-    from pypdf.errors import PdfReadError
 
     try:
         reader = PdfReader(io.BytesIO(data))
@@ -73,7 +72,9 @@ def extract_native_text(data: bytes, *, max_pages: int = MAX_PAGES) -> Extracted
         if total_chars >= MAX_CHARS:
             break
     full = "\n".join(p.text for p in pages).strip()
-    return ExtractedText(full_text=full, pages=pages, method="native_pdf", engine="pypdf")
+    return ExtractedText(
+        full_text=full, pages=pages, method="native_pdf", engine="pypdf"
+    )
 
 
 def assess_quality(extracted: ExtractedText, *, min_chars: int) -> NativeTextQuality:
@@ -85,9 +86,13 @@ def assess_quality(extracted: ExtractedText, *, min_chars: int) -> NativeTextQua
     lower = extracted.full_text.lower()
     term_hits = sum(1 for term in STATEMENT_TERMS if term in lower)
     if chars < min_chars:
-        return NativeTextQuality(False, chars, lines, density, term_hits, "too_few_chars")
+        return NativeTextQuality(
+            False, chars, lines, density, term_hits, "too_few_chars"
+        )
     if lines < 5:
-        return NativeTextQuality(False, chars, lines, density, term_hits, "too_few_lines")
+        return NativeTextQuality(
+            False, chars, lines, density, term_hits, "too_few_lines"
+        )
     if density < 50:
         return NativeTextQuality(False, chars, lines, density, term_hits, "low_density")
     return NativeTextQuality(True, chars, lines, density, term_hits, "usable")

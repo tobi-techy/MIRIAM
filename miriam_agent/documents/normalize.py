@@ -15,7 +15,13 @@ from decimal import Decimal, InvalidOperation
 
 CURRENCIES = ("NGN", "USD", "GBP", "EUR")
 CURRENCY_SYMBOLS = {"₦": "NGN", "$": "USD", "£": "GBP", "€": "EUR"}
-CURRENCY_CODES = {"ngn": "NGN", "naira": "NGN", "usd": "USD", "gbp": "GBP", "eur": "EUR"}
+CURRENCY_CODES = {
+    "ngn": "NGN",
+    "naira": "NGN",
+    "usd": "USD",
+    "gbp": "GBP",
+    "eur": "EUR",
+}
 
 _AMOUNT_RE = re.compile(r"[-+]?\(?\d[\d,]*\.?\d*\)?")
 _PAREN_NEGATIVE_RE = re.compile(r"^\(\s*[\d,.\s₦$£€]*\s*\)$")

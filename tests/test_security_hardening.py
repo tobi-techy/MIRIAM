@@ -68,6 +68,7 @@ def test_metrics_rejects_fake_bearer_in_production(monkeypatch):
         "DATABASE_URL",
         "postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
+    monkeypatch.setenv("RAIL_SERVICE_KEY", "r" * 40)
     from miriam_agent.config.settings import get_settings
 
     get_settings.cache_clear()
@@ -77,21 +78,34 @@ def test_metrics_rejects_fake_bearer_in_production(monkeypatch):
         client = TestClient(app, raise_server_exceptions=False)
         assert client.get("/metrics").status_code == 404
         assert (
-            client.get("/metrics", headers={"Authorization": "Bearer garbage"}).status_code
+            client.get(
+                "/metrics", headers={"Authorization": "Bearer garbage"}
+            ).status_code
             == 404
         )
         from miriam_agent.auth.jwt import create_token
 
-        token = create_token("u1")
-        resp = client.get("/metrics", headers={"Authorization": f"Bearer {token}"})
+        # A plain user token is no longer enough: metrics are infrastructure
+        # facts, so the token must carry an admin/metrics role.
+        user_token = create_token("u1")
+        resp = client.get("/metrics", headers={"Authorization": f"Bearer {user_token}"})
+        assert resp.status_code == 404
+        metrics_token = create_token("u1", claims={"role": "metrics"})
+        resp = client.get(
+            "/metrics", headers={"Authorization": f"Bearer {metrics_token}"}
+        )
         assert resp.status_code == 200
+        # The rail service key is the scraper-friendly alternative.
+        resp = client.get("/metrics", headers={"X-Rail-Service-Key": "r" * 40})
+        assert resp.status_code == 200
+        resp = client.get("/metrics", headers={"X-Rail-Service-Key": "wrong"})
+        assert resp.status_code == 404
     finally:
         get_settings.cache_clear()
 
 
 def test_rate_limit_falls_back_locally_when_redis_down(monkeypatch):
     import asyncio
-    import time
 
     monkeypatch.setenv("ENCRYPTION_KEY", "e" * 40)
     from miriam_agent.safety.validator import InputValidator
@@ -103,7 +117,10 @@ def test_rate_limit_falls_back_locally_when_redis_down(monkeypatch):
         raise ConnectionError("redis down")
 
     v._get_redis = _boom  # type: ignore[method-assign]
-    allowed = [asyncio.run(v.validate_rate_limit("u-fallback", "transaction")) for _ in range(11)]
+    allowed = [
+        asyncio.run(v.validate_rate_limit("u-fallback", "transaction"))
+        for _ in range(11)
+    ]
     assert allowed[:10] == [True] * 10
     assert allowed[10] is False
 

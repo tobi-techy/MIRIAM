@@ -199,7 +199,20 @@ def apply_rules(
         return outcome
 
     if intent != "order" and proposed.type != "transfer":
-        outcome.action_choice = _stricter_action(outcome.action_choice, "none")
+        # NGN <-> crypto funding rides the same "order" intent as sleeve
+        # orders: a buy/sell with an amount is an instruction, not advice.
+        if proposed.type not in ("onramp", "offramp"):
+            outcome.action_choice = _stricter_action(outcome.action_choice, "none")
+            return outcome
+
+    # Funds-IN needs no spendable balance and funds-OUT is app-only staged,
+    # so neither is gated on free spendable here. The tap still authorises.
+    # Unknown JEV labels fail CLOSED: "do nothing" stays "do nothing"
+    # (defer + ask), never loosened into an approval prompt.
+    if proposed.type in ("onramp", "offramp"):
+        outcome.next_mode = _stricter_mode(outcome.next_mode, "ask")
+        if outcome.action_choice not in ("allow", "allow_smaller", "deny", "defer"):
+            outcome.action_choice = "defer"
         return outcome
 
     if amount is None:

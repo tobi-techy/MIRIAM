@@ -284,7 +284,10 @@ def test_the_inflow_contract_matches_the_endpoint(monkeypatch):
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={
             "payment_id": "pay_contract",
             "amount": "420000",

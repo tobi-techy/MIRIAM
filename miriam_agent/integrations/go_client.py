@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from miriam_agent.config.settings import get_settings
-from miriam_agent.core.exceptions import IntegrationError
+from miriam_agent.core.exceptions import CoolingDownError, IntegrationError
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,22 @@ def _assert_safe_path(path: str) -> None:
     """
     if ".." in path or "//" in path or "\n" in path or "\r" in path:
         raise IntegrationError(f"Refusing to call a malformed backend path: {path!r}")
+
+
+def _parse_retry_after(header: str | None) -> int | None:
+    """Parse a bare ``Retry-After`` header into seconds.
+
+    Go returns it as an integer number of seconds; a bare delta like
+    ``0`` is treated as "no estimate" rather than "retry immediately" so the
+    caller never loops into a dead 429.
+    """
+    if not header:
+        return None
+    try:
+        value = int(header.strip())
+    except (ValueError, TypeError):
+        return None
+    return value if value > 0 else None
 
 
 class GoBackendClient:
@@ -71,6 +87,15 @@ class GoBackendClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def health(self) -> int:
+        """Liveness probe of the Go host (read-only, unauthenticated).
+
+        Public on purpose: readiness checks must not reach into
+        ``self._client`` internals.
+        """
+        resp = await self._client.get("/health", timeout=3.0)
+        return resp.status_code
 
     # ---- data reads (delegate to Go, which owns the ledger) ----
 
@@ -123,26 +148,6 @@ class GoBackendClient:
         return await self._token_get(
             "/api/v1/analytics/financial-snapshot", token, params=params
         )
-
-    async def get_financial_plan(self, token: str) -> dict[str, Any]:
-        """Real financial plan from the ledger-backed financial snapshot.
-
-        Health, cash-flow forecast, and profile-driven next steps are computed
-        by the Python intelligence engine from Go's
-        ``/api/v1/analytics/financial-snapshot`` response (the old
-        ``/api/v1/ai/financial-plan`` endpoint is gone).
-        """
-        from miriam_agent.financial.intelligence import compute_financial_plan
-
-        snapshot = await self._engine_snapshot(token)
-        return compute_financial_plan(snapshot)
-
-    async def get_cash_flow_forecast(self, token: str) -> dict[str, Any]:
-        """Forecast computed from the ledger-backed financial snapshot."""
-        from miriam_agent.financial.intelligence import compute_cash_flow_forecast
-
-        snapshot = await self._engine_snapshot(token)
-        return compute_cash_flow_forecast(snapshot)
 
     async def get_investment_positions(self, token: str) -> dict[str, Any]:
         # Agent API positions read; returns {"positions": [...]} (raw body).
@@ -231,20 +236,7 @@ class GoBackendClient:
         # (camelCase: id, email, firstName, lastName, kycStatus, ...).
         return await self._token_get("/api/v1/users/me", token)
 
-    async def get_financial_health(
-        self, token: str, period: str = "last_90_days"
-    ) -> dict[str, Any]:
-        """Python-side health score from the ledger-backed financial snapshot."""
-        from miriam_agent.financial.intelligence import (
-            compute_financial_health,
-            period_to_window,
-        )
-
-        from_date, to_date = period_to_window(period)
-        snapshot = await self._engine_snapshot(token, from_date, to_date)
-        return compute_financial_health(snapshot, period=period)
-
-    async def _engine_snapshot(
+    async def engine_snapshot(
         self,
         token: str,
         from_date: str | None = None,
@@ -252,6 +244,13 @@ class GoBackendClient:
     ) -> dict[str, Any]:
         """Snapshot the intelligence engine needs: Go's ledger-backed
         financial snapshot plus upcoming obligations.
+
+        Raw adapter read, deliberately: the plan / forecast / health
+        composition lives in ``financial.intelligence`` (``*_live``), which
+        imports nothing from this layer in return. The old composed methods
+        here (get_financial_plan, get_cash_flow_forecast,
+        get_financial_health) were the one integrations -> domain import the
+        architecture contract forbids.
 
         Fails open: if the financial-snapshot endpoint is unreachable (e.g.
         a backend that predates it) we fall back to the legacy
@@ -528,7 +527,229 @@ class GoBackendClient:
             _with_confirmation(payload, confirmation_token),
         )
 
-    # ---- retirement vault (Sleeve A; Rail-owned locked USD vault) ----
+    # ---- Glider transactions: orders, allocations, rebalance, pause/resume ----
+    # Server-signed staging: these move allocations on rebalance. No wallet
+    # signature is needed because the allocation shift is Rail-signed server-side.
+    # Staged mutations (orders, allocations) return AWAITING_CONFIRMATION +
+    # confirmation.token, then replay identical JSON + token via _obtain_and_replay.
+
+    async def create_investment_order(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Place a buy/sell order into the Rail Stock Sleeve.
+
+        POST /api/v1/investments/orders. Without a confirmation_token the Go
+        backend stages the order and returns AWAITING_CONFIRMATION + token; with
+        the token it replays the byte-identical payload and completes, returning
+        the execution id and operation id. An "order" is an allocation shift
+        converged on Glider rebalance (no price guarantee).
+        """
+        return await self._token_post(
+            "/api/v1/investments/orders",
+            token,
+            _with_confirmation(payload, confirmation_token),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+
+    async def set_investment_allocation(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Set target allocation legs for the Rail Stock Sleeve.
+
+        POST /api/v1/investments/allocations. Staged (no token) then completed
+        (with token) via _obtain_and_replay, same pattern as /orders.
+        """
+        return await self._token_post(
+            "/api/v1/investments/allocations",
+            token,
+            _with_confirmation(payload, confirmation_token),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+
+    async def rebalance_investment_strategy(
+        self,
+        token: str,
+        strategy_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Rebalance a strategy immediately.
+
+        POST /api/v1/investments/strategies/{id}/rebalance. No staging: the
+        rebalance executes now and returns {execution, operation_id}. A 429
+        means the strategy is cooling down — surfaced as CoolingDownError so
+        the caller can say "try again in X". no_retry disables the retry loop.
+        """
+        _assert_safe_path(strategy_id)
+        body: dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/rebalance",
+            token,
+            body,
+            no_retry=True,
+        )
+
+    async def pause_investment_strategy(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """Pause a strategy immediately (no staging)."""
+        _assert_safe_path(strategy_id)
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/pause",
+            token,
+            {},
+            no_retry=True,
+        )
+
+    async def resume_investment_strategy(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """Resume a paused strategy immediately (no staging)."""
+        _assert_safe_path(strategy_id)
+        return await self._token_post(
+            f"/api/v1/investments/strategies/{strategy_id}/resume",
+            token,
+            {},
+            no_retry=True,
+        )
+
+    # ---- reads: strategy sub-resources ----
+
+    async def get_investment_strategy_provider_versions(
+        self,
+        token: str,
+        strategy_id: str,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/strategies/{id}/provider-versions.
+
+        Live Glider history. Each version has isHead=true when active.
+        """
+        _assert_safe_path(strategy_id)
+        params: dict[str, Any] = {}
+        if cursor:
+            params["cursor"] = cursor
+        if limit is not None:
+            params["limit"] = limit
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/provider-versions",
+            token,
+            params=params or None,
+        )
+
+    async def get_investment_strategy_performance(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/strategies/{id}/performance.
+
+        Template TWR curve. This is the strategy's own curve, not the user's
+        money-in curve.
+        """
+        _assert_safe_path(strategy_id)
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/performance",
+            token,
+        )
+
+    async def get_investment_strategy_schedule(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/strategies/{id}/schedule.
+
+        Configured cadence. Runtime nextDueAt lives on the portfolio.
+        """
+        _assert_safe_path(strategy_id)
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/schedule",
+            token,
+        )
+
+    async def get_investment_strategy_preferences(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/strategies/{id}/preferences.
+
+        Swap settings: {swap:{slippageBps, priceImpactBps, thresholdUsd}}.
+        null means the provider default applies.
+        """
+        _assert_safe_path(strategy_id)
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/preferences",
+            token,
+        )
+
+    async def get_investment_strategy_fees(
+        self, token: str, strategy_id: str
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/strategies/{id}/fees.
+
+        Provider fees: {swapBps}. Not an estimate.
+        """
+        _assert_safe_path(strategy_id)
+        return await self._token_get(
+            f"/api/v1/investments/strategies/{strategy_id}/fees",
+            token,
+        )
+
+    # ---- reads: enrollment sub-resources ----
+
+    async def get_investment_enrollment_performance(
+        self,
+        token: str,
+        enrollment_id: str,
+        return_method: str | None = None,
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/enrollments/{id}/performance.
+
+        The user's money curve. returnMethod=MWR (default) is money-weighted
+        return; TWR is time-weighted return.
+        """
+        _assert_safe_path(enrollment_id)
+        params: dict[str, Any] = {}
+        if return_method:
+            params["returnMethod"] = return_method
+        return await self._token_get(
+            f"/api/v1/investments/enrollments/{enrollment_id}/performance",
+            token,
+            params=params or None,
+        )
+
+    async def get_investment_enrollment_sector_exposure(
+        self, token: str, enrollment_id: str
+    ) -> dict[str, Any]:
+        """GET /api/v1/investments/enrollments/{id}/sector-exposure.
+
+        Sector exposure rows + taxonomy for the user's sleeve holdings.
+        """
+        _assert_safe_path(enrollment_id)
+        return await self._token_get(
+            f"/api/v1/investments/enrollments/{enrollment_id}/sector-exposure",
+            token,
+        )
+
+    async def breakdown_investment_holdings(
+        self, token: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST /api/v1/investments/breakdown.
+
+        Break holdings into Glider buckets across dimensions. multiCategoryMode
+        controls how assets in multiple categories are counted.
+        """
+        return await self._token_post(
+            "/api/v1/investments/breakdown",
+            token,
+            payload,
+        )
+
+    # ---- reads: enrollment sub-resources ----
     # Reads only. The app performs POST /vault with its own ConfirmationToken +
     # passcode flow; Python never POSTs vault writes and holds no
     # withdraw-submit. Paths mirror investments/* and must be verified against
@@ -569,9 +790,7 @@ class GoBackendClient:
         data = await self._token_get("/api/v1/vault/activity", token, params=params)
         return _as_list(data, "activity")
 
-    async def preview_vault_withdraw(
-        self, token: str, amount: float
-    ) -> dict[str, Any]:
+    async def preview_vault_withdraw(self, token: str, amount: float) -> dict[str, Any]:
         """Go-computed early-withdrawal math (principal/earnings/penalty/payout).
 
         Numbers pass through unchanged. Python never recomputes the 10% as a
@@ -582,6 +801,81 @@ class GoBackendClient:
             token,
             params={"amount": amount},
         )
+
+    # ---- funding: NGN <-> crypto onramp reads (RampHub / Paj) ----
+    # Read-only. OTP/onramp/offramp writes live in hands/funding.py via
+    # _token_post directly so no named writer exists on this client.
+
+    async def get_crypto_quote(
+        self, token: str, side: str, amount: float
+    ) -> dict[str, Any]:
+        """Best NGN quote across RampHub + Paj (no KYC, read)."""
+        return await self._token_get(
+            "/api/v1/funding/ramp/quote",
+            token,
+            params={"side": side, "amount": amount, "currency": "ngn"},
+        )
+
+    async def get_paj_rates(self, token: str) -> dict[str, Any]:
+        """Paj on/off-ramp rates, fees and minimums (no KYC, read)."""
+        return await self._token_get("/api/v1/funding/paj/rates", token)
+
+    async def get_funding_orders(
+        self, token: str, kind: str = "paj"
+    ) -> list[dict[str, Any]]:
+        """Last-50 onramp/offramp orders for one rail (read)."""
+        _kind = (kind or "paj").lower()
+        if _kind not in ("paj", "ramp"):
+            raise IntegrationError(f"unknown funding rail {kind!r}")
+        data = await self._token_get(f"/api/v1/funding/{_kind}/orders", token)
+        return _as_list(data, "orders")
+
+    async def get_funding_order_status(
+        self, token: str, kind: str, order_id: str
+    ) -> dict[str, Any]:
+        """Live status poll for one funding order (read)."""
+        _kind = (kind or "paj").lower()
+        if _kind not in ("paj", "ramp"):
+            raise IntegrationError(f"unknown funding rail {kind!r}")
+        _assert_safe_path(order_id)
+        return await self._token_get(
+            f"/api/v1/funding/{_kind}/orders/{order_id}/status", token
+        )
+
+    async def get_paj_banks(
+        self, token: str, *, saved: bool = False
+    ) -> list[dict[str, Any]]:
+        """Paj bank list, or the user's saved Paj accounts when saved=True."""
+        path = (
+            "/api/v1/funding/paj/banks/saved" if saved else "/api/v1/funding/paj/banks"
+        )
+        data = await self._token_get(path, token)
+        if isinstance(data, dict):
+            for key in ("accounts", "banks"):
+                items = data.get(key)
+                if isinstance(items, list):
+                    return items
+        return _as_list(data, "banks")
+
+    async def get_ramp_banks(self, token: str) -> list[dict[str, Any]]:
+        """RampHub bank list (no KYC, read)."""
+        data = await self._token_get("/api/v1/funding/ramp/banks", token)
+        return _as_list(data, "banks")
+
+    async def get_paj_verification_status(self, token: str) -> dict[str, Any]:
+        """Paj recipient verification state, derived without a new endpoint.
+
+        Saved Paj bank accounts imply a verified recipient; an empty saved
+        list (or a lookup failure) reports unverified. Fail-open sentinel,
+        never an exception.
+        """
+        try:
+            saved = await self.get_paj_banks(token, saved=True)
+        except IntegrationError as e:
+            return {"verified": False, "_tool_error": str(e)[:200]}
+        if isinstance(saved, list) and saved:
+            return {"verified": True}
+        return {"verified": False}
 
     # ---- lookups / automations / obligations / schedules ----
 
@@ -752,6 +1046,7 @@ class GoBackendClient:
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        no_retry: bool = False,
     ) -> dict[str, Any]:
         """Perform an authenticated Go call, with bounded retries.
 
@@ -760,10 +1055,17 @@ class GoBackendClient:
         repeating an unkeyed write could move money twice. Previously nothing
         was retried at all, so a transient blip surfaced to the user as a hard
         failure.
+
+        ``no_retry`` disables the retry loop for endpoints where a 429 is a
+        semantic signal (rebalance cooldown) rather than transient load. A 429
+        under ``no_retry`` raises :class:`CoolingDownError` carrying the
+        backend's Retry-After hint so the caller can surface "try again in X".
         """
         _assert_safe_path(path)
         retryable = method.upper() == "GET" or idempotency_key is not None
-        attempts = self.max_retries if retryable else 0
+        if no_retry:
+            retryable = False
+        attempts = 0 if no_retry else self.max_retries if retryable else 0
         headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
@@ -790,6 +1092,15 @@ class GoBackendClient:
                 await asyncio.sleep(0.3 * (2**attempt))
                 continue
 
+            # 429 with no_retry is a cooldown, not a transient blip: surface it
+            # with the Retry-After hint instead of retrying into the ground.
+            if no_retry and resp.status_code == 429:
+                retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                raise CoolingDownError(
+                    f"Go backend {method} {path} cooldown (429)",
+                    retry_after=retry_after,
+                )
+
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
@@ -812,6 +1123,65 @@ class GoBackendClient:
     ) -> dict[str, Any]:
         return await self._request_json("GET", path, token=token, params=params)
 
+    # ---- funding writes: the only POST path for NGN <-> crypto ----
+    # Hands calls these named methods (never _token_post directly) so the
+    # validation/logging/retry contract lives in one place.
+
+    async def paj_initiate_session(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/paj/initiate. Starts the Paj recipient session."""
+        return await self._token_post(
+            "/api/v1/funding/paj/initiate",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
+
+    async def paj_verify_otp(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/paj/verify. Verifies the recipient OTP code."""
+        return await self._token_post(
+            "/api/v1/funding/paj/verify",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
+
+    async def funding_create_onramp(
+        self,
+        token: str,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/{paj,ramp}/onramp. Creates the bank-transfer order."""
+        _kind = (kind or "paj").lower()
+        if _kind not in ("paj", "ramp"):
+            raise IntegrationError(f"unknown funding rail {kind!r}")
+        return await self._token_post(
+            f"/api/v1/funding/{_kind}/onramp",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
+
     async def _token_post(
         self,
         path: str,
@@ -820,6 +1190,7 @@ class GoBackendClient:
         *,
         idempotency_key: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        no_retry: bool = False,
     ) -> dict[str, Any]:
         return await self._request_json(
             "POST",
@@ -828,6 +1199,7 @@ class GoBackendClient:
             payload=payload,
             idempotency_key=idempotency_key,
             extra_headers=extra_headers,
+            no_retry=no_retry,
         )
 
     async def _token_patch(
@@ -863,9 +1235,7 @@ def _with_confirmation(
     return {**payload, "confirmation_token": confirmation_token}
 
 
-def _binding_headers(
-    confirm_id: str | None, receipt_id: str | None
-) -> dict[str, str]:
+def _binding_headers(confirm_id: str | None, receipt_id: str | None) -> dict[str, str]:
     """Settlement binding headers for a rail mutation."""
     headers: dict[str, str] = {}
     if confirm_id:

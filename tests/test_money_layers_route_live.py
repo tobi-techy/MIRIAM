@@ -27,6 +27,7 @@ from layer_fakes import FakeProvider, jev, judge_of
 
 from miriam_agent.api import chat, dependencies
 from miriam_agent.api.main import app
+from miriam_agent.config.settings import get_settings
 from miriam_agent.database.models import User
 from miriam_agent.hands.ledger import (
     InMemoryLedgerStore,
@@ -97,7 +98,7 @@ def _ledger(*, spendable: str, rent_required: str = "0", reserved: str = "0") ->
     return ledger
 
 
-def _wire(monkeypatch, *, ledger: Ledger, judge=None):
+def _wire(monkeypatch, *, ledger: Ledger, judge=None, audit_sink=None):
     """Point the chat endpoints at a test Orchestrator.
 
     ``chat._orchestrator_for`` is the seam where the live path picks the shared
@@ -118,6 +119,7 @@ def _wire(monkeypatch, *, ledger: Ledger, judge=None):
         rail=rail,
         provider=FakeProvider("Noted."),
         judge=judge or judge_of(jev(intent="order", afford=0.9)),
+        audit_sink=audit_sink,
     )
     monkeypatch.setattr(chat, "_orchestrator_for", lambda token: orchestrator)
 
@@ -307,6 +309,36 @@ def test_a_declined_tap_moves_nothing(monkeypatch):
     assert "USER_DECLINED" in settled["receipt"]["reasons"]
 
 
+def test_a_string_yes_is_a_real_bool_not_truthiness(monkeypatch):
+    """``"yes": "no"`` used to be truthy: any string settled the challenge.
+
+    With the typed ChatRequest the boundary coerces the known words and
+    refuses the rest, so a sloppy client can no longer move money by
+    sending "yes": "please".
+    """
+    ledger = _ledger(spendable="90000")
+    _store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    issued = _post(client, {"message": "send 5k to Ada"})
+    declined = _post(
+        client, {"confirm_id": issued["confirm_id"], "yes": "no", "message": ""}
+    )
+    assert rail.moves == []
+    assert "USER_DECLINED" in declined["receipt"]["reasons"]
+
+    issued2 = _post(client, {"message": "send 5k to Ada"})
+    nonsense = client.post(
+        "/api/v1/chat",
+        headers={"Authorization": "Bearer test-token"},
+        json={"confirm_id": issued2["confirm_id"], "yes": "please", "message": ""},
+    )
+    assert nonsense.status_code == 422, nonsense.text
+    # The challenge survives: nothing was settled by the refused payload.
+    reloaded = await_sync(_load_for(_store))
+    assert reloaded.challenges[issued2["confirm_id"]].status == "pending"
+
+
 def test_typing_yes_in_a_message_settles_nothing(monkeypatch):
     """No free-text settlement: "yes" is a message like any other."""
     ledger = _ledger(spendable="90000")
@@ -357,7 +389,10 @@ def test_build_money_plan_is_not_called_on_a_send_or_an_inflow(monkeypatch):
     _post(client, {"message": "send 5k to Ada"})
     inflow = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_1", "amount": "420000", "source_raw": "PAYROLL"},
     )
     assert inflow.status_code == 200, inflow.text
@@ -377,7 +412,10 @@ def test_the_inflow_endpoint_splits_without_a_model(monkeypatch):
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_42", "amount": "420000", "source_raw": "PAYROLL"},
     )
 
@@ -391,13 +429,58 @@ def test_the_inflow_endpoint_splits_without_a_model(monkeypatch):
     assert rail.moves == []
 
 
+def test_every_receipt_reaches_the_durable_audit_sink(monkeypatch):
+    """The audit sink sees every receipted turn, including rejections."""
+    ledger = _ledger(spendable="0", rent_required="150000")
+    seen: list[tuple[str, str]] = []
+
+    async def _recording_sink(event: Any, result: Any) -> None:
+        assert result.receipt is not None
+        seen.append((event.user_id, result.receipt.action))
+
+    _wire(monkeypatch, ledger=ledger, audit_sink=_recording_sink)
+    client = TestClient(app, raise_server_exceptions=False)
+    _inflow_post(client)
+
+    assert seen == [(USER_ID, "inflow_split")]
+
+
+def test_a_failing_audit_sink_never_breaks_a_settled_turn(monkeypatch):
+    """Audit is fail-open: an outage degrades the paper trail, not the turn."""
+    ledger = _ledger(spendable="0", rent_required="150000")
+
+    async def _broken_sink(event: Any, result: Any) -> None:
+        raise RuntimeError("audit store down")
+
+    _wire(monkeypatch, ledger=ledger, audit_sink=_broken_sink)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = _inflow_post(client)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["receipt"]["action"] == "inflow_split"
+
+
+def _inflow_post(client: TestClient) -> Any:
+    return client.post(
+        "/api/v1/money/inflow",
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
+        json={"payment_id": "pay_audit", "amount": "420000", "source_raw": "PAYROLL"},
+    )
+
+
 def test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once(monkeypatch):
     """A forwarded alert is money arriving, not an instruction.
 
     It goes to the inflow path with an id derived from the alert, so the same
-    alert pasted twice splits once. This is the one inflow shape that reaches
-    chat; the rail webhook is the authoritative path.
+    alert pasted twice splits once. This is the demo-only path: it exists only
+    when ALLOW_CHAT_INFLOW_SYNTH is explicitly on, and the paired test below
+    proves the default keeps chat text inert.
     """
+    monkeypatch.setenv("ALLOW_CHAT_INFLOW_SYNTH", "true")
+    get_settings.cache_clear()
     ledger = _ledger(spendable="0", rent_required="150000")
     store, rail, _memory = _wire(monkeypatch, ledger=ledger)
     client = TestClient(app, raise_server_exceptions=False)
@@ -468,7 +551,10 @@ def test_the_inflow_endpoint_needs_a_payment_id(monkeypatch):
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"amount": "420000"},
     )
     assert response.status_code == 400
@@ -484,7 +570,10 @@ def test_a_repeated_inflow_webhook_splits_once(monkeypatch):
     for _ in range(2):
         response = client.post(
             "/api/v1/money/inflow",
-            headers={"Authorization": "Bearer test-token"},
+            headers={
+                "Authorization": "Bearer test-token",
+                "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+            },
             json=body,
         )
         assert response.status_code == 200, response.text
@@ -560,7 +649,10 @@ def test_an_inflow_webhook_fails_retryably_when_the_ledger_is_unreachable(monkey
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_down", "amount": "420000"},
     )
     assert response.status_code == 503
@@ -601,7 +693,10 @@ def test_the_inflow_endpoint_rejects_an_amount_it_cannot_trust(monkeypatch, bad)
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_bad", "amount": bad},
     )
 
@@ -618,7 +713,10 @@ def test_a_good_amount_still_splits(monkeypatch):
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_ok", "amount": "420000"},
     )
     assert response.status_code == 200, response.text
@@ -632,7 +730,10 @@ def test_a_missing_amount_is_still_its_own_error(monkeypatch):
 
     response = client.post(
         "/api/v1/money/inflow",
-        headers={"Authorization": "Bearer test-token"},
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+        },
         json={"payment_id": "pay_missing"},
     )
     assert response.status_code == 400

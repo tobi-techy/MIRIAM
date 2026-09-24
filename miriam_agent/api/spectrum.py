@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from miriam_agent.api import chat as chatmod
 from miriam_agent.api.dependencies import (
@@ -48,16 +49,44 @@ from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.transfer import GoRail
 from miriam_agent.integrations import go_client as go_client_mod
 from miriam_agent.observability.correlation import current_trace_id
-from miriam_agent.orchestrator import Event, Orchestrator
+from miriam_agent.orchestrator import Event, Orchestrator, TurnResult
+from miriam_agent.safety.validator import InputValidator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# The one channel that can carry a wallet signature in text is the one that
+# used to validate least. Every turn now passes the same rate limit and input
+# validation as /chat.
+_validator = InputValidator()
+
 CHANNELS = ("imessage", "whatsapp", "terminal")
 
 _CONFIRM_RE = re.compile(r"^(?:confirm|yes)\s+(\S+)\s*$", re.IGNORECASE)
 _DECLINE_RE = re.compile(r"^(?:no|decline|cancel)\s+(\S+)\s*$", re.IGNORECASE)
+
+
+class SpectrumRequest(BaseModel):
+    """Body for ``/chat/spectrum``.
+
+    Typed at the boundary like ChatRequest: a signature, confirm id or flow id
+    arrives as a string or not at all, and ``yes`` is a real tri-state (None =
+    not answered) instead of whatever truthiness the raw JSON implied.
+    """
+
+    channel: str = "terminal"
+    space_id: str = ""
+    user_id: str = ""
+    sender_id: str = ""
+    text: str = ""
+    confirm_id: str = ""
+    yes: bool | None = None
+    signed_tx: str = ""
+    flow_id: str = ""
+    wallet_address: str = ""
+
+
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=]{100,}$")
 
 _PORTFOLIO_ASKS = (
@@ -74,11 +103,20 @@ _PORTFOLIO_ASKS = (
 
 
 def _orchestrator_for(token: str) -> Orchestrator:
+    settings = get_settings()
+    channels = [
+        part.strip().lower()
+        for part in (settings.GO_CONFIRM_CARD_CHANNELS or "").split(",")
+        if part.strip()
+    ]
     return Orchestrator(
         store=chatmod._get_ledger_store(),
         policy=Policy.from_settings(),
         rail=GoRail(token),
         go_token=token,
+        audit_sink=chatmod._persist_money_audit,
+        cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
+        card_channels=tuple(channels) if channels else ("imessage",),
     )
 
 
@@ -144,36 +182,69 @@ async def _live_positions(token: str) -> list[dict[str, Any]]:
 
 @router.post("/chat/spectrum")
 async def spectrum_chat(
-    request: dict[str, Any],
+    body: SpectrumRequest,
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
     memory_store: MemoryStore = Depends(get_memory_store),
 ) -> dict[str, Any]:
     """One gateway turn in, rendered parts out."""
-    channel = str(request.get("channel") or "terminal").strip().lower()
+    if not await _validator.validate_rate_limit(user.id, "chat"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again shortly.",
+        )
+    is_valid, validation_errors = await _validator.validate_user_input(
+        {"message": body.text}, "chat"
+    )
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Validation errors: {', '.join(validation_errors)}",
+        )
+
+    channel = body.channel.strip().lower()
     if channel not in CHANNELS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"channel must be one of {', '.join(CHANNELS)}",
         )
-    space_id = str(request.get("space_id") or "").strip()
-    body_user = str(request.get("user_id") or "").strip()
-    text = str(request.get("text") or "")
+    space_id = body.space_id.strip()
+    body_user = body.user_id.strip()
+    text = body.text
     if body_user and body_user != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="user_id does not match the bearer token",
         )
-    if not text and not request.get("confirm_id") and not request.get("signed_tx"):
+    if not text and not body.confirm_id and not body.signed_tx:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Text cannot be empty"
         )
 
+    # Bind the channel handle to the stable JWT user on every turn
+    # (first-seen auto-link). A handle owned by someone else never breaks
+    # the turn — it is logged and the message still persists under the
+    # bearer user; the verified merge endpoint owns the move.
+    sender_id = (body.sender_id or "").strip()
+    if sender_id:
+        try:
+            await memory_store.ensure_user(user)
+            await memory_store.link_identity(user.id, channel, sender_id)
+        except Exception:  # noqa: BLE001 - identity never breaks the turn
+            logger.warning(
+                "spectrum: identity link failed for %s:%s (non-blocking)",
+                channel,
+                sender_id,
+            )
+
     orchestrator = _orchestrator_for(token)
     confirm_id_out = ""
-    wallet_address = str(request.get("wallet_address") or "").strip()
+    wallet_address = body.wallet_address.strip()
     parts: list[dict[str, Any]] = []
     conv_id = f"spectrum:{channel}:{space_id or user.id}"
+    # The turn result when the money layers own it; None when the turn falls
+    # through to the agent loop further down.
+    result: TurnResult | None
 
     async def _remember(
         user_text: str, reply: str, extra: dict[str, Any] | None = None
@@ -183,6 +254,8 @@ async def spectrum_chat(
             "space_id": space_id,
             "spectrum": True,
         }
+        if sender_id:
+            meta["sender_id"] = sender_id
         if extra:
             meta.update(extra)
         try:
@@ -204,8 +277,8 @@ async def spectrum_chat(
             logger.warning("spectrum: memory store failed (non-blocking)")
 
     # -- 1. structured or text confirmation tap ---------------------------
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    yes: bool | None = request.get("yes")
+    confirm_id = body.confirm_id.strip()
+    yes: bool | None = body.yes
     m = _CONFIRM_RE.match(text.strip())
     d = _DECLINE_RE.match(text.strip())
     if m:
@@ -263,8 +336,8 @@ async def spectrum_chat(
         }
 
     # -- 2. wallet signature ----------------------------------------------
-    signed_tx = str(request.get("signed_tx") or "").strip()
-    flow_id = str(request.get("flow_id") or "").strip()
+    signed_tx = body.signed_tx.strip()
+    flow_id = body.flow_id.strip()
     if not signed_tx and channel == "terminal" and _B64_RE.match(text.strip()):
         settings = get_settings()
         if not settings.RAIL_ALLOW_DEV_SIGN:
@@ -330,25 +403,37 @@ async def spectrum_chat(
     # -- 3. money turns ----------------------------------------------------
     from miriam_agent.orchestrator import classify_turn
 
-    if chatmod.looks_like_inflow_alert(text) or classify_turn(text) == "orchestrator":
-        if chatmod.looks_like_inflow_alert(text):
-            result = await orchestrator.handle_inflow(
-                user.id,
-                payment_id=chatmod.inflow_id_for_alert(text),
-                amount=chatmod._alert_amount(text),
-                source_raw=text,
-            )
-        elif wallet_address:
+    if chatmod.get_settings().ALLOW_CHAT_INFLOW_SYNTH and (
+        chatmod.looks_like_inflow_alert(text)
+    ):
+        # Demo-only escape hatch, mirroring the chat path: text is not a
+        # payment fact, so it never mints ledger money unless the deployment
+        # has explicitly turned the demo behaviour on.
+        result = await orchestrator.handle_inflow(
+            user.id,
+            payment_id=chatmod.inflow_id_for_alert(text),
+            amount=chatmod._alert_amount(text),
+            source_raw=text,
+        )
+    elif classify_turn(text) == "orchestrator":
+        if wallet_address:
             result = await orchestrator.handle(
                 Event(
                     type="utterance",
                     user_id=user.id,
                     text=text,
                     wallet_address=wallet_address,
+                    channel=channel,
+                    thread_id=space_id,
                 )
             )
         else:
-            result = await orchestrator.handle_utterance(user.id, text)
+            result = await orchestrator.handle_utterance(
+                user.id, text, channel=channel, thread_id=space_id
+            )
+    else:
+        result = None
+    if result is not None:
         parts.append(_text_part(result.narration or "Noted."))
         # 70/30 proof: the split receipt carries before/after sleeves.
         if result.receipt is not None and result.receipt.action == "inflow_split":
@@ -377,8 +462,14 @@ async def spectrum_chat(
             except (ArithmeticError, TypeError, ValueError, KeyError):
                 pass
         if result.confirm_id and result.card is None:
-            # A non-invest challenge (transfer/lock/...): nothing to render
-            # beyond the narration on this surface.
+            # A non-invest challenge (transfer/stash/save-rule/...): the
+            # narration already carries "confirm <id>", plus the Face ID line
+            # when a live card was minted for this challenge
+            # (result.card_action_id, imessage only). Nothing else to render:
+            # the card lives in the iMessage transcript and Go edits it in
+            # place. The invest branch above is unchanged: a first tap may
+            # arrive via the settle endpoint, and the wallet-sign flow after
+            # it is untouched.
             pass
         await _remember(
             text, parts[0].get("text", ""), {"confirm_id": result.confirm_id}
