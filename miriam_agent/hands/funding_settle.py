@@ -60,7 +60,30 @@ async def prepare_onramp(
     rejected receipt, never silence.
     """
     timestamp = at or _utcnow()
-    amount = money(amount)
+    try:
+        quoted_amount: Decimal = money(amount)
+    except Exception:
+        quoted_amount = Decimal("0")
+    if quoted_amount <= 0:
+        # No usable amount: fail closed before any quote or rail call.
+        failed = Receipt(
+            id=_id("rcpt"),
+            at=timestamp,
+            status="rejected",
+            action="onramp_prepare",
+            currency=ledger.currency,
+            counterparty=symbol,
+            sleeve="spendable",
+            decision_id=decision_id,
+            idempotency_key=f"onramp:{confirm_id or decision_id}",
+            reasons=["BAD_AMOUNT"],
+            sleeves_before=sleeves_snapshot(ledger.sleeves),
+            sleeves_after=sleeves_snapshot(ledger.sleeves),
+            detail="no onramp amount was named; nothing moved",
+        )
+        ledger.remember_receipt(failed)
+        return failed, None, ledger
+    amount = quoted_amount
     before = sleeves_snapshot(ledger.sleeves)
 
     def _reject(reasons: list[str], detail: str) -> tuple[Receipt, None, Ledger]:
@@ -82,6 +105,15 @@ async def prepare_onramp(
         )
         ledger.remember_receipt(receipt)
         return receipt, None, ledger
+
+    # Idempotency first: a double-tap replays the receipt instead of
+    # re-quoting and re-initiating Paj.
+    _prior = ledger.receipt_for(f"onramp:{confirm_id or decision_id}")
+    if _prior is not None:
+        return _prior, None, ledger
+    _prior_init = ledger.receipt_for(f"paj-initiate:{confirm_id or decision_id}")
+    if _prior_init is not None and _prior_init.status in ("queued", "executed"):
+        return _prior_init, None, ledger
 
     if not token:
         receipt, _, ledger = _reject(
@@ -133,9 +165,12 @@ async def prepare_onramp(
         )
 
     # OTP required: the OTP turn is challenge state (30-min TTL). No ledger
-    # movement happens until the code verifies.
+    # movement happens until the code verifies. The id is unique per tap
+    # (never truncated): two onramps off the same decision must never share
+    # a challenge id and overwrite each other's OTP state.
+    _otp_suffix = (confirm_id or decision_id or _id("otp")).strip() or _id("otp")
     otp_challenge = Challenge(
-        id=f"confirm_otp_{(confirm_id or decision_id)[-8:]}",
+        id=f"confirm_otp_{_otp_suffix}_{uuid.uuid4().hex[:8]}",
         user_id=ledger.user_id,
         action="paj_otp",
         amount=money(amount),

@@ -8,12 +8,24 @@ runtime surface is unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from miriam_agent.hands.ledger import Ledger
-from miriam_agent.hands.settlement import Event, TurnResult
-from miriam_agent.hands.state import ProposedAction, build_state
+from miriam_agent.hands.ledger import Ledger, LedgerStore
+from miriam_agent.hands.limits import Policy
+from miriam_agent.hands.settlement import (
+    Event,
+    TurnResult,
+    challenge_owner_ok,
+    maybe_reopen_challenge,
+)
+from miriam_agent.hands.state import (
+    Execution,
+    HandlerState,
+    ProposedAction,
+    build_state,
+)
 from miriam_agent.judgment.schema import Decision
 
 # Card keys that may ride on STATE.execution.funding. A whitelist, so a card
@@ -64,7 +76,81 @@ def _open_paj_otp_challenge(ledger: Ledger, now: datetime) -> Any | None:
 
 
 class FundingSettlementMixin:
-    """Settle legs for NGN <-> crypto funding."""
+    """Settle legs for NGN <-> crypto funding.
+
+    Mixed into :class:`miriam_agent.orchestrator.Orchestrator`, which
+    provides the runtime surface declared below. Declared here so the
+    type gate checks the legs against the contract instead of `Any`.
+    """
+
+    store: LedgerStore
+    policy: Policy
+    go_token: str | None
+    clock: Callable[[], datetime]
+
+    async def _speak(
+        self, state: HandlerState, *, utterance: str = ""
+    ) -> str | None: ...
+    def _execution_from(self, receipt: Any) -> Execution | None: ...
+
+    async def _funding_mismatch(
+        self,
+        ledger: Ledger,
+        event: Event,
+        challenge: Any,
+        *,
+        receipt_action: str,
+        proposed_type: str,
+        side: str,
+    ) -> TurnResult:
+        """Burn a cross-user confirm_id with a mismatch refusal, never execute."""
+        from miriam_agent.hands.audit import Receipt as _Receipt
+
+        now = self.clock()
+        challenge.status = "consumed"
+        ledger.challenges[challenge.id] = challenge
+        receipt = _Receipt(
+            id=f"rcpt_rejected_{challenge.id}",
+            at=now,
+            status="rejected",
+            action=receipt_action,
+            currency=ledger.currency,
+            amount=challenge.amount,
+            counterparty=challenge.counterparty,
+            sleeve=challenge.sleeve,
+            decision_id=challenge.decision_id,
+            reasons=["CHALLENGE_MISMATCH"],
+            detail="that confirmation was issued to a different account",
+        )
+        ledger.remember_receipt(receipt)
+        await self.store.save(ledger)
+        state = build_state(
+            ledger=ledger,
+            policy=self.policy,
+            proposed_action=ProposedAction(
+                type=proposed_type,  # type: ignore[arg-type]
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                source="user",
+                side=side,  # type: ignore[arg-type]
+            ),
+            decision={
+                "id": "",
+                "next_mode": "ask",
+                "action_choice": "deny",
+                "reasons": ["CHALLENGE_MISMATCH"],
+            },
+            now=now,
+        )
+        return TurnResult(
+            state=state,
+            narration=await self._speak(state),
+            decision=state.decision,
+            receipt=receipt,
+            confirm_id=challenge.id,
+            audit=[],
+        )
 
     async def _handle_confirm_funding(
         self, ledger: Ledger, event: Event, challenge: Any
@@ -75,6 +161,15 @@ class FundingSettlementMixin:
 
         audit = _AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._funding_mismatch(
+                ledger,
+                event,
+                challenge,
+                receipt_action="onramp_prepare",
+                proposed_type="onramp",
+                side="buy",
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -108,6 +203,9 @@ class FundingSettlementMixin:
             confirm_id=challenge.id,
             at=now,
         )
+        # Transient quote/initiate failures reopen the challenge so a retap
+        # can retry instead of dying on CHALLENGE_EXPIRED.
+        maybe_reopen_challenge(ledger, challenge, receipt)
         await self.store.save(ledger)
         confirm_out = challenge.id
         if isinstance(card, dict):
@@ -213,6 +311,15 @@ class FundingSettlementMixin:
 
         audit = _AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._funding_mismatch(
+                ledger,
+                event,
+                challenge,
+                receipt_action="offramp_stage",
+                proposed_type="offramp",
+                side="sell",
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
         action = ProposedAction(

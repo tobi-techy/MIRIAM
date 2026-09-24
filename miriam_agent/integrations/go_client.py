@@ -551,7 +551,7 @@ class GoBackendClient:
             "/api/v1/investments/orders",
             token,
             _with_confirmation(payload, confirmation_token),
-                        idempotency_key=payload.get("idempotency_key"),
+            idempotency_key=payload.get("idempotency_key"),
         )
 
     async def set_investment_allocation(
@@ -570,7 +570,7 @@ class GoBackendClient:
             token,
             _with_confirmation(payload, confirmation_token),
             idempotency_key=payload.get("idempotency_key"),
-                )
+        )
 
     async def rebalance_investment_strategy(
         self,
@@ -847,9 +847,7 @@ class GoBackendClient:
     ) -> list[dict[str, Any]]:
         """Paj bank list, or the user's saved Paj accounts when saved=True."""
         path = (
-            "/api/v1/funding/paj/banks/saved"
-            if saved
-            else "/api/v1/funding/paj/banks"
+            "/api/v1/funding/paj/banks/saved" if saved else "/api/v1/funding/paj/banks"
         )
         data = await self._token_get(path, token)
         if isinstance(data, dict):
@@ -1124,6 +1122,65 @@ class GoBackendClient:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await self._request_json("GET", path, token=token, params=params)
+
+    # ---- funding writes: the only POST path for NGN <-> crypto ----
+    # Hands calls these named methods (never _token_post directly) so the
+    # validation/logging/retry contract lives in one place.
+
+    async def paj_initiate_session(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/paj/initiate. Starts the Paj recipient session."""
+        return await self._token_post(
+            "/api/v1/funding/paj/initiate",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
+
+    async def paj_verify_otp(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/paj/verify. Verifies the recipient OTP code."""
+        return await self._token_post(
+            "/api/v1/funding/paj/verify",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
+
+    async def funding_create_onramp(
+        self,
+        token: str,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /funding/{paj,ramp}/onramp. Creates the bank-transfer order."""
+        _kind = (kind or "paj").lower()
+        if _kind not in ("paj", "ramp"):
+            raise IntegrationError(f"unknown funding rail {kind!r}")
+        return await self._token_post(
+            f"/api/v1/funding/{_kind}/onramp",
+            token,
+            payload,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+        )
 
     async def _token_post(
         self,

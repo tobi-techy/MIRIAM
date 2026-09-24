@@ -70,12 +70,18 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def classify_symbol(raw: str | None) -> str:
-    """Map a free word to a funding asset. Defaults to USDC (the credit asset)."""
+def classify_symbol(raw: str | None) -> str | None:
+    """Map a free word to a funding asset, or None when unknown.
+
+    Empty input defaults to USDC (the credit asset); a non-empty word that
+    matches nothing is NOT silently upgraded to USDC -- the caller must
+    reject it so "top up 5000 of xyzcoin" never mints a USDC onramp the
+    user never named.
+    """
     key = (raw or "").strip().casefold()
     if not key:
         return "USDC"
-    return _SYMBOL_ALIASES.get(key, "USDC")
+    return _SYMBOL_ALIASES.get(key)
 
 
 def parse_funding_utterance(text: str) -> ProposedAction | None:
@@ -89,28 +95,76 @@ def parse_funding_utterance(text: str) -> ProposedAction | None:
     lowered = (text or "").casefold()
     if not lowered.strip():
         return None
-    if "buy" not in lowered and "top up" not in lowered and "fund" not in lowered:
+    # Strong triggers name the funding frame outright ("top up", "fund").
+    # Weak triggers ("put", "deposit", "load") only count with a crypto or
+    # naira word nearby, so "deposit 10k into savings" and "put 50 aside"
+    # never become onramps.
+    strong = any(
+        w in lowered
+        for w in (
+            "buy",
+            "top up",
+            "top-up",
+            "topup",
+            "fund",
+            "add money",
+            "put money",
+            "load up",
+            "load my",
+        )
+    )
+    weak = bool(re.search(r"\b(put|deposit|load)\b", lowered))
+    if not (strong or weak):
+        return None
+    if (
+        weak
+        and not strong
+        and not any(
+            w in lowered
+            for w in (
+                "usdc",
+                "usdt",
+                "btc",
+                "bitcoin",
+                "eth",
+                "sol",
+                "crypto",
+                "naira",
+                "ngn",
+                "₦",
+                "onramp",
+            )
+        )
+    ):
         return None
     # 'sell' sentences belong to the offramp leg, never here.
     if re.search(r"\bsell\b", lowered):
         return None
     match = _BUY_RE.search(text or "")
     if match is None:
-        # "top up / fund / add money <amount>" without the word buy.
-        if not any(w in lowered for w in ("top up", "fund", "add money")):
+        # Funding words without "buy" ("top up 5k", "deposit 5k of bitcoin").
+        # The strong/weak gate above already passed; the coin check below
+        # still rejects unknown "of <coin>" words instead of minting USDC.
+        # Unknown "of <coin>" word: reject instead of defaulting to USDC.
+        of_match = re.search(r"\bof\s+([a-z]{2,20})\b", lowered)
+        if (
+            of_match
+            and of_match.group(1) not in _SYMBOL_ALIASES
+            and of_match.group(1) not in ("my", "the")
+        ):
             return None
         amount = parse_amount(lowered)
         if amount is None:
             return None
-        symbol = "USDC"
+        topup_symbol = "USDC"
         for word in sorted(_SYMBOL_ALIASES, key=len, reverse=True):
             if re.search(rf"\b{re.escape(word)}\b", lowered):
-                symbol = _SYMBOL_ALIASES[word]
+                topup_symbol = _SYMBOL_ALIASES[word]
                 break
         return ProposedAction(
             type="onramp",
             amount=amount,
-            counterparty=symbol,
+            counterparty=topup_symbol,
             sleeve="spendable",
             raw=text,
             source="user",
@@ -138,6 +192,9 @@ def parse_funding_utterance(text: str) -> ProposedAction | None:
         )
     ):
         return None
+    # Unknown coin word: never silently become USDC.
+    if raw_symbol and raw_symbol not in _SYMBOL_ALIASES:
+        return None
     try:
         value = Decimal(match.group(1).replace(",", ""))
     except Exception:
@@ -150,7 +207,9 @@ def parse_funding_utterance(text: str) -> ProposedAction | None:
     amount = money(value)
     if amount is None or amount <= 0:
         return None
-    symbol = classify_symbol(match.group(3))
+    symbol: str | None = classify_symbol(match.group(3))
+    if symbol is None:
+        return None
     return ProposedAction(
         type="onramp",
         amount=amount,
@@ -166,13 +225,45 @@ def parse_offramp_utterance(text: str) -> ProposedAction | None:
     """Turn a 'sell ... / withdraw to naira' sentence into an offramp action.
 
     App-only: the action stages an envelope, never a rail call.
+
+    Plain-English rule: a bare "sell" (stocks) is NEVER an offramp. Only a
+    sell/cash-out/withdraw tied to naira, NGN, a bank, or an explicit
+    cash-out phrase stages an offramp, so "sell 50 NVDAx" stays a stock
+    order and "cash me out 20k to my bank" stages a withdrawal.
     """
     from miriam_agent.hands.transfer import parse_amount
 
     lowered = (text or "").casefold()
     if not lowered.strip():
         return None
-    if not re.search(r"\bsell\b|\bofframp\b|\bwithdraw\b.*\bnaira\b", lowered):
+    # Cash-out verbs in plain English: "cash out", "cash me out",
+    # "withdraw", "offramp", "take money out".
+    has_cashout_verb = bool(
+        re.search(
+            r"\b(offramp|cashout|withdraw|cash\b.*\bout\b|take\b.*\bout\b)",
+            lowered,
+        )
+    )
+    has_sell_naira = bool(re.search(r"\bsell\b.*\b(naira|ngn|₦|bank|cash)\b", lowered))
+    has_money_anchor = bool(re.search(r"\b(naira|ngn|₦|bank|account)\b", lowered))
+    # "send/move it to my bank": a bank-bound send is a cash-out, not a P2P
+    # transfer. Sleeve destinations ("move 1k to savings") are excluded so
+    # internal moves never land here; named people ("send 5k to Ada") have
+    # no bank anchor and fall through to the transfer leg.
+    has_send_to_bank = (
+        bool(re.search(r"\b(send|transfer|move|wire)\b", lowered))
+        and has_money_anchor
+        and not any(
+            w in lowered for w in ("savings", "stash", "spendable", "yield", "locked")
+        )
+    )
+    if has_cashout_verb:
+        # "withdraw"/"cash out"/"take out" still needs a naira/bank/account
+        # anchor; a bare "withdraw from my stocks" is not an offramp. A
+        # plain "cash me out <amount>" is unambiguous enough to stage.
+        if not has_money_anchor and not re.search(r"\bcash\b.*\bout\b", lowered):
+            return None
+    elif not (has_sell_naira or has_send_to_bank):
         return None
     amount = parse_amount(lowered)
     if amount is None:
@@ -219,8 +310,7 @@ async def initiate_paj_session(
     if phone:
         payload["phone"] = phone
     try:
-        out = await get_go_client()._token_post(
-            "/api/v1/funding/paj/initiate",
+        out = await get_go_client().paj_initiate_session(
             token,
             payload,
             idempotency_key=idempotency_key or _id("idem"),
@@ -261,8 +351,7 @@ async def verify_paj_otp(
     if phone:
         payload["phone"] = phone
     try:
-        out = await get_go_client()._token_post(
-            "/api/v1/funding/paj/verify",
+        out = await get_go_client().paj_verify_otp(
             token,
             payload,
             idempotency_key=idempotency_key or _id("idem"),
@@ -320,9 +409,9 @@ async def create_onramp(
         "currency": currency or "NGN",
     }
     try:
-        out = await get_go_client()._token_post(
-            f"/api/v1/funding/{_kind}/onramp",
+        out = await get_go_client().funding_create_onramp(
             token,
+            _kind,
             payload,
             idempotency_key=idempotency_key or _id("idem"),
             extra_headers=_binding_headers(confirm_id),

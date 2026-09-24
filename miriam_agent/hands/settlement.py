@@ -11,14 +11,23 @@ voice-owned string used here is mirrored below (see _SERVICE_DOWN_LINE).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from miriam_agent.hands.audit import AuditLog, AuditRow, Receipt
-from miriam_agent.hands.ledger import Ledger, LedgerUnavailable, money, new_ledger
+from miriam_agent.hands.ledger import (
+    Ledger,
+    LedgerStore,
+    LedgerUnavailable,
+    money,
+    new_ledger,
+)
+from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import HandlerState, ProposedAction, build_state
 from miriam_agent.judgment.schema import Decision
 
@@ -94,6 +103,57 @@ class TurnResult:
     card_action_id: str = ""
 
 
+# Provider failures that must NOT burn the approval: the challenge is
+# reopened so a retap can retry instead of hitting CHALLENGE_EXPIRED.
+RETRIABLE_REASONS = frozenset(
+    {
+        "GLIDER_UNREACHABLE",
+        "GLIDER_NOT_LIVE",
+        "RATE_UNAVAILABLE",
+        "PAJ_INITIATE_FAILED",
+        "ONRAMP_FAILED",
+        "NO_GO_TOKEN",
+        "AUTOMATIONS_UNREACHABLE",
+    }
+)
+
+
+def challenge_owner_ok(challenge: Any, ledger: Ledger, event: Event) -> bool:
+    """True when the tap belongs to the challenge owner.
+
+    A confirm_id issued to another user must never execute: every settle
+    leg checks this before dispatching and burns the id with a
+    CHALLENGE_MISMATCH refusal when it fails.
+    """
+    if challenge is None:
+        return False
+    owner = getattr(challenge, "user_id", "") or ""
+    if owner and owner != ledger.user_id:
+        return False
+    event_user = getattr(event, "user_id", "") or ""
+    if event_user and owner and event_user != owner:
+        return False
+    return True
+
+
+def maybe_reopen_challenge(
+    ledger: Ledger, challenge: Any, receipt: Receipt | None
+) -> None:
+    """Reopen a consumed challenge when the failure is transient.
+
+    Consume-first settlement would otherwise burn the approval on a blip:
+    retap yields CHALLENGE_EXPIRED with no path to retry. A retriable
+    provider failure flips the challenge back to pending so the next tap
+    runs the leg again; declines, mismatches and executions stay terminal.
+    """
+    if receipt is None or receipt.status != "rejected":
+        return
+    reasons = set(receipt.reasons or [])
+    if reasons & RETRIABLE_REASONS:
+        challenge.status = "pending"
+        ledger.challenges[challenge.id] = challenge
+
+
 def _action_type(value: str) -> Any:
     """Narrow a stored challenge action back to the ProposedAction vocabulary."""
     return (
@@ -119,7 +179,21 @@ def _action_type(value: str) -> Any:
 
 
 class SettlementMixin:
-    """Confirm entry, dispatch, expiry, turn types."""
+    """Confirm entry, dispatch, expiry, turn types.
+
+    Mixed into :class:`miriam_agent.orchestrator.Orchestrator`, which
+    provides the runtime surface declared below (store, policy, clock,
+    voice). Declared here so the type gate checks the mixin against the
+    contract instead of `Any`.
+    """
+
+    store: LedgerStore
+    policy: Policy
+    clock: Callable[[], datetime]
+
+    async def _speak(
+        self, state: HandlerState, *, utterance: str = ""
+    ) -> str | None: ...
 
     @staticmethod
     def _tag_provenance(result: TurnResult, provenance: str) -> TurnResult:
@@ -214,14 +288,82 @@ class SettlementMixin:
                 audit=audit.rows,
             )
 
-        if (
-            challenge is not None
-            and challenge.is_open(now)
-            and challenge.user_id
-            and challenge.user_id != ledger.user_id
-        ):
+        # Ownership binding FIRST, before any leg dispatches: a confirm_id
+        # issued to another user must never execute here. Burn it (consumed)
+        # and return a mismatch refusal -- never fall through to a leg.
+        if challenge.user_id and challenge.user_id != ledger.user_id:
             challenge.status = "consumed"
             ledger.challenges[challenge.id] = challenge
+            mismatched_owner: Receipt = Receipt(
+                id=f"rcpt_rejected_{event.confirm_id or 'missing'}",
+                at=now,
+                status="rejected",
+                action="confirm",
+                currency=ledger.currency,
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                reasons=["CHALLENGE_MISMATCH"],
+                detail="that confirmation was issued to a different account",
+            )
+            ledger.remember_receipt(mismatched_owner)
+            await self.store.save(ledger)
+            state = build_state(
+                ledger=ledger,
+                policy=self.policy,
+                decision={
+                    "id": "",
+                    "next_mode": "ask",
+                    "action_choice": "deny",
+                    "reasons": ["CHALLENGE_MISMATCH"],
+                },
+                now=now,
+            )
+            return TurnResult(
+                state=state,
+                narration=await self._speak(state),
+                decision=state.decision,
+                receipt=mismatched_owner,
+                audit=audit.rows,
+            )
+        # Cross-user tap at the event level (belt and suspenders: the ledger
+        # above is loaded for event.user_id, so a challenge naming someone
+        # else is already caught; this covers a spoofed event user_id).
+        if event.user_id and challenge.user_id and event.user_id != challenge.user_id:
+            challenge.status = "consumed"
+            ledger.challenges[challenge.id] = challenge
+            mismatched_event: Receipt = Receipt(
+                id=f"rcpt_rejected_{event.confirm_id or 'missing'}",
+                at=now,
+                status="rejected",
+                action="confirm",
+                currency=ledger.currency,
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                reasons=["CHALLENGE_MISMATCH"],
+                detail="that confirmation was issued to a different account",
+            )
+            ledger.remember_receipt(mismatched_event)
+            await self.store.save(ledger)
+            state = build_state(
+                ledger=ledger,
+                policy=self.policy,
+                decision={
+                    "id": "",
+                    "next_mode": "ask",
+                    "action_choice": "deny",
+                    "reasons": ["CHALLENGE_MISMATCH"],
+                },
+                now=now,
+            )
+            return TurnResult(
+                state=state,
+                narration=await self._speak(state),
+                decision=state.decision,
+                receipt=mismatched_event,
+                audit=audit.rows,
+            )
 
         if challenge.action == "invest":
             # The tap approves the money; the wallet signature (a separate

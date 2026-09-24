@@ -8,11 +8,14 @@ surface is unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from miriam_agent.hands.audit import AuditLog, Receipt
 from miriam_agent.hands.invest import INVEST_SLEEVE, prepare_allocate
-from miriam_agent.hands.ledger import Ledger
+from miriam_agent.hands.ledger import Ledger, LedgerStore
+from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.orders import prepare_order, prepare_set_allocation
 from miriam_agent.hands.rebalance import (
     prepare_pause,
@@ -20,13 +23,98 @@ from miriam_agent.hands.rebalance import (
     prepare_resume,
 )
 from miriam_agent.hands.save_rule import select_save_automation
-from miriam_agent.hands.settlement import Event, TurnResult
-from miriam_agent.hands.state import ProposedAction, build_state
+from miriam_agent.hands.settlement import (
+    Event,
+    TurnResult,
+    challenge_owner_ok,
+    maybe_reopen_challenge,
+)
+from miriam_agent.hands.state import (
+    Execution,
+    HandlerState,
+    ProposedAction,
+    build_state,
+)
 from miriam_agent.judgment.schema import Decision
 
 
 class LegSettlementMixin:
-    """Settle legs for sleeve and rule actions."""
+    """Settle legs for sleeve and rule actions.
+
+    Mixed into :class:`miriam_agent.orchestrator.Orchestrator`, which
+    provides the runtime surface declared below (store, policy, clock,
+    voice, and the Go-call binders). Declared here so the type gate
+    checks the legs against the contract instead of `Any`.
+    """
+
+    store: LedgerStore
+    policy: Policy
+    go_token: str | None
+    clock: Callable[[], datetime]
+
+    async def _speak(
+        self, state: HandlerState, *, utterance: str = ""
+    ) -> str | None: ...
+    def _execution_from(self, receipt: Receipt | None) -> Execution | None: ...
+
+    # NOTE: _sync_card_terminal is intentionally NOT declared here. The real
+    # implementation lives on CardSettlementMixin (later in the MRO), and a
+    # stub def on this class would shadow it at runtime and silently disable
+    # the Go card-terminal sync.
+
+    async def _challenge_mismatch(
+        self,
+        ledger: Ledger,
+        challenge: Any,
+        *,
+        receipt_action: str,
+        proposed_type: str,
+    ) -> TurnResult:
+        """Burn a cross-user confirm_id with a mismatch refusal, never execute."""
+        now = self.clock()
+        challenge.status = "consumed"
+        ledger.challenges[challenge.id] = challenge
+        receipt = Receipt(
+            id=f"rcpt_rejected_{challenge.id}",
+            at=now,
+            status="rejected",
+            action=receipt_action,
+            currency=ledger.currency,
+            amount=challenge.amount,
+            counterparty=challenge.counterparty,
+            sleeve=challenge.sleeve,
+            decision_id=challenge.decision_id,
+            reasons=["CHALLENGE_MISMATCH"],
+            detail="that confirmation was issued to a different account",
+        )
+        ledger.remember_receipt(receipt)
+        await self.store.save(ledger)
+        state = build_state(
+            ledger=ledger,
+            policy=self.policy,
+            proposed_action=ProposedAction(
+                type=proposed_type,  # type: ignore[arg-type]
+                amount=challenge.amount,
+                counterparty=challenge.counterparty,
+                sleeve=challenge.sleeve,
+                source="user",
+            ),
+            decision={
+                "id": "",
+                "next_mode": "ask",
+                "action_choice": "deny",
+                "reasons": ["CHALLENGE_MISMATCH"],
+            },
+            now=now,
+        )
+        return TurnResult(
+            state=state,
+            narration=await self._speak(state),
+            decision=state.decision,
+            receipt=receipt,
+            confirm_id=challenge.id,
+            audit=[],
+        )
 
     async def _handle_confirm_invest(
         self, ledger: Ledger, event: Event, challenge: Any
@@ -36,6 +124,13 @@ class LegSettlementMixin:
 
         audit = AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._challenge_mismatch(
+                ledger,
+                challenge,
+                receipt_action="invest_prepare",
+                proposed_type="invest",
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -105,7 +200,9 @@ class LegSettlementMixin:
         )
         # prepare_allocate only saves on paths that change provider state, so
         # persist here as well: the consumed challenge and the rejected receipt
-        # must survive the request even when nothing moved.
+        # must survive the request even when nothing moved. Transient
+        # provider failures reopen the challenge so a retap can retry.
+        maybe_reopen_challenge(ledger, challenge, receipt)
         await self.store.save(ledger)
         execution = self._execution_from(receipt)
         state = build_state(
@@ -136,6 +233,13 @@ class LegSettlementMixin:
 
         audit = AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._challenge_mismatch(
+                ledger,
+                challenge,
+                receipt_action="order_prepare",
+                proposed_type=challenge.action,
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -224,6 +328,7 @@ class LegSettlementMixin:
                 order_call=calls["order_call"],
                 at=now,
             )
+        maybe_reopen_challenge(ledger, challenge, receipt)
         await self.store.save(ledger)
         execution = self._execution_from(receipt)
         state = build_state(
@@ -251,6 +356,13 @@ class LegSettlementMixin:
         """Settle a rebalance/pause/resume tap: immediate, no staging."""
         audit = AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._challenge_mismatch(
+                ledger,
+                challenge,
+                receipt_action=f"{challenge.action}_prepare",
+                proposed_type=challenge.action,
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -336,6 +448,7 @@ class LegSettlementMixin:
                 resume_call=calls["resume_call"],
                 at=now,
             )
+        maybe_reopen_challenge(ledger, challenge, receipt)
         await self.store.save(ledger)
         execution = self._execution_from(receipt)
         state = build_state(
@@ -372,6 +485,13 @@ class LegSettlementMixin:
 
         audit = _AuditLog()
         now = self.clock()
+        if not challenge_owner_ok(challenge, ledger, event):
+            return await self._challenge_mismatch(
+                ledger,
+                challenge,
+                receipt_action="save_rule_update",
+                proposed_type="save_rule",
+            )
         challenge.status = "consumed"
         ledger.challenges[challenge.id] = challenge
 
@@ -474,6 +594,7 @@ class LegSettlementMixin:
                 ["SAVE_RULE_UNBOUND"],
                 "that confirmation does not bind a save rule; nothing moved",
             )
+        maybe_reopen_challenge(ledger, challenge, receipt)
         ledger.remember_receipt(receipt)
         await self.store.save(ledger)
         execution = self._execution_from(receipt)

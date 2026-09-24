@@ -163,9 +163,7 @@ def test_registered_exceptions_still_exist_and_are_needed():
         assert reason.strip(), f"{rel} -> {banned}: empty rationale"
         path = ROOT.parent / rel
         assert path.exists(), f"{rel}: registered but the file is gone"
-        hits = [
-            m for m in _imports_of(path) if _matches(m, banned)
-        ]
+        hits = [m for m in _imports_of(path) if _matches(m, banned)]
         assert hits, f"{rel}: registered for {banned} but no longer imports it"
 
 
@@ -183,11 +181,14 @@ REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/tools/definitions.py": 1387,
     "miriam_agent/financial/profile.py": 1376,
     "miriam_agent/orchestrator.py": 1050,
-    "miriam_agent/api/chat.py": 1570,
+    # +12 for the empty-confirm_id 422 guards (false-settlement fix).
+    "miriam_agent/api/chat.py": 1582,
     "miriam_agent/database/memory.py": 782,
     "miriam_agent/hands/transfer.py": 998,
     "miriam_agent/money/plan.py": 885,
-    "miriam_agent/integrations/go_client.py": 1209,
+    # +57 for the named funding-write methods (hands no longer calls private
+    # _token_post; the validation/logging/retry contract lives in one place).
+    "miriam_agent/integrations/go_client.py": 1266,
     "miriam_agent/integrations/supermemory_client.py": 829,
     "miriam_agent/safety/validator.py": 848,
     "miriam_agent/onboarding/driver.py": 747,

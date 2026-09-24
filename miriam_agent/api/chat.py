@@ -984,6 +984,13 @@ async def chat_settle(
             detail="biometric must be 'pass'",
         )
     confirm_id = (body.confirm_id or "").strip()
+    if not confirm_id:
+        # An empty/unknown id must never report "already_settled" (200):
+        # that tells Go a payment completed when nothing existed.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="confirm_id is required",
+        )
     orchestrator = _orchestrator_for(token)
     try:
         result = await orchestrator.handle_confirm(
@@ -1046,6 +1053,11 @@ async def chat_card_terminal(
             detail="state must be rejected|expired",
         )
     confirm_id = (body.confirm_id or "").strip()
+    if not confirm_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="confirm_id is required",
+        )
     orchestrator = _orchestrator_for(token)
     try:
         ledger = await _get_ledger_store().load(user.id)
@@ -1207,9 +1219,9 @@ async def list_identities(
                 "channel": row.channel,
                 "handle": row.handle,
                 "verified": bool(row.verified),
-                "last_seen_at": row.last_seen_at.isoformat()
-                if row.last_seen_at
-                else None,
+                "last_seen_at": (
+                    row.last_seen_at.isoformat() if row.last_seen_at else None
+                ),
             }
             for row in rows
         ]
@@ -1471,11 +1483,11 @@ async def _load_memory_facts(
     if supermemory_memory is not None and supermemory_memory.enabled:
         try:
             container_tag = container_tag_for(user_id)
-            facts = await supermemory_memory.build_memory_facts(
+            smart_facts = await supermemory_memory.build_memory_facts(
                 container_tag, query=query or "What should I know about this user?"
             )
-            if facts:
-                return facts
+            if smart_facts:
+                return smart_facts
         except Exception:
             pass  # fail open to local store
 

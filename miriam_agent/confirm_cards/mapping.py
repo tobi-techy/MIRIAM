@@ -172,7 +172,14 @@ def card_for_action(challenge: Challenge) -> CardSpec | None:
     return None
 
 
-def _parse_legs(raw: str) -> list[Any] | None:
+def _parse_legs(raw: str | list[Any] | None) -> list[Any] | None:
+    """Parse stored allocation legs, accepting a JSON string or a real list.
+
+    Challenge meta may carry legs either way; a list-shaped value must ride
+    onto the card untouched instead of collapsing to "?" legs.
+    """
+    if isinstance(raw, list):
+        return raw
     try:
         legs = json.loads(raw or "[]")
     except (ValueError, TypeError):

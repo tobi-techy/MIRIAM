@@ -191,9 +191,7 @@ def test_wrong_otp_retries_never_auto_buys(monkeypatch):
             go_token="tok",
             provider=None,
         )
-        res = await orch.handle(
-            Event(type="utterance", user_id="u9", text="000000")
-        )
+        res = await orch.handle(Event(type="utterance", user_id="u9", text="000000"))
         assert res.receipt is not None
         assert res.receipt.status == "rejected"
         assert "PAJ_VERIFY_FAILED" in (res.receipt.reasons or [])
@@ -246,6 +244,22 @@ class _E2EFakeGo:
             }
         raise AssertionError(path)
 
+    # Named funding writers (hands calls these, never _token_post directly).
+    async def paj_initiate_session(self, token, payload, **kw):
+        return await self._token_post(
+            "/api/v1/funding/paj/initiate", token, payload, **kw
+        )
+
+    async def paj_verify_otp(self, token, payload, **kw):
+        return await self._token_post(
+            "/api/v1/funding/paj/verify", token, payload, **kw
+        )
+
+    async def funding_create_onramp(self, token, kind, payload, **kw):
+        return await self._token_post(
+            f"/api/v1/funding/{kind}/onramp", token, payload, **kw
+        )
+
 
 def test_bank_details_reach_the_narration(monkeypatch):
     """The user-readable message carries the account to pay, not just a receipt.
@@ -286,9 +300,7 @@ def test_bank_details_reach_the_narration(monkeypatch):
         assert "1530.5" in (tapped.narration or "")
         assert f"CONFIRM: {tapped.confirm_id}" in (tapped.narration or "")
 
-        done = await orch.handle(
-            Event(type="utterance", user_id="u7", text="482916")
-        )
+        done = await orch.handle(Event(type="utterance", user_id="u7", text="482916"))
         assert done.receipt is not None
         assert done.receipt.status == "executed"
         assert done.receipt.rail_reference == "ord-9"

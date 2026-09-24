@@ -49,7 +49,7 @@ from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.transfer import GoRail
 from miriam_agent.integrations import go_client as go_client_mod
 from miriam_agent.observability.correlation import current_trace_id
-from miriam_agent.orchestrator import Event, Orchestrator
+from miriam_agent.orchestrator import Event, Orchestrator, TurnResult
 from miriam_agent.safety.validator import InputValidator
 
 logger = logging.getLogger(__name__)

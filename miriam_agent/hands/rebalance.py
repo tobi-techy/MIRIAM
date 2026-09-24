@@ -84,10 +84,16 @@ async def prepare_rebalance(
     if not strategy_id.strip():
         return _reject_reb(["BAD_STRATEGY"], "no strategy id supplied; nothing moved")
 
+    # Idempotency first: a replayed tap replays the receipt, never the rail.
+    _reb_key = f"rebalance-prepare:{strategy_id}"
+    _prior_reb = ledger.receipt_for(_reb_key)
+    if _prior_reb is not None:
+        return _prior_reb, None, ledger
+
     try:
         result = await rebalance_call(strategy_id, reason)
     except CoolingDownError as exc:
-        card = _cooldown_card(exc.retry_after)
+        cooldown_card = _cooldown_card(exc.retry_after)
         detail = "rebalance refused: strategy cooling down" + (
             f"; retry in {exc.retry_after}s" if exc.retry_after else ""
         )
@@ -108,7 +114,7 @@ async def prepare_rebalance(
         )
         ledger.remember_receipt(receipt)
         await store.save(ledger)
-        return receipt, card, ledger
+        return receipt, cooldown_card, ledger
     except Exception as exc:  # noqa: BLE001 - a provider failure is a business result
         logger.warning("rebalance prepare failed: %s", exc)
         return _reject_reb(
@@ -207,6 +213,12 @@ async def _prepare_pause_resume(
     if not strategy_id.strip():
         return _reject_pr(["BAD_STRATEGY"], "no strategy id supplied; nothing moved")
 
+    # Idempotency first: a replayed tap replays the receipt, never the rail.
+    _pr_key = f"{action}-prepare:{strategy_id}"
+    _prior_pr = ledger.receipt_for(_pr_key)
+    if _prior_pr is not None:
+        return _prior_pr, None, ledger
+
     try:
         result = await call(strategy_id)
     except Exception as exc:  # noqa: BLE001 - a provider failure is a business result
@@ -217,6 +229,37 @@ async def _prepare_pause_resume(
         )
     if not isinstance(result, dict):
         return _reject_pr(["NO_EXECUTION"], "the provider returned no result")
+    # Same honesty as rebalance: a provider error payload must not narrate
+    # as done. Require a success marker or an execution id.
+    _status = str(result.get("status") or result.get("state") or "").lower()
+    if _status in ("failed", "error", "rejected"):
+        return _reject_pr(
+            ["GLIDER_NOT_LIVE"],
+            f"{action} failed at the provider ({_status}); nothing moved",
+        )
+    _exec_id = str(
+        result.get("execution_id")
+        or result.get("executionId")
+        or result.get("operation_id")
+        or result.get("operationId")
+        or ""
+    ).strip()
+    if not _exec_id and _status not in (
+        "ok",
+        "success",
+        "completed",
+        "paused",
+        "resumed",
+    ):
+        # No execution id and no explicit success: do not claim success.
+        # Pause/resume endpoints that only echo the strategy state still
+        # count when they name the strategy; otherwise reject.
+        if not result.get("strategy_id") and not result.get("strategyId"):
+            return _reject_pr(
+                ["NO_EXECUTION"],
+                f"the provider returned no execution id for {action}; "
+                "nothing is claimed",
+            )
     card: dict[str, Any] = {
         "kind": "order_confirm",
         "title": action.upper(),

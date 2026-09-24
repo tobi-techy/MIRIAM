@@ -36,13 +36,8 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from miriam_agent.hands.audit import AuditLog, Receipt
-from miriam_agent.hands.funding import (
-    extract_otp as _extract_funding_otp,
-)
-from miriam_agent.hands.funding import (
-    parse_funding_utterance,
-    parse_offramp_utterance,
-)
+from miriam_agent.hands.funding import extract_otp as _extract_funding_otp
+from miriam_agent.hands.funding import parse_funding_utterance, parse_offramp_utterance
 from miriam_agent.hands.invest import (
     parse_invest_utterance,
     settle_allocate,
@@ -324,6 +319,19 @@ class Orchestrator(
             if action is not None and action.source != "user":
                 action = None
         if action is None:
+            # Single-name sleeve transactions BEFORE generic transfer: the
+            # transfer parser claims any "buy ... <amount>" as purchase
+            # advice, which would shadow "buy 50 NVDAx" or "buy me some
+            # apple stock". The order parser only claims sentences with a
+            # ticker/company symbol, so grocery buys still fall through.
+            action = parse_order_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
+            action = parse_rebalance_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
             action = parse_transfer_utterance(event.text)
             if action is not None and action.source != "user":
                 action = None
@@ -331,16 +339,6 @@ class Orchestrator(
             # The diversified stock sleeve. Single-name tickers parse to None
             # here (a later verb), so Judgment asks instead of investing.
             action = parse_invest_utterance(event.text)
-            if action is not None and action.source != "user":
-                action = None
-        if action is None:
-            # Single-name sleeve transactions: buy/sell one ticker, or
-            # rebalance the sleeve. Invest-sleeve words are untouched.
-            action = parse_order_utterance(event.text)
-            if action is not None and action.source != "user":
-                action = None
-        if action is None:
-            action = parse_rebalance_utterance(event.text)
             if action is not None and action.source != "user":
                 action = None
         if action is None:

@@ -1,24 +1,21 @@
-"""Layer 1 - HANDS. Glider order/rebalance/pause-resume leg.
+"""Layer 1 - HANDS. Glider order/set-allocation leg.
 
 Deterministic code only. No LLM, no JEV.
 
-Orders, set-allocation shifts, rebalances, and pause/resume run through this
-module after a Hands-issued confirm_id tap. They are the only mutations for
-the Glider sleeve beyond the enroll leg in hands/invest.py.
+Orders and set-allocation shifts run through this module after a
+Hands-issued confirm_id tap. Utterance parsing lives in hands/nl.py and is
+re-exported here so existing import paths keep working.
 
-Settlement models:
-- Orders & set-allocations: staged mutation -> _obtain_and_replay, Rail-signed
-  server-side (no wallet signature needed).
-- Rebalance/pause/resume: immediate, no staging (429 = cooldown).
+Settlement model: staged mutation -> _obtain_and_replay, Rail-signed
+server-side (no wallet signature needed).
 
 Fail closed everywhere: unknown symbol, amount breach, no enrollment,
-cooldown, provider error - receipt rejected, nothing moves.
+provider error - receipt rejected, nothing moves.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -27,35 +24,20 @@ from typing import Any
 
 from miriam_agent.hands.audit import Receipt, sleeves_snapshot
 from miriam_agent.hands.invest import _obtain_and_replay, _sleeve_from_catalogue
-from miriam_agent.hands.ledger import (
-    Ledger,
-    LedgerStore,
-    Movement,
-    PendingOrder,
-    money,
+from miriam_agent.hands.ledger import Ledger, LedgerStore, PendingOrder, money
+from miriam_agent.hands.nl import ORDER_SLEEVE as ORDER_SLEEVE
+from miriam_agent.hands.nl import _parse_side as _parse_side
+from miriam_agent.hands.nl import _parse_symbol as _parse_symbol
+from miriam_agent.hands.nl import parse_order_utterance as parse_order_utterance
+from miriam_agent.hands.nl import (
+    parse_performance_utterance as parse_performance_utterance,
 )
-from miriam_agent.hands.limits import Policy, check_amount
-from miriam_agent.hands.state import ProposedAction
-from miriam_agent.tools.glider_sleeve import parse_caip10
+from miriam_agent.hands.nl import parse_rebalance_utterance as parse_rebalance_utterance
 
 logger = logging.getLogger(__name__)
 
-# The sleeve all order movements draw on. Never the spend pot.
-ORDER_SLEEVE = "savings"
-
 # Short TTL: the allocation shift converges on the next rebalance.
 ORDER_TTL_MINUTES = 15
-
-# --- utterance parsing (deterministic regex, never a model) ---
-
-_BUY_WORDS = frozenset({"buy", "long", "add", "pick up"})
-_SELL_WORDS = frozenset({"sell", "short", "dump", "trim"})
-
-_TICKER_RE = re.compile(r"\b([A-Za-z]{1,5})x?\b")
-_REBALANCE_WORDS = frozenset({"rebalance", "re-balance", "rebal"})
-_PERFORMANCE_WORDS = frozenset(
-    {"performance", "returns", "return", "doing", "grown", "growth", "pnl", "p&l"}
-)
 
 
 def _utcnow() -> datetime:
@@ -66,93 +48,6 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def _parse_side(text: str) -> str | None:
-    lowered = (text or "").casefold()
-    has_buy = any(w in lowered for w in _BUY_WORDS)
-    has_sell = any(w in lowered for w in _SELL_WORDS)
-    if has_buy and not has_sell:
-        return "buy"
-    if has_sell and not has_buy:
-        return "sell"
-    return None
-
-
-def _parse_symbol(text: str) -> str | None:
-    raw = text or ""
-    for match in _TICKER_RE.finditer(raw):
-        token = match.group(0)
-        if token.upper() in {"I", "A", "OR", "AN", "AS", "AT", "IN", "ON", "OF"}:
-            continue
-        base = match.group(1).upper()
-        if len(base) < 1:
-            continue
-        return f"{base}x"
-    return None
-
-
-def parse_order_utterance(text: str) -> ProposedAction | None:
-    """Turn a 'buy 50 NVDAx' sentence into an order action, with regex."""
-    from miriam_agent.hands.transfer import parse_amount
-
-    lowered = (text or "").casefold()
-    if not lowered.strip():
-        return None
-    side = _parse_side(text)
-    if side is None:
-        return None
-    amount = parse_amount(lowered)
-    if amount is None:
-        return None
-    symbol = _parse_symbol(text)
-    if symbol is None:
-        return None
-    return ProposedAction(
-        type="order",
-        amount=amount,
-        counterparty=symbol,
-        sleeve=ORDER_SLEEVE,
-        raw=text,
-        source="user",
-        side=side,
-    )
-
-
-def parse_rebalance_utterance(text: str) -> ProposedAction | None:
-    """Turn a 'rebalance my sleeve' sentence into a rebalance action."""
-    lowered = (text or "").casefold()
-    if not lowered.strip():
-        return None
-    if not any(word in lowered for word in _REBALANCE_WORDS):
-        return None
-    if not any(word in lowered for word in ("sleeve", "stocks", "stock", "portfolio")):
-        return None
-    return ProposedAction(
-        type="rebalance",
-        counterparty="Rail Stock Sleeve",
-        sleeve=ORDER_SLEEVE,
-        raw=text,
-        source="user",
-    )
-
-
-def parse_performance_utterance(text: str) -> ProposedAction | None:
-    """Detect a sleeve performance question. Read-only, never an order."""
-    lowered = (text or "").casefold()
-    if not lowered.strip():
-        return None
-    if not any(word in lowered for word in _PERFORMANCE_WORDS):
-        return None
-    if not any(word in lowered for word in ("sleeve", "stocks", "stock", "portfolio")):
-        return None
-    return ProposedAction(
-        type="none",
-        counterparty="Rail Stock Sleeve",
-        sleeve=ORDER_SLEEVE,
-        raw=text,
-        source="user",
-    )
-
-
 __all__ = [
     "ORDER_SLEEVE",
     "ORDER_TTL_MINUTES",
@@ -160,18 +55,13 @@ __all__ = [
     "parse_performance_utterance",
     "parse_rebalance_utterance",
     "prepare_order",
-    "prepare_pause",
-    "prepare_rebalance",
-    "prepare_resume",
     "prepare_set_allocation",
     "settle_order",
     "settle_set_allocation",
 ]
 
 
-def _pick_asset(
-    assets: list[dict[str, Any]], symbol: str
-) -> dict[str, Any] | None:
+def _pick_asset(assets: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
     """Exact symbol match from a search_assets response, or None."""
     want = (symbol or "").strip().upper()
     if not want:
@@ -186,9 +76,7 @@ def _pick_asset(
     for asset in assets:
         if not isinstance(asset, dict):
             continue
-        base = str(
-            asset.get("symbol") or asset.get("Symbol") or ""
-        ).strip().upper()
+        base = str(asset.get("symbol") or asset.get("Symbol") or "").strip().upper()
         if base == want or base.rstrip("X") == want.rstrip("X"):
             return asset
     return None
@@ -212,7 +100,50 @@ async def prepare_order(
     """Run a Glider buy/sell after the tap and return the execution card."""
     timestamp = at if at is not None else _utcnow()
     before = sleeves_snapshot(ledger.sleeves)
-    amount = money(amount_usd)
+    if amount_usd is None:
+        receipt = Receipt(
+            id=_id("rcpt"),
+            at=timestamp,
+            status="rejected",
+            action="order_prepare",
+            currency=ledger.currency,
+            counterparty=symbol or "Rail Stock Sleeve",
+            sleeve=ORDER_SLEEVE,
+            decision_id=decision_id,
+            idempotency_key=f"order-prepare:{decision_id}:{side}:{symbol}:none",
+            reasons=["BAD_AMOUNT"],
+            sleeves_before=before,
+            sleeves_after=sleeves_snapshot(ledger.sleeves),
+            detail="no order amount was named; nothing moved",
+        )
+        ledger.remember_receipt(receipt)
+        return receipt, None, ledger
+    try:
+        amount = money(amount_usd)
+    except Exception:
+        receipt = Receipt(
+            id=_id("rcpt"),
+            at=timestamp,
+            status="rejected",
+            action="order_prepare",
+            currency=ledger.currency,
+            counterparty=symbol or "Rail Stock Sleeve",
+            sleeve=ORDER_SLEEVE,
+            decision_id=decision_id,
+            idempotency_key=f"order-prepare:{decision_id}:{side}:{symbol}:bad",
+            reasons=["BAD_AMOUNT"],
+            sleeves_before=before,
+            sleeves_after=sleeves_snapshot(ledger.sleeves),
+            detail="the order amount was not a number; nothing moved",
+        )
+        ledger.remember_receipt(receipt)
+        return receipt, None, ledger
+    # Idempotency first: a double-tap replays the original receipt instead
+    # of running quote -> initiate -> create on the provider a second time.
+    _key = f"order-prepare:{decision_id}:{side}:{symbol}:{amount}"
+    _prior = ledger.receipt_for(_key)
+    if _prior is not None:
+        return _prior, None, ledger
 
     def _reject(reasons: list[str], detail: str) -> tuple[Receipt, None, Ledger]:
         receipt = Receipt(
@@ -236,7 +167,7 @@ async def prepare_order(
 
     if side not in ("buy", "sell"):
         return _reject(["BAD_ORDER_SIDE"], "the order side must be buy or sell")
-    if amount <= 0:
+    if amount is None or amount <= 0:
         return _reject(["BAD_AMOUNT"], "the order amount must be greater than zero")
     clean_symbol = (symbol or "").strip()
     if not clean_symbol:
@@ -343,7 +274,9 @@ async def prepare_order(
     if not isinstance(funding, dict):
         funding = {}
     if str(funding.get("status") or "").upper() == "FAILED":
-        reason = funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
+        reason = (
+            funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
+        )
         return _reject(
             ["FUNDING_FAILED"],
             f"the order placed but funding failed ({reason}); sleeve not debited",
@@ -454,9 +387,12 @@ async def settle_order(
 
     binding = ledger.pending_order.get(order_id)
     if binding is None:
-        return _reject(
-            ["NO_SUCH_ORDER"], "that order does not match anything open"
-        )
+        return _reject(["NO_SUCH_ORDER"], "that order does not match anything open")
+    # Idempotent replay: the same settle twice returns the first receipt.
+    _settle_key = f"order-settle:{order_id}"
+    _prior_settle = ledger.receipt_for(_settle_key)
+    if _prior_settle is not None:
+        return _prior_settle, {"ok": True, "idempotent_replay": True}, ledger
     receipt = Receipt(
         id=_id("rcpt"),
         at=timestamp,
@@ -476,6 +412,7 @@ async def settle_order(
         detail=f"replay of order {binding.id}; nothing moved twice",
     )
     ledger.remember_receipt(receipt)
+    await store.save(ledger)
     return receipt, {"ok": True, "idempotent_replay": True}, ledger
 
 
@@ -494,6 +431,11 @@ async def prepare_set_allocation(
     """Run a set-allocation shift after the tap and return the execution card."""
     timestamp = at if at is not None else _utcnow()
     before = sleeves_snapshot(ledger.sleeves)
+    # Idempotency first: a replayed tap replays the receipt, never the rail.
+    _alloc_key = f"set-allocation-prepare:{decision_id}"
+    _prior_alloc = ledger.receipt_for(_alloc_key) if decision_id else None
+    if _prior_alloc is not None:
+        return _prior_alloc, None, ledger
 
     def _reject(reasons: list[str], detail: str) -> tuple[Receipt, None, Ledger]:
         receipt = Receipt(
@@ -533,6 +475,16 @@ async def prepare_set_allocation(
         total += w
     if not clean_legs:
         return _reject(["BAD_LEGS"], "no allocation legs were supplied; nothing moved")
+    # Legs must describe a real split: weights near 1.0 (fractions) or 100.0
+    # (percents), every asset id non-empty and unique. Malformed splits are
+    # rejected here with a clear reason instead of failing opaquely at Go.
+    if len({leg["asset_id"] for leg in clean_legs}) != len(clean_legs):
+        return _reject(["BAD_LEGS"], "allocation legs repeat an asset; nothing moved")
+    if not (0.99 <= total <= 1.01 or 99.0 <= total <= 101.0):
+        return _reject(
+            ["BAD_LEGS"],
+            f"allocation weights sum to {total:g}, not 1.0 or 100; nothing moved",
+        )
 
     try:
         completed = await _obtain_and_replay(
@@ -629,4 +581,3 @@ async def settle_set_allocation(
     )
     ledger.remember_receipt(receipt)
     return receipt, {"ok": False, "reasons": ["NOT_STAGED"]}, ledger
-
