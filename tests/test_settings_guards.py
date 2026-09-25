@@ -49,6 +49,7 @@ def _strong(**overrides):
         ENCRYPTION_KEY="e" * 40,
         JWT_AUDIENCE="miriam-api",
         JWT_ISSUER="rail-backend",
+        RAIL_SERVICE_KEY="r" * 40,
         ALLOWED_ORIGINS="https://app.example.com",
         DATABASE_URL="postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
