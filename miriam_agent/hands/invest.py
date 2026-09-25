@@ -230,6 +230,7 @@ async def _fund_existing(
         sleeves_before=before,
         sleeves_after=sleeves_snapshot(ledger.sleeves),
         rail_reference=enrollment_id,
+        strategy_id=strategy_id,
         detail=f"${amount} added to the existing Rail Stock Sleeve",
     )
     ledger.remember_receipt(receipt)
@@ -312,6 +313,35 @@ async def prepare_allocate(
         )
     if amount <= 0:
         return _reject(["BAD_AMOUNT"], "the allocate amount must be greater than zero")
+    if decision_id:
+        # A retap of an already-funded top-up replays the original receipt
+        # without touching the balance check, the catalogue, the owner
+        # lookup, or any provider call. The key binds decision + amount, so a
+        # fresh tap (new decision_id) or a different amount never replays.
+        # Empty decision ids never replay: the key would not be unique.
+        prior_topup = ledger.receipt_for(f"invest-topup:{decision_id}:{amount}")
+        if prior_topup is not None and prior_topup.status in (
+            "executed",
+            "parked",
+            "noop",
+        ):
+            replay = prior_topup.model_copy(update={"idempotent_replay": True})
+            card = {
+                "kind": "funded",
+                "title": "FUNDED",
+                "subtitle": "Glider · Rail Stock Sleeve",
+                "primary": "Already added to the existing sleeve",
+                "amount": (
+                    f"{prior_topup.amount} {ledger.currency}"
+                    if prior_topup.amount is not None
+                    else f"{amount} {ledger.currency}"
+                ),
+                "source": "stash",
+                "strategy_id": prior_topup.strategy_id,
+                "enrollment_id": prior_topup.rail_reference,
+                "idempotent_replay": True,
+            }
+            return replay, card, ledger
     if amount > ledger.balance(INVEST_SLEEVE) and read_stash is not None:
         # Go holds the real USDC. The chat sleeve is a mirror and is often
         # still zero after a Naira buy credits stash directly.

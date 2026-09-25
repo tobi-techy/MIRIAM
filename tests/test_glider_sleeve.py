@@ -305,6 +305,96 @@ async def test_prepare_already_enrolled_funds_without_a_new_signature() -> None:
     assert ledger.balance("savings") == before - money(30)
 
 
+async def test_prepare_topup_retap_replays_without_provider_calls() -> None:
+    """Fund the full stash, then tap again: the original receipt replays.
+
+    The retap runs against a sabotaged catalogue and counting provider
+    fakes, so any balance check, catalogue read, owner lookup, or provider
+    call would fail the test instead of silently double-funding.
+    """
+    store = InMemoryLedgerStore()
+    ledger = ledger_with("u1", savings=30)
+    await store.save(ledger)
+    calls = make_calls()
+    prepare_hits: list[dict[str, Any]] = []
+    fund_hits: list[dict[str, Any]] = []
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        prepare_hits.append(payload)
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {
+            "status": "COMPLETED",
+            "already_enrolled": True,
+            "enrollment_id": "enr_1",
+            "strategy_id": payload.get("strategy_id"),
+        }
+
+    async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+        fund_hits.append(payload)
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-fund"},
+            }
+        return {
+            "status": "COMPLETED",
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"enrollment_id": "enr_1"},
+        }
+
+    first, first_card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_full",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    assert first.status == "executed"
+    assert first.strategy_id == SLEEVE_ROW["id"]
+    assert first_card is not None
+    assert first_card["strategy_id"] == SLEEVE_ROW["id"]
+    assert ledger.balance("savings") == money(0)
+    prepare_calls_after_first = len(prepare_hits)
+    fund_calls_after_first = len(fund_hits)
+    assert prepare_calls_after_first > 0
+    assert fund_calls_after_first > 0
+
+    # Retap the same decision: the stash is empty and the catalogue no
+    # longer lists the sleeve, so anything but an early replay would
+    # refuse or raise.
+    sabotaged = make_calls(strategies=[{"id": "x", "name": "Something Else"}])
+    second, second_card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_full",
+        list_strategies=sabotaged["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    assert second.status == "executed"
+    assert second.idempotent_replay is True
+    assert second_card is not None
+    assert second_card["strategy_id"] == SLEEVE_ROW["id"]
+    assert second_card["enrollment_id"] == "enr_1"
+    assert second_card.get("idempotent_replay") is True
+    assert len(prepare_hits) == prepare_calls_after_first
+    assert len(fund_hits) == fund_calls_after_first
+    assert ledger.balance("savings") == money(0)
+
+
 async def test_prepare_missing_sleeve_fails_closed() -> None:
     store = InMemoryLedgerStore()
     ledger = funded_ledger()
