@@ -146,8 +146,27 @@ async def _glider_get_strategy(
         }
     strategies = data.get("strategies") if isinstance(data, dict) else None
     strategies = strategies if isinstance(strategies, list) else []
+    partial = bool(data.get("partial")) if isinstance(data, dict) else False
+    partial_info: dict[str, Any] = {}
+    if isinstance(data, dict):
+        for key in ("partial", "user_error", "rail_error"):
+            if data.get(key) is not None:
+                partial_info[key] = data.get(key)
     sleeve = _sleeve_from_strategies(strategies)
     if sleeve is None:
+        if partial:
+            return {
+                "sleeve": None,
+                "live": False,
+                "error": (
+                    "strategy catalogue partial; Rail Stock Sleeve not in "
+                    "the visible half, not necessarily unconfigured"
+                ),
+                "catalogue": strategies,
+                "hint": "Retry the catalogue; one source is down. "
+                "Do not seed a duplicate sleeve.",
+                **partial_info,
+            }
         return {
             "sleeve": None,
             "live": False,
@@ -172,6 +191,7 @@ async def _glider_get_strategy(
         "glider_strategy_id": glider_id,
         "detail": detail,
         "live": True,
+        **partial_info,
     }
 
 

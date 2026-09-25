@@ -368,7 +368,11 @@ class Ledger(BaseModel):
         )
 
     def window(self, *, days: int = WINDOW_DAYS, at: datetime | None = None) -> Last30d:
-        """Inflow, spend and leak-by-category over the velocity window."""
+        """Inflow, spend and leak-by-category over the velocity window.
+
+        ``stash_sync`` adjustments are mirror corrections to match the Go
+        stash truth, not new earnings, so they are excluded from inflow.
+        """
         now = at or _now()
         cutoff = now - timedelta(days=days)
         inflow = Decimal("0")
@@ -378,6 +382,8 @@ class Ledger(BaseModel):
             if movement.at < cutoff:
                 continue
             if movement.kind == "inflow":
+                if movement.category == "stash_sync":
+                    continue
                 inflow += movement.amount
             elif movement.kind == "outflow":
                 spend += movement.amount

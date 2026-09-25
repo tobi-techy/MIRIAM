@@ -784,3 +784,276 @@ def test_sleeve_reads_registered_and_writes_are_not() -> None:
     } <= names
     assert "glider_prepare_enroll" not in names
     assert "glider_complete_enroll" not in names
+
+
+# -- divergence + partial hardening (PR #13 follow-up) ---------------------------
+
+
+async def test_prepare_topup_diverged_parks_and_retap_replays_without_refund(monkeypatch) -> None:
+    from miriam_agent.hands.ledger import Ledger, LedgerError
+
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    calls = make_calls()
+    fund_hits: list[dict[str, Any]] = []
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {
+            "status": "COMPLETED",
+            "already_enrolled": True,
+            "enrollment_id": "enr_1",
+        }
+
+    async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-fund"},
+            }
+        fund_hits.append(payload)
+        return {
+            "status": "COMPLETED",
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"enrollment_id": "enr_1"},
+        }
+
+    # Local debit refuses after Go funded: parked, never a lying rejected.
+    def boom(self, sleeve: str, amount: Decimal) -> None:
+        raise LedgerError("simulated local refuse")
+
+    monkeypatch.setattr(Ledger, "debit", boom)
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_diverged",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    monkeypatch.undo()
+    assert receipt.status == "parked"
+    assert receipt.reasons == ["LEDGER_DIVERGED"]
+    assert card is not None and card["kind"] == "needs_reconciliation"
+    assert len(fund_hits) == 1
+    assert ledger.balance("savings") == money(100)
+
+    # Retap under the same key replays the review card, never re-funds.
+    second, card2, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_diverged",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    assert second.status == "parked"
+    assert second.idempotent_replay is True
+    assert card2 is not None and card2["kind"] == "needs_reconciliation"
+    assert len(fund_hits) == 1
+    assert ledger.balance("savings") == money(100)
+
+
+async def test_settle_diverged_parks_and_retap_replays(monkeypatch) -> None:
+    from miriam_agent.hands.ledger import Ledger, LedgerError
+
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    flow = await _prepared(store, ledger)
+    calls = make_calls()
+    complete_hits: list[dict[str, Any]] = []
+    real_complete = calls["complete_call"]
+
+    async def counting_complete(payload: dict[str, Any]) -> dict[str, Any]:
+        out = await real_complete(payload)
+        if out.get("status") != "AWAITING_CONFIRMATION":
+            complete_hits.append(payload)
+        return out
+
+    def boom(self, sleeve: str, amount: Decimal) -> None:
+        raise LedgerError("simulated local refuse")
+
+    monkeypatch.setattr(Ledger, "debit", boom)
+    receipt, result, ledger = await settle_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        flow_id=flow,
+        signed_tx="AgAB user-signed",
+        complete_call=counting_complete,
+    )
+    monkeypatch.undo()
+    assert receipt.status == "parked"
+    assert receipt.reasons == ["LEDGER_DIVERGED"]
+    assert result["ok"] is False
+    assert result["reasons"] == ["LEDGER_DIVERGED"]
+    assert len(complete_hits) == 1
+    assert ledger.balance("savings") == money(100)
+
+    second, result2, ledger = await settle_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        flow_id=flow,
+        signed_tx="AgAB user-signed",
+        complete_call=counting_complete,
+    )
+    assert second.status == "parked"
+    assert second.idempotent_replay is True
+    assert result2["reasons"] == ["LEDGER_DIVERGED"]
+    assert len(complete_hits) == 1
+
+
+async def test_settle_precheck_refuses_before_touching_provider() -> None:
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    flow = await _prepared(store, ledger)
+    # Money left the stash between tap and signature: settle must refuse
+    # before calling Go, so nothing moves remotely either.
+    ledger.sleeves["savings"] = money(10)
+
+    async def boom_complete(payload: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("provider must not be called when broke")
+
+    receipt, result, ledger = await settle_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        flow_id=flow,
+        signed_tx="AgAB user-signed",
+        complete_call=boom_complete,
+    )
+    assert receipt.status == "rejected"
+    assert receipt.reasons == ["OVER_BALANCE"]
+    assert result["ok"] is False
+    assert ledger.balance("savings") == money(10)
+
+
+async def test_prepare_partial_catalogue_says_partial_not_unconfigured() -> None:
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    calls = make_calls()
+
+    async def partial_list() -> dict[str, Any]:
+        return {
+            "strategies": [{"id": "x", "name": "Something Else"}],
+            "partial": True,
+            "rail_error": "rail down",
+        }
+
+    receipt, card, _ = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_partial",
+        list_strategies=partial_list,
+        get_owner=calls["get_owner"],
+        prepare_call=calls["prepare_call"],
+    )
+    assert receipt.status == "rejected"
+    assert receipt.reasons == ["SLEEVE_MISSING"]
+    assert "partial" in receipt.detail
+
+
+def test_stash_sync_excluded_from_window_inflow() -> None:
+    from miriam_agent.hands.ledger import Movement
+
+    ledger = ledger_with("u1", savings=0)
+    now = _utcnow()
+    ledger.record_movement(
+        Movement(
+            kind="inflow",
+            amount=money(40),
+            sleeve="savings",
+            counterparty="Go stash",
+            category="stash_sync",
+            ref="dec_sync",
+            at=now,
+        )
+    )
+    assert ledger.window(at=now).inflow == money(0)
+    ledger.record_movement(
+        Movement(
+            kind="inflow",
+            amount=money(25),
+            sleeve="savings",
+            counterparty="employer",
+            category="salary",
+            ref="pay",
+            at=now,
+        )
+    )
+    assert ledger.window(at=now).inflow == money(25)
+
+
+def test_extract_funding_failed_wins_either_side() -> None:
+    from miriam_agent.hands.invest import _extract_funding
+
+    _, failed_top = _extract_funding(
+        {
+            "funding": {"status": "FAILED", "failure_reason": "bank said no"},
+            "enrollment": {"funding": {"status": "SUBMITTED"}},
+        }
+    )
+    assert str(failed_top.get("status")).upper() == "FAILED"
+    _, failed_nested = _extract_funding(
+        {
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"funding": {"status": "failed"}},
+        }
+    )
+    assert str(failed_nested.get("status")).upper() == "FAILED"
+    _, ok = _extract_funding(
+        {
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"enrollment_id": "enr_1"},
+        }
+    )
+    assert str(ok.get("status")).upper() == "SUBMITTED"
+
+
+async def test_glider_tool_surfaces_partial_flag(monkeypatch) -> None:
+    import miriam_agent.tools.glider_sleeve as sleeve_mod
+    from miriam_agent.tools.glider_sleeve import _glider_get_strategy
+
+    class _PartialNoSleeve:
+        async def list_investable_strategies(self, token, status=None):
+            return {
+                "strategies": [{"id": "x", "name": "Something Else"}],
+                "partial": True,
+                "rail_error": "rail down",
+            }
+
+    monkeypatch.setattr(sleeve_mod, "get_go_client", lambda: _PartialNoSleeve())
+    out = await _glider_get_strategy({}, {"token": "t"})
+    assert out["live"] is False
+    assert out.get("partial") is True
+    assert "partial" in str(out.get("error", "")).lower()
+
+    class _PartialWithSleeve:
+        async def list_investable_strategies(self, token, status=None):
+            return {"strategies": [SLEEVE_ROW], "partial": True, "user_error": "x"}
+
+        async def get_investment_strategy(self, token, strategy_id):
+            return {"strategy_id": strategy_id}
+
+    monkeypatch.setattr(sleeve_mod, "get_go_client", lambda: _PartialWithSleeve())
+    out2 = await _glider_get_strategy({}, {"token": "t"})
+    assert out2["live"] is True
+    assert out2.get("partial") is True
