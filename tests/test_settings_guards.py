@@ -96,6 +96,36 @@ def test_production_rejects_default_db_password():
         )
 
 
+def test_blank_typed_env_falls_back_to_defaults(monkeypatch):
+    """A host that injects KEY= for unset vars must not crash startup."""
+    monkeypatch.setenv("DEBUG", "")
+    monkeypatch.setenv("GO_REQUEST_TIMEOUT", "")
+    monkeypatch.setenv("OPENAI_MAX_TOKENS", "")
+    settings = _settings(ENVIRONMENT="development")
+    assert settings.DEBUG is False
+    assert settings.GO_REQUEST_TIMEOUT == 15.0
+    assert settings.OPENAI_MAX_TOKENS == 4096
+
+
+def test_libpq_database_url_uses_asyncpg():
+    settings = _settings(
+        ENVIRONMENT="development",
+        DATABASE_URL="postgresql://miriam:pw@db:5432/miriam",
+    )
+    assert settings.DATABASE_URL.startswith("postgresql+asyncpg://")
+    postgres = _settings(
+        ENVIRONMENT="development",
+        DATABASE_URL="postgres://miriam:pw@db:5432/miriam",
+    )
+    assert postgres.DATABASE_URL.startswith("postgresql+asyncpg://")
+
+
+def test_explicit_database_driver_is_kept():
+    url = "postgresql+psycopg://miriam:pw@db:5432/miriam"
+    settings = _settings(ENVIRONMENT="development", DATABASE_URL=url)
+    assert settings.DATABASE_URL == url
+
+
 def test_development_allows_defaults(monkeypatch):
     """Development keeps the convenient defaults.
 

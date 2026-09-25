@@ -1,8 +1,9 @@
 """Configuration settings for Miriam Financial Agent."""
 
+import sys
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -248,7 +249,26 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
+        # Host panels often inject KEY= for every unset variable. An empty
+        # string is not a valid bool or number, and it used to crash import
+        # before the process could listen. Treat blank as unset so the field
+        # default applies. A blank secret still fails the production guard.
+        "env_ignore_empty": True,
     }
+
+    @model_validator(mode="after")
+    def _use_asyncpg_driver(self):
+        """The async engine rejects a bare postgresql:// URL.
+
+        Compose and many hosts emit the libpq form. Rewrite only that form
+        so an explicit driver is left alone.
+        """
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        if url.startswith("postgresql://"):
+            self.DATABASE_URL = "postgresql+asyncpg://" + url[len("postgresql://") :]
+        return self
 
     @property
     def is_production(self) -> bool:
@@ -339,4 +359,19 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Cached singleton for application settings."""
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        # The traceback's last frame is validate_python, and the reason is a
+        # later log line that deploy viewers drop. Print the field messages
+        # only: error input can contain the secrets that failed the check.
+        reasons: list[str] = []
+        for err in exc.errors():
+            loc = ".".join(str(part) for part in err.get("loc", ())) or "settings"
+            reasons.append(f"{loc}: {err.get('msg', 'invalid')}")
+        print(
+            "miriam refused to start: " + "; ".join(reasons),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
