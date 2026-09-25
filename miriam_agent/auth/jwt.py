@@ -28,14 +28,12 @@ def _verify_options() -> dict[str, Any]:
     """PyJWT decode options: require the claims this service depends on.
 
     ``exp`` must be present. Without ``require``, a token carrying no expiry
-    was accepted as forever-valid, and ``aud`` was never checked at all (the
-    ``InvalidAudienceError`` handler below was unreachable).
+    was accepted as forever-valid. ``aud`` is not required: Go does not set it.
     """
     options: dict[str, Any] = {"require": ["exp", "sub"]}
-    if not get_settings().JWT_AUDIENCE:
-        # The Go issuer does not set `aud` today; only enforce it once a real
-        # audience is configured, rather than rejecting every live token.
-        options["verify_aud"] = False
+    # Go access and agent tokens never set `aud`. A dashboard value left over
+    # from the old production guard must not make decode require that claim.
+    options["verify_aud"] = False
     return options
 
 
@@ -51,10 +49,14 @@ def decode_token(token: str) -> dict[str, Any]:
     settings = get_settings()
     jwt_secret = settings.JWT_SECRET
     kwargs: dict[str, Any] = {}
-    if settings.JWT_AUDIENCE:
-        kwargs["audience"] = settings.JWT_AUDIENCE
+    # Audience is intentionally not passed. Go omits `aud`; passing a configured
+    # audience makes PyJWT reject every live Rail token.
+    issuers = []
     if settings.JWT_ISSUER:
-        kwargs["issuer"] = settings.JWT_ISSUER
+        issuers.append(settings.JWT_ISSUER)
+    if "rail_service" not in issuers:
+        issuers.append("rail_service")
+    kwargs["issuer"] = issuers
     try:
         return pyjwt.decode(
             token,
