@@ -60,11 +60,12 @@ class Settings(BaseSettings):
     JWT_SECRET: str = Field(default="change-me-in-production")
     JWT_ALGORITHM: str = Field(default="HS256")
     JWT_EXPIRATION_MINUTES: int = Field(default=60)
-    # Optional audience/issuer pinning. Left empty by default because the Go
-    # issuer does not set them; when set, decode_token enforces them instead
-    # of accepting any token signed with the shared secret.
+    # Go access tokens (pkg/auth/jwt.go) set iss=rail_service and do not set
+    # aud. Leave audience empty: a configured audience makes decode_token
+    # require that claim and rejects every live Rail token. Issuer defaults
+    # to the value Go writes; override it only if the issuer changes there.
     JWT_AUDIENCE: str = Field(default="")
-    JWT_ISSUER: str = Field(default="")
+    JWT_ISSUER: str = Field(default="rail_service")
     # Shared service credential for rail -> Python calls (e.g. the inflow
     # webhook). A user JWT must never be enough to mint ledger inflows, so
     # POST /money/inflow requires this key via the X-Rail-Service-Key header.
@@ -319,20 +320,14 @@ class Settings(BaseSettings):
                 "production; deriving it from SECRET_KEY via single SHA-256 is not "
                 "a KDF and must not be used in production"
             )
-        if not self.JWT_AUDIENCE or len(self.JWT_AUDIENCE) < 3:
-            problems.append(
-                "JWT_AUDIENCE must be set (e.g. 'miriam-api') in production; "
-                "without it tokens can be replayed across services sharing JWT_SECRET"
-            )
         if not self.JWT_ISSUER or len(self.JWT_ISSUER) < 3:
             problems.append(
-                "JWT_ISSUER must be set (e.g. 'rail-backend') in production"
+                "JWT_ISSUER must be set to the issuer Go writes "
+                "(rail_service) in production"
             )
-        if "*" in {origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")}:
-            problems.append(
-                "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
-                "allowlist of origins"
-            )
+        # ALLOWED_ORIGINS=* is accepted. api/main.py turns credentialed CORS
+        # off in that case, and Go plus the iMessage bridge do not use CORS.
+        # An explicit allowlist is still how a browser app gets credentials.
         if ":miriam_password@" in self.DATABASE_URL:
             problems.append(
                 "DATABASE_URL must not contain the default password 'miriam_password' "

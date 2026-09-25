@@ -61,20 +61,38 @@ def test_production_rejects_short_encryption_key():
         _strong(ENCRYPTION_KEY="short")
 
 
-def test_production_rejects_missing_audience_issuer():
-    with pytest.raises(Exception):
-        _strong(JWT_AUDIENCE="")
+def test_production_allows_unset_audience_because_go_omits_it():
+    settings = _strong(JWT_AUDIENCE="")
+    assert settings.JWT_AUDIENCE == ""
+
+
+def test_production_rejects_missing_issuer():
     with pytest.raises(Exception):
         _strong(JWT_ISSUER="")
 
 
-def test_production_rejects_wildcard_origins():
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="*")
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="https://app.example.com,*")
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="https://app.example.com, *, https://other.example.com")
+def test_production_uses_go_issuer_and_open_cors_when_unset(monkeypatch):
+    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    settings = _settings(
+        ENVIRONMENT="production",
+        JWT_SECRET="j" * 40,
+        SECRET_KEY="s" * 40,
+        ENCRYPTION_KEY="e" * 40,
+        DATABASE_URL=(
+            "postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam"
+        ),
+        RAIL_SERVICE_KEY="r" * 40,
+    )
+    assert settings.JWT_AUDIENCE == ""
+    assert settings.JWT_ISSUER == "rail_service"
+    assert settings.ALLOWED_ORIGINS == "*"
+
+
+def test_production_allows_wildcard_origins():
+    settings = _strong(ALLOWED_ORIGINS="*")
+    assert "*" in {origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",")}
 
 
 def test_production_rejects_dev_example_secrets():

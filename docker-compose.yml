@@ -55,12 +55,15 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:?JWT_AUDIENCE must be set}
-      JWT_ISSUER: ${JWT_ISSUER:?JWT_ISSUER must be set}
+      # Go access tokens have no aud. An explicit audience rejects them.
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-}
+      JWT_ISSUER: ${JWT_ISSUER:-rail_service}
       # Production refuses to boot without this. It is the only credential
       # allowed to mint ledger inflows (X-Rail-Service-Key). Same value as Go.
       RAIL_SERVICE_KEY: ${RAIL_SERVICE_KEY:?RAIL_SERVICE_KEY must be set}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS must be set}
+      # * keeps credentialed CORS off (see api/main.py). Set a real origin
+      # list when a browser app must send cookies.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       # TypeSafe judgment layer (System One). On by default; activate it by
       # exporting TYPESAFE_API_KEY on the host. Without a key the agent runs the
       # pre-TypeSafe path unchanged.
