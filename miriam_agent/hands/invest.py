@@ -306,6 +306,7 @@ async def _fund_existing(
             sleeves_before=before,
             sleeves_after=sleeves_snapshot(ledger.sleeves),
             rail_reference=enrollment_id,
+            strategy_id=strategy_id,
             detail=(
                 f"Go funded ${amount} but the local stash debit refused ({exc}); "
                 "money moved remotely and needs reconciliation; not re-tappable "
@@ -436,11 +437,7 @@ async def prepare_allocate(
         # fresh tap (new decision_id) or a different amount never replays.
         # Empty decision ids never replay: the key would not be unique.
         prior_topup = ledger.receipt_for(f"invest-topup:{decision_id}:{amount}")
-        if prior_topup is not None and prior_topup.status in (
-            "executed",
-            "parked",
-            "noop",
-        ):
+        if prior_topup is not None and prior_topup.status == "executed":
             replay = prior_topup.model_copy(update={"idempotent_replay": True})
             card = {
                 "kind": "funded",
@@ -457,6 +454,24 @@ async def prepare_allocate(
                 "enrollment_id": prior_topup.rail_reference,
                 "idempotent_replay": True,
             }
+            return replay, card, ledger
+        if prior_topup is not None and prior_topup.status in ("parked", "noop"):
+            # Terminal without a second provider call: remote may already
+            # hold the money, so a retap replays the review card, never a
+            # FUNDED card and never a re-fund. Mirrors the guard inside
+            # _fund_existing, just earlier (no balance/catalogue/provider).
+            replay = prior_topup.model_copy(update={"idempotent_replay": True})
+            card = _needs_review_card(
+                amount=(
+                    prior_topup.amount
+                    if prior_topup.amount is not None
+                    else amount
+                ),
+                currency=ledger.currency,
+                strategy_id=prior_topup.strategy_id,
+                enrollment_id=prior_topup.rail_reference,
+            )
+            card["idempotent_replay"] = True
             return replay, card, ledger
     if amount > ledger.balance(INVEST_SLEEVE) and read_stash is not None:
         # Go holds the real USDC. The chat sleeve is a mirror and is often
