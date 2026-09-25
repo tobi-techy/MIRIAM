@@ -417,15 +417,40 @@ class GoBackendClient:
     ) -> dict[str, Any]:
         """User strategies plus Rail strategies, de-duplicated by id.
 
-        A failure of the Rail list is surfaced: swallowing it would make a
-        live sleeve look missing and the agent would refuse to invest.
+        Partial-tolerant: if one source is down, the other still serves so a
+        Rail outage cannot block a user-owned sleeve (and vice versa). The
+        ``partial`` flag tells callers the merge is incomplete. Both failing
+        still raises, so the invest path refuses loudly instead of inventing.
         """
-        user = await self.list_investment_strategies(token, status=status)
-        rail = await self.list_rail_investment_strategies(token)
+        user: dict[str, Any] | None = None
+        rail: dict[str, Any] | None = None
+        user_error: Exception | None = None
+        rail_error: Exception | None = None
+        try:
+            user = await self.list_investment_strategies(token, status=status)
+        except Exception as exc:  # noqa: BLE001 - merged below
+            user_error = exc
+        try:
+            rail = await self.list_rail_investment_strategies(token)
+        except Exception as exc:  # noqa: BLE001 - merged below
+            rail_error = exc
+        if user is None and rail is None:
+            raise IntegrationError(
+                f"strategy catalogue unreadable (user: {user_error}; "
+                f"rail: {rail_error})"
+            )
+        if user_error is not None or rail_error is not None:
+            logger.warning(
+                "invest catalogue partial (user_error=%s rail_error=%s)",
+                user_error,
+                rail_error,
+            )
         merged: list[dict[str, Any]] = []
         seen: set[str] = set()
         for bucket in (user, rail):
-            rows = bucket.get("strategies") if isinstance(bucket, dict) else None
+            if not isinstance(bucket, dict):
+                continue
+            rows = bucket.get("strategies")
             if not isinstance(rows, list):
                 continue
             for row in rows:
@@ -437,7 +462,14 @@ class GoBackendClient:
                 if sid:
                     seen.add(sid)
                 merged.append(row)
-        return {"strategies": merged}
+        out: dict[str, Any] = {"strategies": merged}
+        if user_error is not None or rail_error is not None:
+            out["partial"] = True
+            if user_error is not None:
+                out["user_error"] = str(user_error)
+            if rail_error is not None:
+                out["rail_error"] = str(rail_error)
+        return out
 
     async def contribute_to_investment(
         self,
