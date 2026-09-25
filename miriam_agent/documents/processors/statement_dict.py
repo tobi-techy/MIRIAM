@@ -4,7 +4,33 @@ from __future__ import annotations
 
 from typing import Any
 
+from miriam_agent.documents.categorize import (
+    categorize_narration,
+    category_label,
+    is_essential,
+    spend_kind,
+)
 from miriam_agent.documents.models import StatementExtraction
+
+
+def _transaction_dict(t) -> dict[str, Any]:
+    bucket = categorize_narration(t.description or t.raw_description, t.direction)
+    return {
+        "date": t.date.normalized.isoformat() if t.date else None,
+        "description": t.description,
+        "amount": str(t.amount.normalized) if t.amount else None,
+        "direction": t.direction,
+        "currency": t.currency,
+        "balance_after": (
+            str(t.balance_after.normalized) if t.balance_after else None
+        ),
+        "reference": t.reference,
+        "page": t.page,
+        "category": bucket,
+        "category_label": category_label(bucket),
+        "spend_kind": spend_kind(bucket),
+        "is_essential": is_essential(bucket),
+    }
 
 
 def statement_to_dict(ext: StatementExtraction) -> dict[str, Any]:
@@ -28,19 +54,5 @@ def statement_to_dict(ext: StatementExtraction) -> dict[str, Any]:
         ),
         "total_debits": str(ext.total_debits) if ext.total_debits is not None else None,
         "transaction_count": len(ext.transactions),
-        "transactions": [
-            {
-                "date": t.date.normalized.isoformat() if t.date else None,
-                "description": t.description,
-                "amount": str(t.amount.normalized) if t.amount else None,
-                "direction": t.direction,
-                "currency": t.currency,
-                "balance_after": (
-                    str(t.balance_after.normalized) if t.balance_after else None
-                ),
-                "reference": t.reference,
-                "page": t.page,
-            }
-            for t in ext.transactions
-        ],
+        "transactions": [_transaction_dict(t) for t in ext.transactions],
     }

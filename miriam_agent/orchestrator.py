@@ -517,7 +517,10 @@ class Orchestrator(
         client = get_go_client()
 
         async def list_strategies() -> dict[str, Any]:
-            return await client.list_investment_strategies(token, status="active")
+            loader = getattr(client, "list_investable_strategies", None)
+            if loader is None:
+                return await client.list_investment_strategies(token, status="active")
+            return await loader(token, status="active")
 
         async def get_owner() -> dict[str, Any]:
             return await client.get_investment_owner(token)
@@ -527,6 +530,18 @@ class Orchestrator(
             return await client.prepare_user_enroll(
                 token, payload, confirmation_token=tok
             )
+
+        async def read_stash() -> Decimal:
+            data = await client.get_balances(token)
+            raw = data.get("stash_balance") if isinstance(data, dict) else None
+            return Decimal(str(raw or "0"))
+
+        async def fund_call(payload: dict[str, Any]) -> dict[str, Any]:
+            tok = payload.pop("confirmation_token", None)
+            contribute = getattr(client, "contribute_to_investment", None)
+            if contribute is None:
+                raise RuntimeError("go host cannot fund an existing portfolio")
+            return await contribute(token, payload, confirmation_token=tok)
 
         async def complete_call(payload: dict[str, Any]) -> dict[str, Any]:
             tok = payload.pop("confirmation_token", None)
@@ -539,6 +554,8 @@ class Orchestrator(
             "get_owner": get_owner,
             "prepare_call": prepare_call,
             "complete_call": complete_call,
+            "fund_call": fund_call,
+            "read_stash": read_stash,
         }
 
     async def _handle_wallet_signature(

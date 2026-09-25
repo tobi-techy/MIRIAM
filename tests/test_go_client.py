@@ -435,6 +435,93 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
 
 
+def test_list_investable_merges_the_rail_sleeve():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(
+                200,
+                json={
+                    "strategies": [
+                        {
+                            "strategy_id": "sleeve",
+                            "name": "Rail Stock Sleeve",
+                            "glider_strategy_id": "glider-1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(
+                200,
+                json={"strategies": [{"strategy_id": "mine", "name": "Mine"}]},
+            )
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    ids = [row["strategy_id"] for row in merged["strategies"]]
+    assert ids == ["mine", "sleeve"]
+    assert "partial" not in merged
+    _run(client.close())
+
+
+def test_list_investable_survives_a_rail_outage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(500, json={"message": "rail down"})
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(
+                200,
+                json={"strategies": [{"strategy_id": "mine", "name": "Mine"}]},
+            )
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    assert [r["strategy_id"] for r in merged["strategies"]] == ["mine"]
+    assert merged.get("partial") is True
+    assert "rail_error" in merged
+    _run(client.close())
+
+
+def test_list_investable_survives_a_user_list_outage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(
+                200,
+                json={
+                    "strategies": [
+                        {
+                            "strategy_id": "sleeve",
+                            "name": "Rail Stock Sleeve",
+                            "glider_strategy_id": "glider-1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(500, json={"message": "user list down"})
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    assert [r["strategy_id"] for r in merged["strategies"]] == ["sleeve"]
+    assert merged.get("partial") is True
+    _run(client.close())
+
+
+def test_list_investable_raises_when_both_sources_down():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "all down"})
+
+    from miriam_agent.core.exceptions import IntegrationError
+
+    client = _client_for(handler)
+    with pytest.raises(IntegrationError):
+        _run(client.list_investable_strategies("tok", status="active"))
+    _run(client.close())
+
+
 def test_user_enroll_hits_prepare_and_complete_paths():
     seen = []
 

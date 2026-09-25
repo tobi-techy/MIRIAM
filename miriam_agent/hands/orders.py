@@ -192,7 +192,9 @@ async def prepare_order(
             ["SLEEVE_MISSING"],
             "Rail Stock Sleeve is not configured yet; escalate, do not invent tickers",
         )
-    strategy_id = str(sleeve.get("id") or "")
+    from miriam_agent.integrations.go_client import investment_strategy_id
+
+    strategy_id = investment_strategy_id(sleeve)
     glider_strategy_id = str(
         sleeve.get("glider_strategy_id") or sleeve.get("gliderStrategyId") or ""
     )

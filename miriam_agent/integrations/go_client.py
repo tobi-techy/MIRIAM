@@ -403,6 +403,93 @@ class GoBackendClient:
             "/api/v1/investments/strategies", token, params=params
         )
 
+    async def list_rail_investment_strategies(self, token: str) -> dict[str, Any]:
+        """Rail-owned strategies, including the seeded stock sleeve.
+
+        These have no owning user, so they never appear on
+        ``GET /investments/strategies``. The invest path has to read this
+        list or the sleeve looks missing even when it is seeded.
+        """
+        return await self._token_get("/api/v1/investments/strategies/rail", token)
+
+    async def list_investable_strategies(
+        self, token: str, status: str | None = None
+    ) -> dict[str, Any]:
+        """User strategies plus Rail strategies, de-duplicated by id.
+
+        Partial-tolerant: if one source is down, the other still serves so a
+        Rail outage cannot block a user-owned sleeve (and vice versa). The
+        ``partial`` flag tells callers the merge is incomplete. Both failing
+        still raises, so the invest path refuses loudly instead of inventing.
+        """
+        user: dict[str, Any] | None = None
+        rail: dict[str, Any] | None = None
+        user_error: Exception | None = None
+        rail_error: Exception | None = None
+        try:
+            user = await self.list_investment_strategies(token, status=status)
+        except Exception as exc:  # noqa: BLE001 - merged below
+            user_error = exc
+        try:
+            rail = await self.list_rail_investment_strategies(token)
+        except Exception as exc:  # noqa: BLE001 - merged below
+            rail_error = exc
+        if user is None and rail is None:
+            raise IntegrationError(
+                f"strategy catalogue unreadable (user: {user_error}; "
+                f"rail: {rail_error})"
+            )
+        if user_error is not None or rail_error is not None:
+            logger.warning(
+                "invest catalogue partial (user_error=%s rail_error=%s)",
+                user_error,
+                rail_error,
+            )
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for bucket in (user, rail):
+            if not isinstance(bucket, dict):
+                continue
+            rows = bucket.get("strategies")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sid = investment_strategy_id(row)
+                if sid and sid in seen:
+                    continue
+                if sid:
+                    seen.add(sid)
+                merged.append(row)
+        out: dict[str, Any] = {"strategies": merged}
+        if user_error is not None or rail_error is not None:
+            out["partial"] = True
+            if user_error is not None:
+                out["user_error"] = str(user_error)
+            if rail_error is not None:
+                out["rail_error"] = str(rail_error)
+        return out
+
+    async def contribute_to_investment(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Add USDC to a portfolio the user is already enrolled in.
+
+        POST /api/v1/investments/contributions. Staged like enroll: the first
+        call returns a confirmation token, the replay moves the money. No
+        new wallet signature.
+        """
+        return await self._token_post(
+            "/api/v1/investments/contributions",
+            token,
+            _with_confirmation(payload, confirmation_token),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+
     async def get_investment_strategy(
         self, token: str, strategy_id: str
     ) -> dict[str, Any]:
@@ -1218,6 +1305,17 @@ class GoBackendClient:
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return await self._request_json(method, path, token=token, payload=payload)
+
+
+def investment_strategy_id(row: dict[str, Any]) -> str:
+    """Rail strategy id as the Go API actually serializes it.
+
+    The live entity tag is ``strategy_id``. Older fixtures and a few handlers
+    used ``id``. Either is accepted; an empty string means the row is unbound.
+    """
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("strategy_id") or row.get("id") or "").strip()
 
 
 def _with_confirmation(
