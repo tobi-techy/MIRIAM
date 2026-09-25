@@ -4,6 +4,12 @@ Mirrors the narration rules in the enrichment sidecar
 (services/enrichment/src/spend_rules.py) and the Go statement normalizer.
 Miriam's own PDF reader does not call that sidecar, so a statement she
 reads in-process still needs a category.
+
+Parity owner: enrichment sidecar. When adding a rule here, add the same
+rule there (and vice versa); tests/test_statement_categories.py pins the
+shared Nigerian narrations so a drift fails loudly instead of splitting
+dashboards silently. ``transfer_out``/``savings``/``loan`` are movement,
+not consumption; only ``salary`` is income.
 """
 
 from __future__ import annotations
