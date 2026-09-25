@@ -149,6 +149,104 @@ async def _obtain_and_replay(
     return first
 
 
+async def _fund_existing(
+    *,
+    store: LedgerStore,
+    ledger: Ledger,
+    amount: Decimal,
+    strategy_id: str,
+    decision_id: str,
+    fund_call: Callable[..., Awaitable[dict[str, Any]]] | None,
+    prepared: dict[str, Any],
+    before: dict[str, str],
+    timestamp: datetime,
+    reject: Callable[[list[str], str], tuple[Receipt, None, Ledger]],
+) -> tuple[Receipt, dict[str, Any] | None, Ledger]:
+    """Add money to a portfolio that is already enrolled. No new signature."""
+    if fund_call is None:
+        return reject(
+            ["FUND_UNAVAILABLE"],
+            "this strategy is already enrolled and this path cannot add money",
+        )
+    try:
+        funded = await _obtain_and_replay(
+            fund_call,
+            {
+                "strategy_id": strategy_id,
+                "amount_usd": float(amount),
+                "source": "stash",
+                "idempotency_key": f"invest-topup:{decision_id}:{amount}",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - a provider failure is a business result
+        logger.warning("invest prepare: top-up failed: %s", exc)
+        return reject(
+            ["FUNDING_FAILED"],
+            f"the portfolio is enrolled but the top-up did not start ({exc})",
+        )
+    if str(funded.get("status") or "") == "AWAITING_CONFIRMATION":
+        return reject(
+            ["STILL_STAGED"], "the top-up stayed staged after replay; nothing moved"
+        )
+    funding = funded.get("funding") if isinstance(funded.get("funding"), dict) else {}
+    if str(funding.get("status") or "").upper() == "FAILED":
+        reason = funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
+        return reject(
+            ["FUNDING_FAILED"],
+            f"the portfolio is enrolled but funding failed ({reason}); nothing moved",
+        )
+    try:
+        ledger.debit(INVEST_SLEEVE, amount)
+    except Exception as exc:  # noqa: BLE001 - over-balance is a refusal
+        return reject(["OVER_BALANCE"], f"stash debit refused ({exc})")
+    enrollment_id = str(
+        prepared.get("enrollment_id")
+        or (funded.get("enrollment") or {}).get("id")
+        or (funded.get("enrollment") or {}).get("enrollment_id")
+        or ""
+    )
+    ledger.record_movement(
+        Movement(
+            kind="outflow",
+            amount=amount,
+            sleeve=INVEST_SLEEVE,
+            counterparty="Rail Stock Sleeve",
+            category="invest",
+            ref=enrollment_id or decision_id,
+            at=timestamp,
+        )
+    )
+    receipt = Receipt(
+        id=_id("rcpt"),
+        at=timestamp,
+        status="executed",
+        action="invest_settle",
+        currency=ledger.currency,
+        amount=amount,
+        counterparty="Rail Stock Sleeve",
+        sleeve=INVEST_SLEEVE,
+        decision_id=decision_id,
+        idempotency_key=f"invest-topup:{decision_id}:{amount}",
+        sleeves_before=before,
+        sleeves_after=sleeves_snapshot(ledger.sleeves),
+        rail_reference=enrollment_id,
+        detail=f"${amount} added to the existing Rail Stock Sleeve",
+    )
+    ledger.remember_receipt(receipt)
+    await store.save(ledger)
+    card = {
+        "kind": "funded",
+        "title": "FUNDED",
+        "subtitle": "Glider \u00b7 Rail Stock Sleeve",
+        "primary": "Added to the existing sleeve",
+        "amount": f"{amount} {ledger.currency}",
+        "source": "stash",
+        "strategy_id": strategy_id,
+        "enrollment_id": enrollment_id,
+    }
+    return receipt, card, ledger
+
+
 def _sleeve_from_catalogue(strategies: list[dict[str, Any]]) -> dict[str, Any] | None:
     for s in strategies:
         if str(s.get("name") or "").strip().lower() == "rail stock sleeve":
@@ -169,6 +267,8 @@ async def prepare_allocate(
     list_strategies: Callable[..., Awaitable[dict[str, Any]]],
     get_owner: Callable[..., Awaitable[dict[str, Any]]],
     prepare_call: Callable[..., Awaitable[dict[str, Any]]],
+    fund_call: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    read_stash: Callable[..., Awaitable[Decimal]] | None = None,
     at: datetime | None = None,
 ) -> tuple[Receipt, dict[str, Any] | None, Ledger]:
     """Run Glider stage 1 after the tap and return the sign payload + card.
@@ -212,6 +312,20 @@ async def prepare_allocate(
         )
     if amount <= 0:
         return _reject(["BAD_AMOUNT"], "the allocate amount must be greater than zero")
+    if amount > ledger.balance(INVEST_SLEEVE) and read_stash is not None:
+        # Go holds the real USDC. The chat sleeve is a mirror and is often
+        # still zero after a Naira buy credits stash directly.
+        try:
+            live = money(await read_stash())
+        except Exception as exc:  # noqa: BLE001 - an unread balance is a refusal
+            logger.warning("invest prepare: stash balance unreadable: %s", exc)
+            return _reject(
+                ["BALANCE_UNREADABLE"],
+                "the stash balance could not be read; nothing moved",
+            )
+        held = ledger.balance(INVEST_SLEEVE)
+        if live > held:
+            ledger.credit(INVEST_SLEEVE, money(live - held))
     if amount > ledger.balance(INVEST_SLEEVE):
         return _reject(
             ["OVER_BALANCE"],
@@ -238,7 +352,9 @@ async def prepare_allocate(
             ["SLEEVE_MISSING"],
             "Rail Stock Sleeve is not configured yet; escalate, do not invent tickers",
         )
-    strategy_id = str(sleeve.get("id") or "")
+    from miriam_agent.integrations.go_client import investment_strategy_id
+
+    strategy_id = investment_strategy_id(sleeve)
     glider_strategy_id = str(
         sleeve.get("glider_strategy_id") or sleeve.get("gliderStrategyId") or ""
     )
@@ -292,6 +408,19 @@ async def prepare_allocate(
     if status == "AWAITING_CONFIRMATION":
         return _reject(
             ["STILL_STAGED"], "the provider stayed staged after replay; nothing moved"
+        )
+    if prepared.get("already_enrolled"):
+        return await _fund_existing(
+            store=store,
+            ledger=ledger,
+            amount=amount,
+            strategy_id=strategy_id,
+            decision_id=decision_id,
+            fund_call=fund_call,
+            prepared=prepared,
+            before=before,
+            timestamp=timestamp,
+            reject=_reject,
         )
     if prepared.get("simulated") is True or prepared.get("live") is False:
         return _reject(

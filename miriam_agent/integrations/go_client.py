@@ -403,6 +403,61 @@ class GoBackendClient:
             "/api/v1/investments/strategies", token, params=params
         )
 
+    async def list_rail_investment_strategies(self, token: str) -> dict[str, Any]:
+        """Rail-owned strategies, including the seeded stock sleeve.
+
+        These have no owning user, so they never appear on
+        ``GET /investments/strategies``. The invest path has to read this
+        list or the sleeve looks missing even when it is seeded.
+        """
+        return await self._token_get("/api/v1/investments/strategies/rail", token)
+
+    async def list_investable_strategies(
+        self, token: str, status: str | None = None
+    ) -> dict[str, Any]:
+        """User strategies plus Rail strategies, de-duplicated by id.
+
+        A failure of the Rail list is surfaced: swallowing it would make a
+        live sleeve look missing and the agent would refuse to invest.
+        """
+        user = await self.list_investment_strategies(token, status=status)
+        rail = await self.list_rail_investment_strategies(token)
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for bucket in (user, rail):
+            rows = bucket.get("strategies") if isinstance(bucket, dict) else None
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sid = investment_strategy_id(row)
+                if sid and sid in seen:
+                    continue
+                if sid:
+                    seen.add(sid)
+                merged.append(row)
+        return {"strategies": merged}
+
+    async def contribute_to_investment(
+        self,
+        token: str,
+        payload: dict[str, Any],
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Add USDC to a portfolio the user is already enrolled in.
+
+        POST /api/v1/investments/contributions. Staged like enroll: the first
+        call returns a confirmation token, the replay moves the money. No
+        new wallet signature.
+        """
+        return await self._token_post(
+            "/api/v1/investments/contributions",
+            token,
+            _with_confirmation(payload, confirmation_token),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+
     async def get_investment_strategy(
         self, token: str, strategy_id: str
     ) -> dict[str, Any]:
@@ -1218,6 +1273,17 @@ class GoBackendClient:
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return await self._request_json(method, path, token=token, payload=payload)
+
+
+def investment_strategy_id(row: dict[str, Any]) -> str:
+    """Rail strategy id as the Go API actually serializes it.
+
+    The live entity tag is ``strategy_id``. Older fixtures and a few handlers
+    used ``id``. Either is accepted; an empty string means the row is unbound.
+    """
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("strategy_id") or row.get("id") or "").strip()
 
 
 def _with_confirmation(

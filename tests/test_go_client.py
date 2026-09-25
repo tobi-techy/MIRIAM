@@ -435,6 +435,35 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
 
 
+def test_list_investable_merges_the_rail_sleeve():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(
+                200,
+                json={
+                    "strategies": [
+                        {
+                            "strategy_id": "sleeve",
+                            "name": "Rail Stock Sleeve",
+                            "glider_strategy_id": "glider-1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(
+                200,
+                json={"strategies": [{"strategy_id": "mine", "name": "Mine"}]},
+            )
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    ids = [row["strategy_id"] for row in merged["strategies"]]
+    assert ids == ["mine", "sleeve"]
+    _run(client.close())
+
+
 def test_user_enroll_hits_prepare_and_complete_paths():
     seen = []
 

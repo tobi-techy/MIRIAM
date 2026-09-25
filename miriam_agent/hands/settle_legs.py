@@ -196,6 +196,8 @@ class LegSettlementMixin:
             list_strategies=calls["list_strategies"],
             get_owner=calls["get_owner"],
             prepare_call=calls["prepare_call"],
+            fund_call=calls.get("fund_call"),
+            read_stash=calls.get("read_stash"),
             at=now,
         )
         # prepare_allocate only saves on paths that change provider state, so
@@ -626,7 +628,10 @@ class LegSettlementMixin:
         client = get_go_client()
 
         async def list_strategies() -> dict[str, Any]:
-            return await client.list_investment_strategies(token, status="active")
+            loader = getattr(client, "list_investable_strategies", None)
+            if loader is None:
+                return await client.list_investment_strategies(token, status="active")
+            return await loader(token, status="active")
 
         async def search_assets() -> dict[str, Any]:
             return await client.list_investment_assets(token, query=None, limit=100)

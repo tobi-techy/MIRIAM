@@ -129,7 +129,11 @@ async def _glider_get_strategy(
         }
     client = get_go_client()
     try:
-        data = await client.list_investment_strategies(token, status="active")
+        loader = getattr(client, "list_investable_strategies", None)
+        if loader is None:
+            data = await client.list_investment_strategies(token, status="active")
+        else:
+            data = await loader(token, status="active")
     except Exception as e:  # fail closed, nothing invented
         return {
             "sleeve": None,
@@ -156,8 +160,10 @@ async def _glider_get_strategy(
     glider_id = sleeve.get("glider_strategy_id") or sleeve.get("gliderStrategyId")
     detail: dict[str, Any] = {}
     try:
+        from miriam_agent.integrations.go_client import investment_strategy_id
+
         detail = await client.get_investment_strategy(
-            ctx["token"], str(sleeve.get("id"))
+            ctx["token"], investment_strategy_id(sleeve)
         )
     except Exception as e:  # fail closed, catalogue stays visible
         detail = {"_tool_error": str(e)}

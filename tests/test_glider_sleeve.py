@@ -197,6 +197,114 @@ async def test_prepare_happy_path_queues_card() -> None:
     assert ledger.pending_invest["flow_test123"].amount == "30.00"
 
 
+async def test_prepare_uses_the_live_stash_when_the_chat_sleeve_is_empty() -> None:
+    store = InMemoryLedgerStore()
+    ledger = ledger_with("u1", savings=0)
+    await store.save(ledger)
+    calls = make_calls()
+
+    async def read_stash() -> Decimal:
+        return Decimal("40")
+
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_stash",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=calls["prepare_call"],
+        read_stash=read_stash,
+    )
+    assert receipt.status == "queued"
+    assert card is not None
+    assert ledger.balance("savings") == money(40)
+
+
+async def test_prepare_reads_live_strategy_id_field() -> None:
+    """Go serializes the id as strategy_id, not id."""
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    row = {
+        "strategy_id": SLEEVE_ROW["id"],
+        "name": "Rail Stock Sleeve",
+        "glider_strategy_id": SLEEVE_ROW["glider_strategy_id"],
+    }
+    calls = make_calls(strategies=[row])
+    receipt, card, _ = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_live_id",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=calls["prepare_call"],
+    )
+    assert receipt.status == "queued"
+    assert card is not None
+    assert card["strategy_id"] == SLEEVE_ROW["id"]
+
+
+async def test_prepare_already_enrolled_funds_without_a_new_signature() -> None:
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    calls = make_calls()
+    seen: dict[str, Any] = {}
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {
+            "status": "COMPLETED",
+            "already_enrolled": True,
+            "enrollment_id": "enr_1",
+            "strategy_id": payload.get("strategy_id"),
+        }
+
+    async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-fund"},
+            }
+        seen["payload"] = payload
+        return {
+            "status": "COMPLETED",
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"enrollment_id": "enr_1"},
+        }
+
+    before = ledger.balance("savings")
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_topup",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    assert receipt.status == "executed"
+    assert card is not None
+    assert card["kind"] == "funded"
+    assert card["enrollment_id"] == "enr_1"
+    assert seen["payload"]["confirmation_token"] == "cfm-fund"
+    assert seen["payload"]["source"] == "stash"
+    assert ledger.balance("savings") == before - money(30)
+
+
 async def test_prepare_missing_sleeve_fails_closed() -> None:
     store = InMemoryLedgerStore()
     ledger = funded_ledger()

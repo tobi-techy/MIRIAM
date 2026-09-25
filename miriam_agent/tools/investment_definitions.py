@@ -182,16 +182,20 @@ registry.register(
 
 async def _list_strategies(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     client = get_go_client()
-    return await client.list_investment_strategies(
-        ctx["token"], status=args.get("status")
-    )
+    loader = getattr(client, "list_investable_strategies", None)
+    if loader is None:
+        return await client.list_investment_strategies(
+            ctx["token"], status=args.get("status")
+        )
+    return await loader(ctx["token"], status=args.get("status"))
 
 
 registry.register(
     name="list_strategies",
     description=(
-        "List the user's investment strategies (id, name, status, current version, "
-        "risk, horizon, objective, target allocation). Optionally filter by status."
+        "List investment strategies the user can enroll in: their own plus Rail "
+        "strategies such as the stock sleeve (strategy_id, name, status, version, "
+        "risk, horizon). Optionally filter the user-owned rows by status."
     ),
     args_schema={
         "type": "object",
