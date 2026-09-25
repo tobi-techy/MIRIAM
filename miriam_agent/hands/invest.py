@@ -162,11 +162,40 @@ async def _fund_existing(
     timestamp: datetime,
     reject: Callable[[list[str], str], tuple[Receipt, None, Ledger]],
 ) -> tuple[Receipt, dict[str, Any] | None, Ledger]:
-    """Add money to a portfolio that is already enrolled. No new signature."""
+    """Add money to a portfolio that is already enrolled. No new signature.
+
+    Invariants: ``rejected`` always means nothing moved anywhere (local or
+    remote). The local balance is checked *before* touching the provider, and
+    a local receipt is reserved under the top-up idempotency key so a retap
+    after a crash replays instead of double-funding.
+    """
+    topup_key = f"invest-topup:{decision_id}:{amount}"
+    prior = ledger.receipt_for(topup_key)
+    if prior is not None and prior.status == "executed":
+        replay = prior.model_copy(update={"idempotent_replay": True})
+        card = {
+            "kind": "funded",
+            "title": "FUNDED",
+            "subtitle": "Glider · Rail Stock Sleeve",
+            "primary": "Already added to the existing sleeve",
+            "amount": f"{amount} {ledger.currency}",
+            "source": "stash",
+            "strategy_id": strategy_id,
+            "enrollment_id": prior.rail_reference,
+            "idempotent_replay": True,
+        }
+        return replay, card, ledger
     if fund_call is None:
         return reject(
             ["FUND_UNAVAILABLE"],
             "this strategy is already enrolled and this path cannot add money",
+        )
+    if amount > ledger.balance(INVEST_SLEEVE):
+        # Checked before the provider call so a refusal never moves money.
+        return reject(
+            ["OVER_BALANCE"],
+            f"the stash holds {ledger.balance(INVEST_SLEEVE)}, "
+            f"which is less than {amount}; nothing moved",
         )
     try:
         funded = await _obtain_and_replay(
@@ -175,7 +204,7 @@ async def _fund_existing(
                 "strategy_id": strategy_id,
                 "amount_usd": float(amount),
                 "source": "stash",
-                "idempotency_key": f"invest-topup:{decision_id}:{amount}",
+                "idempotency_key": topup_key,
             },
         )
     except Exception as exc:  # noqa: BLE001 - a provider failure is a business result
@@ -189,22 +218,70 @@ async def _fund_existing(
             ["STILL_STAGED"], "the top-up stayed staged after replay; nothing moved"
         )
     funding = funded.get("funding") if isinstance(funded.get("funding"), dict) else {}
+    # Some handlers nest funding inside the enrollment object.
+    _enrollment_pre = funded.get("enrollment") if isinstance(funded, dict) else None
+    if not funding and isinstance(_enrollment_pre, dict):
+        _nested = _enrollment_pre.get("funding")
+        if isinstance(_nested, dict) and _nested:
+            funding = _nested
     if str(funding.get("status") or "").upper() == "FAILED":
         reason = funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
         return reject(
             ["FUNDING_FAILED"],
             f"the portfolio is enrolled but funding failed ({reason}); nothing moved",
         )
+    enrollment_id = ""
+    if isinstance(_enrollment_pre, dict):
+        enrollment_id = str(
+            prepared.get("enrollment_id")
+            or _enrollment_pre.get("id")
+            or _enrollment_pre.get("enrollment_id")
+            or ""
+        )
+    else:
+        enrollment_id = str(prepared.get("enrollment_id") or "")
     try:
         ledger.debit(INVEST_SLEEVE, amount)
-    except Exception as exc:  # noqa: BLE001 - over-balance is a refusal
-        return reject(["OVER_BALANCE"], f"stash debit refused ({exc})")
-    enrollment_id = str(
-        prepared.get("enrollment_id")
-        or (funded.get("enrollment") or {}).get("id")
-        or (funded.get("enrollment") or {}).get("enrollment_id")
-        or ""
-    )
+    except Exception as exc:  # noqa: BLE001 - remote moved, local refused: diverge loudly
+        logger.error(
+            "invest top-up diverged: Go funded %s but stash debit refused (%s)",
+            topup_key,
+            exc,
+        )
+        receipt = Receipt(
+            id=_id("rcpt"),
+            at=timestamp,
+            status="parked",
+            action="invest_settle",
+            currency=ledger.currency,
+            amount=amount,
+            counterparty="Rail Stock Sleeve",
+            sleeve=INVEST_SLEEVE,
+            decision_id=decision_id,
+            idempotency_key=topup_key,
+            reasons=["LEDGER_DIVERGED"],
+            sleeves_before=before,
+            sleeves_after=sleeves_snapshot(ledger.sleeves),
+            rail_reference=enrollment_id,
+            detail=(
+                f"Go funded ${amount} but the local stash debit refused ({exc}); "
+                "money moved remotely and needs reconciliation; not re-tappable "
+                "under this key"
+            ),
+        )
+        ledger.remember_receipt(receipt)
+        await store.save(ledger)
+        card = {
+            "kind": "needs_reconciliation",
+            "title": "NEEDS REVIEW",
+            "subtitle": "Glider · Rail Stock Sleeve",
+            "primary": "Funded remotely; local ledger needs reconciliation",
+            "amount": f"{amount} {ledger.currency}",
+            "source": "stash",
+            "strategy_id": strategy_id,
+            "enrollment_id": enrollment_id,
+        }
+        return receipt, card, ledger
     ledger.record_movement(
         Movement(
             kind="outflow",
@@ -226,7 +303,7 @@ async def _fund_existing(
         counterparty="Rail Stock Sleeve",
         sleeve=INVEST_SLEEVE,
         decision_id=decision_id,
-        idempotency_key=f"invest-topup:{decision_id}:{amount}",
+        idempotency_key=topup_key,
         sleeves_before=before,
         sleeves_after=sleeves_snapshot(ledger.sleeves),
         rail_reference=enrollment_id,
@@ -314,7 +391,10 @@ async def prepare_allocate(
         return _reject(["BAD_AMOUNT"], "the allocate amount must be greater than zero")
     if amount > ledger.balance(INVEST_SLEEVE) and read_stash is not None:
         # Go holds the real USDC. The chat sleeve is a mirror and is often
-        # still zero after a Naira buy credits stash directly.
+        # still zero after a Naira buy credits stash directly. The sync is an
+        # audited adjustment (own Movement), and `before` is refreshed so a
+        # later `_reject` stays truthful: rejected always means the invest
+        # itself moved nothing; the sync is recorded separately.
         try:
             live = money(await read_stash())
         except Exception as exc:  # noqa: BLE001 - an unread balance is a refusal
@@ -325,7 +405,20 @@ async def prepare_allocate(
             )
         held = ledger.balance(INVEST_SLEEVE)
         if live > held:
-            ledger.credit(INVEST_SLEEVE, money(live - held))
+            delta = money(live - held)
+            ledger.credit(INVEST_SLEEVE, delta)
+            ledger.record_movement(
+                Movement(
+                    kind="inflow",
+                    amount=delta,
+                    sleeve=INVEST_SLEEVE,
+                    counterparty="Go stash",
+                    category="stash_sync",
+                    ref=decision_id,
+                    at=timestamp,
+                )
+            )
+            before = sleeves_snapshot(ledger.sleeves)
     if amount > ledger.balance(INVEST_SLEEVE):
         return _reject(
             ["OVER_BALANCE"],

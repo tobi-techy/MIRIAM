@@ -3,7 +3,12 @@
 from datetime import date
 from decimal import Decimal
 
-from miriam_agent.documents.categorize import categorize_narration, spend_kind
+from miriam_agent.documents.categorize import (
+    categorize_narration,
+    category_label,
+    is_essential,
+    spend_kind,
+)
 from miriam_agent.documents.models import (
     ParsedTransaction,
     RawDate,
@@ -39,3 +44,17 @@ def test_statement_dict_carries_category():
     assert txn["category_label"] == "Airtime and data"
     assert txn["is_essential"] is True
     assert txn["spend_kind"] == "consumption"
+
+
+def test_direction_fallback_and_unknown_bucket():
+    # No rule hit: a credit is money coming in, a debit is just "other".
+    assert categorize_narration("RANDOM NARRATION XYZ", "credit") == "transfer_in"
+    assert categorize_narration("RANDOM NARRATION XYZ", "debit") == "other"
+    assert categorize_narration("", None) == "other"
+    assert category_label("nope") == "Other"
+    assert spend_kind("salary") == "income"
+    assert spend_kind("savings") == "movement"
+    assert spend_kind("loan") == "movement"
+    assert is_essential("groceries") is True
+    assert is_essential("food") is False
+    assert is_essential("transfer_out") is False

@@ -305,6 +305,234 @@ async def test_prepare_already_enrolled_funds_without_a_new_signature() -> None:
     assert ledger.balance("savings") == before - money(30)
 
 
+async def test_prepare_already_enrolled_without_fund_call_fails_closed() -> None:
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    calls = make_calls()
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {"status": "COMPLETED", "already_enrolled": True}
+
+    before = ledger.balance("savings")
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_no_fund",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=None,
+    )
+    assert receipt.status == "rejected"
+    assert card is None
+    assert receipt.reasons == ["FUND_UNAVAILABLE"]
+    assert ledger.balance("savings") == before
+
+
+async def test_prepare_topup_funding_failed_moves_nothing() -> None:
+    for funding_shape in (
+        {"funding": {"status": "FAILED", "failure_reason": "bank said no"}},
+        {"enrollment": {"enrollment_id": "enr_9", "funding": {"status": "failed"}}},
+    ):
+        store = InMemoryLedgerStore()
+        ledger = funded_ledger()
+        await store.save(ledger)
+        calls = make_calls()
+
+        async def already(payload: dict[str, Any]) -> dict[str, Any]:
+            if "confirmation_token" not in payload:
+                return {
+                    "status": "AWAITING_CONFIRMATION",
+                    "confirmation": {"token": "cfm-prep"},
+                }
+            return {"status": "COMPLETED", "already_enrolled": True}
+
+        async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+            if "confirmation_token" not in payload:
+                return {
+                    "status": "AWAITING_CONFIRMATION",
+                    "confirmation": {"token": "cfm-fund"},
+                }
+            return {"status": "COMPLETED", **funding_shape}
+
+        before = ledger.balance("savings")
+        receipt, card, ledger = await prepare_allocate(
+            store=store,
+            ledger=ledger,
+            user_id="u1",
+            token="t",
+            amount=money(30),
+            decision_id="dec_fail",
+            list_strategies=calls["list_strategies"],
+            get_owner=calls["get_owner"],
+            prepare_call=already,
+            fund_call=fund,
+        )
+        assert receipt.status == "rejected"
+        assert card is None
+        assert receipt.reasons == ["FUNDING_FAILED"]
+        assert ledger.balance("savings") == before
+
+
+async def test_prepare_topup_checks_balance_before_touching_provider() -> None:
+    store = InMemoryLedgerStore()
+    ledger = ledger_with("u1", savings=5)
+    await store.save(ledger)
+    calls = make_calls()
+    fund_calls = []
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {"status": "COMPLETED", "already_enrolled": True}
+
+    async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+        fund_calls.append(payload)
+        raise AssertionError("provider must not be called when broke")
+
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_broke",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    assert receipt.status == "rejected"
+    assert receipt.reasons == ["OVER_BALANCE"]
+    assert fund_calls == []
+    assert ledger.balance("savings") == money(5)
+
+
+async def test_prepare_topup_is_idempotent_on_retap() -> None:
+    store = InMemoryLedgerStore()
+    ledger = funded_ledger()
+    await store.save(ledger)
+    calls = make_calls()
+    fund_hits = []
+
+    async def already(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-prep"},
+            }
+        return {
+            "status": "COMPLETED",
+            "already_enrolled": True,
+            "enrollment_id": "enr_1",
+        }
+
+    async def fund(payload: dict[str, Any]) -> dict[str, Any]:
+        if "confirmation_token" not in payload:
+            return {
+                "status": "AWAITING_CONFIRMATION",
+                "confirmation": {"token": "cfm-fund"},
+            }
+        fund_hits.append(payload)
+        return {
+            "status": "COMPLETED",
+            "funding": {"status": "SUBMITTED"},
+            "enrollment": {"enrollment_id": "enr_1"},
+        }
+
+    kwargs: dict[str, Any] = dict(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_replay",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=already,
+        fund_call=fund,
+    )
+    first, _, ledger = await prepare_allocate(**kwargs)
+    assert first.status == "executed"
+    kwargs["ledger"] = ledger
+    second, card, ledger = await prepare_allocate(**kwargs)
+    assert second.idempotent_replay is True
+    assert card is not None
+    assert card.get("idempotent_replay") is True
+    assert len(fund_hits) == 1
+    assert ledger.balance("savings") == money(100) - money(30)
+
+
+async def test_prepare_unreadable_stash_refuses() -> None:
+    store = InMemoryLedgerStore()
+    ledger = ledger_with("u1", savings=0)
+    await store.save(ledger)
+    calls = make_calls()
+
+    async def bad_stash() -> Decimal:
+        raise RuntimeError("go down")
+
+    receipt, card, _ = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_unreadable",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=calls["prepare_call"],
+        read_stash=bad_stash,
+    )
+    assert receipt.status == "rejected"
+    assert receipt.reasons == ["BALANCE_UNREADABLE"]
+    assert card is None
+
+
+async def test_prepare_stash_sync_is_audited_even_when_invest_later_fails() -> None:
+    store = InMemoryLedgerStore()
+    ledger = ledger_with("u1", savings=0)
+    await store.save(ledger)
+    calls = make_calls(strategies=[{"id": "x", "name": "Something Else"}])
+
+    async def read_stash() -> Decimal:
+        return Decimal("40")
+
+    receipt, card, ledger = await prepare_allocate(
+        store=store,
+        ledger=ledger,
+        user_id="u1",
+        token="t",
+        amount=money(30),
+        decision_id="dec_sync_audit",
+        list_strategies=calls["list_strategies"],
+        get_owner=calls["get_owner"],
+        prepare_call=calls["prepare_call"],
+        read_stash=read_stash,
+    )
+    assert receipt.status == "rejected"
+    assert receipt.reasons == ["SLEEVE_MISSING"]
+    # Go truth persists, but it is a recorded sync — not a silent change.
+    assert ledger.balance("savings") == money(40)
+    syncs = [m for m in ledger.movements if m.category == "stash_sync"]
+    assert len(syncs) == 1
+    assert syncs[0].amount == money(40)
+    # The invest itself moved nothing: before/after agree post-sync.
+    assert receipt.sleeves_before == receipt.sleeves_after
+
+
 async def test_prepare_missing_sleeve_fails_closed() -> None:
     store = InMemoryLedgerStore()
     ledger = funded_ledger()
