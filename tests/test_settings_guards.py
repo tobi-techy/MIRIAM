@@ -91,6 +91,29 @@ def test_production_uses_go_issuer_and_open_cors_when_unset(monkeypatch):
     assert settings.ALLOWED_ORIGINS == "*"
 
 
+def test_decode_accepts_go_agent_token_when_dashboard_audience_is_set(monkeypatch):
+    """Go mints iss=rail_service and omits aud. A leftover JWT_AUDIENCE must not 401 the chat."""
+    import jwt as pyjwt
+
+    monkeypatch.setenv("JWT_SECRET", "j" * 40)
+    monkeypatch.setenv("JWT_AUDIENCE", "miriam-api")
+    monkeypatch.setenv("JWT_ISSUER", "rail-backend")
+    from miriam_agent.auth.jwt import decode_token
+    from miriam_agent.config.settings import get_settings
+
+    get_settings.cache_clear()
+    try:
+        token = pyjwt.encode(
+            {"sub": "user-1", "iss": "rail_service", "exp": 9999999999, "token_type": "agent"},
+            "j" * 40,
+            algorithm="HS256",
+        )
+        payload = decode_token(token)
+        assert payload["sub"] == "user-1"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_production_allows_wildcard_origins():
     settings = _strong(ALLOWED_ORIGINS="*")
     assert "*" in {origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",")}
