@@ -20,7 +20,6 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -173,13 +172,16 @@ def _guarded(conversation):
     return store
 
 
-def test_endpoint_guard_rejects_a_foreign_conversation_id():
+def test_endpoint_guard_forks_a_foreign_conversation_id():
+    """A thread id already owned by someone else must not 404 the turn or leak it."""
     from miriam_agent.api.chat import _require_owned_conversation
 
     store = _guarded(_conversation("user-B-victim"))
-    with pytest.raises(HTTPException) as exc:
-        _run(_require_owned_conversation(store, _user("user-A"), "conv_shared_id"))
-    assert exc.value.status_code == 404
+    resolved = _run(
+        _require_owned_conversation(store, _user("user-A"), "platform:imessage:thread")
+    )
+    assert resolved == "platform:imessage:thread:user-A"
+    assert "user-B" not in resolved
 
 
 def test_endpoint_guard_accepts_the_owners_conversation_id():

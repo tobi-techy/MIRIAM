@@ -1401,9 +1401,17 @@ async def _require_owned_conversation(
     candidate = str(conversation_id)
     existing = await memory_store.get_conversation(candidate)
     if existing is not None and existing.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        # iMessage reuses one thread id for the life of the chat. After the
+        # sender is linked to a different account, that id already belongs to
+        # the previous profile. Refusing the whole turn with 404 is what
+        # iMessage shows as "I couldn't reach my finance brain." Keep the old
+        # thread private and continue on an id this user owns.
+        logger.warning(
+            "conversation %s belongs to another user; opening a private thread for %s",
+            candidate,
+            user.id,
         )
+        return f"{candidate}:{user.id}"
     return candidate
 
 
