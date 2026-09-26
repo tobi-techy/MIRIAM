@@ -44,7 +44,7 @@ ALL_STAGES = (
 # Schema version stamped on every persisted record. Bump it when the state
 # shape changes and add a migrator below so old on-disk records are brought
 # forward on load instead of being lost.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _migrate_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
@@ -80,7 +80,25 @@ def _migrate_v2_to_v3(data: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-_MIGRATIONS: dict[int, Any] = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
+def _migrate_v3_to_v4(data: dict[str, Any]) -> dict[str, Any]:
+    """v3 -> v4: remember which gap was asked and which poll is on screen.
+
+    The interview used to re-ask the same salary question and re-attach the
+    same taps because nothing recorded that the user had already seen them.
+    """
+    cleaned = dict(data)
+    cleaned.setdefault("asked_gaps", [])
+    cleaned.setdefault("last_poll_title", "")
+    cleaned.setdefault("last_poll_options", [])
+    cleaned["schema_version"] = 4
+    return cleaned
+
+
+_MIGRATIONS: dict[int, Any] = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+}
 
 
 def _migrate(data: dict[str, Any]) -> dict[str, Any]:
@@ -156,6 +174,15 @@ class OnboardingState:
         # Whether the deterministic readiness gate passed (enough numbers to
         # present a real savings plan rather than keep interviewing).
         self.money_ready: bool = bool(data.get("money_ready"))
+        # Foundational gaps already asked once (income, pay rhythm, fixed costs).
+        # A gap is never asked a second time; the plan is the fallback.
+        self.asked_gaps: list[str] = [
+            str(item) for item in list(data.get("asked_gaps") or []) if item
+        ]
+        self.last_poll_title: str = str(data.get("last_poll_title") or "")
+        self.last_poll_options: list[str] = [
+            str(item) for item in list(data.get("last_poll_options") or []) if item
+        ]
         # Whether the consent poll is on screen (vs. the plan-text turn).
         self.plan_presented: bool = bool(data.get("plan_presented"))
         # adjustment notes typed during plan review.
@@ -200,6 +227,9 @@ class OnboardingState:
             "money_plan": self.money_plan,
             "money_gap": self.money_gap,
             "money_ready": self.money_ready,
+            "asked_gaps": self.asked_gaps,
+            "last_poll_title": self.last_poll_title,
+            "last_poll_options": self.last_poll_options,
             "plan_presented": self.plan_presented,
             "adjustments": self.adjustments,
             "interview_turns": self.interview_turns,

@@ -20,6 +20,10 @@ def automated_completion_text(state: Any) -> str:
             body += f"\u2022 {label}: {_amt(cashflow.get(key, 0))}\n"
         if rules and str(rules[0]).strip():
             body += f"\nAutomation: {str(rules[0]).strip()}.\n"
+        body += (
+            "\nThe invest slice buys the Rail Stock Sleeve: "
+            "tokenized Apple, Nvidia, and Tesla.\n"
+        )
         body += "\nI keep an eye on it and bring things up when they deserve attention. You stay the one who decides."
         return body
     plank = getattr(state, "plan", None) or {}

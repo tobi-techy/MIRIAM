@@ -57,10 +57,15 @@ from miriam_agent.onboarding.completion import (
     resume_payload,
 )
 from miriam_agent.onboarding.money_bridge import (
-    PLAN_CTA_TAPS as _PLAN_CTA_TAPS,
+    absorb_reply,
     build_money_plan_dict,
+    cap_should_present,
     gap_question,
+    gap_taps,
+    mark_gap_asked,
     money_readiness,
+    next_unasked_gap,
+    remember_poll,
     render_money_plan_text,
 )
 from miriam_agent.onboarding.contracts import (
@@ -356,7 +361,7 @@ STATEMENT_POLL = PollSpec(
     options=["Yes, send it now", "Skip for now"],
 )
 CONSENT_POLL = PollSpec(
-    title="Set this up as standing rules so you don't have to think about it?",
+    title="Lock this in and put the invest slice into Apple, Nvidia, and Tesla?",
     options=["Yes, set it up", "Let's adjust it first", "Not now"],
 )
 
@@ -403,6 +408,31 @@ class OnboardingTurn:
             "reaction": self.reaction,
             "share": self.share,
         }
+
+
+_PLAN_CTA_OPTIONS = {"build my savings plan", "how much can i save"}
+
+
+def _taps_for_reply(reply: str, taps: list[str]) -> list[str]:
+    """Drop plan-button taps when the question is asking for a number."""
+    cleaned = [item.strip() for item in taps if item and str(item).strip()]
+    if not cleaned:
+        return []
+    cta_only = all(
+        item.casefold().rstrip(" ?") in _PLAN_CTA_OPTIONS for item in cleaned
+    )
+    if not cta_only:
+        return cleaned
+    folded = (reply or "").casefold()
+    if any(phrase in folded for phrase in ("plan", "lock", "set this up", "set it up")):
+        return cleaned
+    return []
+
+
+def _same_poll(state: Any, title: str, taps: list[str]) -> bool:
+    prev_title = str(getattr(state, "last_poll_title", "") or "").strip()
+    prev = [str(item) for item in (getattr(state, "last_poll_options", None) or [])]
+    return prev_title == title.strip() and prev == list(taps)
 
 
 def _match_option(text: str, options: list[str] | tuple[str, ...]) -> str | None:
@@ -580,23 +610,33 @@ class OnboardingService:
                 )
             return await self._name_turn(user.id, state, conversation_id, text)
 
-        # Never let the interview drag: the agent carries it, but the cap closes
-        # it deterministically. Before forcing the plan, check the readiness
-        # gate: with no numbers at all, ask the one missing question instead
-        # of presenting a hollow plan.
+        # Salary, pay rhythm, and fixed costs are read off the message itself.
+        # The model is not required to notice "$50", "1", or "biweekly".
+        if state.stage == STAGE_INTERVIEW and text:
+            absorb_reply(state, text, poll_title=poll_title)
+            _ready_now, _ = money_readiness(state)
+            if _ready_now:
+                self._emit(user.id, "interview_finished")
+                return await self._present_plan(user.id, state, conversation_id)
+
+        # Never let the interview drag. Past the cap, ask a missing fact once.
+        # The same question is never sent again, and its taps have to answer it.
         if (
             state.stage == STAGE_INTERVIEW
             and state.interview_turns >= self._settings.ONBOARDING_MAX_QUESTIONS
         ):
             _ready, _missing = money_readiness(state)
-            # Empty chat (no facts at all) still closes to a plan rather than
-            # looping on a gap question forever: the deterministic plan is the
-            # honest fallback. With partial facts, ask the one missing number.
-            if not _ready and (state.learned or state.money_moment or state.goal):
+            gap_key = "" if cap_should_present(state, text) or _ready else next_unasked_gap(state, _missing)
+            if gap_key:
+                question = gap_question([gap_key])
+                taps = list(gap_taps([gap_key]))
+                mark_gap_asked(state, gap_key)
+                if taps:
+                    remember_poll(state, question, taps)
                 await self._state_store.save_state(user.id, state)
-                question = gap_question(_missing)
-                gap_turn = self._turn(f"Got it{', ' + state.name if state.name else ''} — {question}", stage=state.stage)
-                gap_turn.poll = {"title": question, "options": list(_PLAN_CTA_TAPS)}
+                gap_turn = self._turn(question, stage=state.stage)
+                if taps:
+                    gap_turn.poll = {"title": question, "options": taps}
                 return gap_turn
             self._emit(user.id, "interview_finished")
             return await self._present_plan(user.id, state, conversation_id)
@@ -1145,10 +1185,11 @@ class OnboardingService:
                     self._emit(user_id, "interview_finished")
                 return await self._present_plan(user_id, state, conversation_id)
         self._update_conversation_state(state)
-        await self._state_store.save_state(user_id, state)
-        return self._turn_with_suggestions(
-            outcome, conversation_id, state.stage, name=name
+        turn = self._turn_with_suggestions(
+            outcome, conversation_id, state.stage, name=name, state=state
         )
+        await self._state_store.save_state(user_id, state)
+        return turn
 
     def _turn_with_suggestions(
         self,
@@ -1157,11 +1198,16 @@ class OnboardingService:
         stage: str,
         *,
         name: str = "",
+        state: OnboardingState | None = None,
     ) -> OnboardingTurn:
         reply = clean_text(outcome.reply or "").strip()
         main, extras = bubble_sets(reply)
         poll = None
-        if outcome.suggested:
+        taps = _taps_for_reply(reply, list(outcome.suggested))
+        if taps and state is not None and _same_poll(state, (main or reply).strip(), taps):
+            # The same poll on a new bubble is how the chat fills with repeats.
+            taps = []
+        if taps:
             title = (main or reply).strip()
             if not title:
                 # Never emit a poll with an empty title: spectrum-ts
@@ -1177,9 +1223,11 @@ class OnboardingService:
                 import logging as _logging
 
                 _logging.getLogger(__name__).info(
-                    "poll created title=%r options=%r", title, list(outcome.suggested)
+                    "poll created title=%r options=%r", title, list(taps)
                 )
-                poll = {"title": title.strip(), "options": list(outcome.suggested)}
+                poll = {"title": title.strip(), "options": list(taps)}
+                if state is not None:
+                    remember_poll(state, title.strip(), taps)
         return OnboardingTurn(
             took_over=True,
             response=main,

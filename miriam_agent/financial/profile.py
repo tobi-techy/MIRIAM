@@ -596,6 +596,19 @@ def _detect_frequency(window: str) -> tuple[str | None, float]:
     "this month" is often just a time reference.
     """
     lowered = (window or "").casefold()
+    # Checked before "week" / "month", which are substrings of the longer phrases.
+    if any(
+        phrase in lowered
+        for phrase in (
+            "biweekly",
+            "bi-weekly",
+            "every two weeks",
+            "every 2 weeks",
+            "twice a month",
+            "fortnight",
+        )
+    ):
+        return "biweekly", 0.95
     for name, strong, _weak in _FREQUENCY_CHECKS:
         if any(phrase in lowered for phrase in strong):
             return name, 0.95
@@ -1207,6 +1220,9 @@ def extract_profile(
 # keys, so this is deliberately keyword-based: "cashflow", "monthly_income" and
 # "what_i_earn" all land on income.
 _FIELD_BY_KEY: tuple[tuple[str, str], ...] = (
+    ("pay_rhythm", "income_frequency"),
+    ("payday", "income_frequency"),
+    ("cadence", "income_frequency"),
     ("income", "income_amount"),
     ("cashflow", "income_amount"),
     ("earn", "income_amount"),
