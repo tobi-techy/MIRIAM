@@ -137,6 +137,64 @@ def custom_id_for(value: str) -> str:
     return f"id_{hashlib.sha256(value.encode()).hexdigest()[:32]}"
 
 
+_CHANNEL_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _sanitize_channel(channel: str) -> str:
+    token = _CHANNEL_RE.sub("-", (channel or "").strip().lower()).strip("-")
+    return token[:24] or "web"
+
+
+def conversation_scope_for(user_id: str, channel: str = "web") -> str:
+    """Stable per-person, per-channel conversation id.
+
+    One person must accumulate one connected memory graph, not a new document
+    per chat session. Keying every ingest to a stable
+    ``miriam:<channel>:<container>`` scope keeps a channel's turns in a single
+    document that Supermemory can diff, and gives ``dreaming: dynamic`` a
+    coherent unit to link across, instead of scattering the person across one
+    document per session id.
+
+    The container tag (the isolation boundary) is still derived from the user
+    id alone, so this remains per-person: two people never share a scope.
+    """
+    return f"miriam:{_sanitize_channel(channel)}:{container_tag_for(user_id)}"
+
+
+_PLACEHOLDER_NAMES = {"unknown", "unknown user", "n/a"}
+
+
+def display_name_for(*candidates: str | None) -> str | None:
+    """First real name among the candidates, ignoring token placeholders.
+
+    ``get_current_user`` fills in a missing JWT claim with ``"unknown"`` /
+    ``"Unknown User"``. Lifting those into a container name would label a
+    person's whole memory space "Unknown User", which is worse than leaving it
+    unlabelled, so placeholders are dropped.
+    """
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if value and value.casefold() not in _PLACEHOLDER_NAMES:
+            return value
+    return None
+
+
+def person_entity_context(user_id: str, name: str | None = None) -> str:
+    """Container-level grounding for a person's memory space.
+
+    Supermemory reads this while processing documents in the container, so it
+    is what stops extraction from drifting on unanchored pronouns: without it,
+    "I'm saving for a house" is a fact about nobody in particular.
+    """
+    who = (name or "").strip() or "this person"
+    return (
+        f"This space holds the long-term memory of {who} (user id {user_id}), "
+        f"a person using Miriam, their personal financial assistant. Every fact "
+        f"here is about {who} personally; resolve first-person statements "
+        f'("I", "me", "my") to {who}.'
+    )
+
+
 class SupermemoryError(Exception):
     """Raised only for programming errors; API failures are absorbed."""
 

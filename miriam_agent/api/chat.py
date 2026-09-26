@@ -56,7 +56,12 @@ from miriam_agent.hands.ledger import (
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import InsufficientState
 from miriam_agent.hands.transfer import GoRail, parse_amount
-from miriam_agent.integrations.supermemory_client import container_tag_for
+from miriam_agent.integrations.supermemory_client import (
+    container_tag_for,
+    conversation_scope_for,
+    display_name_for,
+    person_entity_context,
+)
 from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
@@ -324,9 +329,10 @@ async def _finalize_money_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=conv_id,
+        channel="web",
         user_message=message,
         assistant_message=payload["response"],
+        name=_display_name(user),
     )
     payload["conversation_history"] = await memory_store.get_conversation_history(
         conv_id, user.id
@@ -367,7 +373,11 @@ class _PreparedTurn:
 
 
 async def _prepare_turn(
-    *, body: ChatRequest, memory_store: MemoryStore, user: User
+    *,
+    body: ChatRequest,
+    memory_store: MemoryStore,
+    user: User,
+    supermemory_memory: Any = None,
 ) -> _PreparedTurn:
     """Validate one turn and decide who handles it.
 
@@ -420,11 +430,14 @@ async def _prepare_turn(
 
     # Conversational onboarding owns the turn when an interview is unfinished
     # (polls + plan + consent). Fail-open, as everywhere: onboarding must
-    # never lose the user's message to a broken flow.
+    # never lose the user's message to a broken flow. The memory service is
+    # injected so the facts the interview settles reach the person's graph.
     onboarding: OnboardingTurn | None = None
     if not is_money_turn:
         try:
-            onboarding = await OnboardingService(memory_store).handle_turn(
+            onboarding = await OnboardingService(
+                memory_store, supermemory=supermemory_memory
+            ).handle_turn(
                 user,
                 message=message,
                 is_poll_vote=body.is_poll_vote,
@@ -528,7 +541,12 @@ async def chat_with_agent(
     supermemory_memory: Any = Depends(get_supermemory_memory_dep),
 ) -> dict[str, Any]:
     """Chat with the financial agent (non-streaming)."""
-    turn = await _prepare_turn(body=body, memory_store=memory_store, user=user)
+    turn = await _prepare_turn(
+        body=body,
+        memory_store=memory_store,
+        user=user,
+        supermemory_memory=supermemory_memory,
+    )
 
     # A money turn goes to the orchestrator. That is the only path in the
     # process that can move money, and it is deliberately reached before
@@ -637,7 +655,12 @@ async def chat_stream(
     ``_prepare_turn`` pipeline as /chat — a refused turn is an HTTP 4xx before
     the stream opens, never a mystery error frame mid-stream.
     """
-    turn = await _prepare_turn(body=body, memory_store=memory_store, user=user)
+    turn = await _prepare_turn(
+        body=body,
+        memory_store=memory_store,
+        user=user,
+        supermemory_memory=supermemory_memory,
+    )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
@@ -689,9 +712,10 @@ async def chat_stream(
                 await _ingest_to_supermemory(
                     supermemory_memory,
                     user.id,
-                    conversation_id=conv_id,
+                    channel="onboarding",
                     user_message=turn.message,
                     assistant_message=turn.onboarding.response,
+                    name=_display_name(user),
                 )
                 if turn.onboarding.poll:
                     yield _sse(
@@ -1419,9 +1443,10 @@ async def _finish_onboarding_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=conv_id,
+        channel="onboarding",
         user_message=message,
         assistant_message=onboarding.response,
+        name=_display_name(user),
     )
     payload = onboarding.to_payload(conv_id)
     payload["conversation_history"] = await memory_store.get_conversation_history(
@@ -1511,34 +1536,53 @@ async def _load_memory_facts(
 async def _ingest_to_supermemory(
     supermemory_memory: Any,
     user_id: str,
-    conversation_id: str,
+    *,
+    channel: str,
     user_message: str,
     assistant_message: str,
+    name: str | None = None,
 ) -> None:
     """Send a user/assistant turn into Supermemory's memory graph.
 
+    The turn is keyed to a stable per-person, per-channel scope rather than the
+    client's conversation id. That is the whole point: a client that starts a
+    new conversation per session used to hand Supermemory a new document each
+    time, which is how one person's memory ended up as several disconnected
+    clusters. With a stable scope, a person's web turns are one document, their
+    onboarding another, and dynamic dreaming links the memories across them.
+
     Fire-and-forget and fail-open: memory ingest must never break the chat
-    response, so any error is swallowed here. The conversation id stays
-    stable per session (one document, diff-billed) and entity context
-    grounds extraction about the right person (rules doc: "User is X,
-    talking to Miriam").
+    response, so any error is swallowed here. ``entityContext`` grounds
+    extraction about the right person (rules doc: "User is X, talking to
+    Miriam"), so a fact like "I'm saving for a house" is filed against
+    someone rather than nobody.
     """
     if supermemory_memory is None or not supermemory_memory.enabled:
-        return
-    if not conversation_id:
         return
     try:
         container_tag = container_tag_for(user_id)
         await supermemory_memory.ingest_turn(
             container_tag=container_tag,
-            conversation_id=conversation_id,
+            conversation_id=conversation_scope_for(user_id, channel),
             user_message=user_message,
             assistant_message=assistant_message,
-            metadata={"channel": "api", "agent": "miriam-python"},
-            entity_context=f"User is {user_id}, talking to Miriam financial assistant",
+            metadata={
+                "channel": channel,
+                "source": "miriam",
+                "agent": "miriam-python",
+            },
+            entity_context=person_entity_context(user_id, name),
         )
+        # The settings call 404s until the container exists, so it runs after
+        # the first turn lands. It is memoised after that.
+        await supermemory_memory.ensure_container(container_tag, user_id, name=name)
     except Exception as e:
         logger.warning("Memorizing turn failed (non-blocking): %s", e)
+
+
+def _display_name(user: User) -> str | None:
+    """The name Supermemory should label and ground this person's space with."""
+    return display_name_for(user.full_name, user.username)
 
 
 async def _finalize_turn(
@@ -1571,9 +1615,10 @@ async def _finalize_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=result.conversation_id,
+        channel="web",
         user_message=message,
         assistant_message=result.response,
+        name=_display_name(user),
     )
     payload = _serialize_agent_result(result)
     payload["conversation_history"] = await memory_store.get_conversation_history(

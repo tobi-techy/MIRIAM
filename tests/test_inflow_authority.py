@@ -146,7 +146,7 @@ def test_inflow_with_a_wrong_service_key_is_refused(monkeypatch):
     store, _memory = _wire(monkeypatch, ledger=_ledger())
     client = TestClient(app, raise_server_exceptions=False)
 
-    response = _inflow(client, key="not-the-rail-key-0123456789abcdef")
+    response = _inflow(client, key="not-the-rail-service-key")
 
     assert response.status_code == 401, response.text
     reloaded = _sync_load(store)

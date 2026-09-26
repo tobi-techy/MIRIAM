@@ -181,8 +181,10 @@ REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/tools/definitions.py": 1387,
     "miriam_agent/financial/profile.py": 1376,
     "miriam_agent/orchestrator.py": 1050,
-    # +12 for the empty-confirm_id 422 guards (false-settlement fix).
-    "miriam_agent/api/chat.py": 1582,
+    # +12 for the empty-confirm_id 422 guards (false-settlement fix); +45 for
+    # the stable per-person memory scopes (channel-scoped ingest, entity
+    # context, onboarding mirroring, _prepare_turn's shared memory service).
+    "miriam_agent/api/chat.py": 1627,
     "miriam_agent/database/memory.py": 782,
     "miriam_agent/hands/transfer.py": 998,
     "miriam_agent/money/plan.py": 885,

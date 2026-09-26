@@ -8,12 +8,17 @@ used by the chat endpoints and tools:
   single-call ``profile(q=...)`` pattern (profile + searchResults in one
   request = one search meter) and falls back to a separate search.
 - ``ingest_turn``         write path: send each user/assistant turn under
-  a stable conversation id so Supermemory keeps the session as one
-  document and extracts facts into the graph (diff-billed on re-ingest).
+- ``ingest_turn``         write path: send each user/assistant turn under
+  a stable per-person, per-channel scope so a person keeps one connected
+  graph rather than a new document per session (diff-billed on re-ingest).
+- ``ingest_note``         append one known fact (a name, a plan) to that
+  same document instead of hand-writing a memory per fact.
+- ``ensure_container``    name the person's space and ground extraction
+  with ``entityContext`` so facts attach to the right person.
 - ``search``              explicit recall for the ``search_memory`` tool
   (memories | documents | hybrid; reads ``memory or chunk``).
-- ``remember`` / ``forget`` / ``update``  explicit memory maintenance for
-  user corrections ("that's not right anymore"). Forget uses dry-run
+- ``remember_person_fact`` / ``forget`` / ``update``  explicit memory
+  maintenance for durable anchors and user corrections. Forget uses dry-run
   preview -> ids apply so deletes are bound to the reviewed set.
 - ``list_inferred`` / ``review_inferred``  low-confidence derive queue.
 - ``erase_user_data``     GDPR/container erasure.
@@ -23,6 +28,7 @@ returns empty data so the agent still works, just without memory.
 """
 
 import logging
+import time
 from typing import Any, cast
 
 from miriam_agent.integrations.supermemory_client import (
@@ -34,6 +40,13 @@ logger = logging.getLogger(__name__)
 
 MAX_FACTS = 12
 
+# Per-process memo for container grounding. The settings call is one round trip
+# and its result never changes for the life of the process, so it must not run
+# on every turn. A failed attempt is cooled down rather than retried forever.
+_CONTAINER_READY: set[str] = set()
+_CONTAINER_RETRY_AT: dict[str, float] = {}
+_CONTAINER_RETRY_COOLDOWN = 300.0
+
 
 class SupermemoryMemory:
     """High-level memory operations backed by Supermemory."""
@@ -44,6 +57,44 @@ class SupermemoryMemory:
     @property
     def enabled(self) -> bool:
         return self.client.enabled
+
+    # ------------------------------------------------------------------
+    # Container lifecycle
+    # ------------------------------------------------------------------
+
+    async def ensure_container(
+        self,
+        container_tag: str,
+        user_id: str,
+        name: str | None = None,
+    ) -> bool:
+        """Give a person's container a display name and extraction grounding.
+
+        Idempotent and best-effort, once per process per container: a failure
+        only costs grounding, never a turn. ``user_id`` is passed explicitly so
+        the entity context names the person rather than the hashed tag.
+
+        Returns ``True`` when the container is grounded.
+        """
+        if not self.enabled or not container_tag:
+            return False
+        if container_tag in _CONTAINER_READY:
+            return True
+        now = time.monotonic()
+        if _CONTAINER_RETRY_AT.get(container_tag, 0.0) > now:
+            return False
+        from miriam_agent.integrations.supermemory_client import person_entity_context
+
+        result = await self.client.update_container_settings(
+            container_tag,
+            name=name,
+            entity_context=person_entity_context(user_id, name),
+        )
+        if result is None:
+            _CONTAINER_RETRY_AT[container_tag] = now + _CONTAINER_RETRY_COOLDOWN
+            return False
+        _CONTAINER_READY.add(container_tag)
+        return True
 
     # ------------------------------------------------------------------
     # Read path
@@ -228,6 +279,34 @@ class SupermemoryMemory:
             logger.warning("Supermemory ingest failed: %s", e)
             return None
 
+    async def ingest_note(
+        self,
+        container_tag: str,
+        conversation_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Append one structured fact to an already-open conversation document.
+
+        This is the right shape for facts Miriam knows exactly (a name, a plan,
+        a correction): it lands in the graph without hand-writing every memory,
+        and it appends to the same stable document instead of spawning a new
+        source document per fact, which is what fragmented the graph before.
+        """
+        content = (content or "").strip()
+        if not self.enabled or not conversation_id or not content:
+            return None
+        try:
+            return await self.client.ingest_conversation(
+                container_tag=container_tag,
+                conversation_id=conversation_id,
+                messages=[{"role": "system", "content": content}],
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.warning("Supermemory note ingest failed: %s", e)
+            return None
+
     async def remember(
         self,
         container_tag: str,
@@ -252,6 +331,30 @@ class SupermemoryMemory:
         except Exception as e:
             logger.warning("Supermemory remember failed: %s", e)
             return None
+
+    async def remember_person_fact(
+        self,
+        container_tag: str,
+        content: str,
+        *,
+        kind: str = "fact",
+        is_static: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Write one durable, entity-centric fact about the person.
+
+        Reserved for anchors where ``isStatic`` matters (the profile's
+        permanent traits) or where extraction cannot be trusted to catch the
+        fact. Everything conversational should go through ``ingest_turn`` /
+        ``ingest_note``: this path creates a lightweight source document per
+        call, so using it for every turn would re-fragment the graph.
+        """
+        metadata: dict[str, Any] = {"kind": kind, "source": "miriam"}
+        if extra:
+            metadata.update(extra)
+        return await self.remember(
+            container_tag, content, is_static=is_static, metadata=metadata
+        )
 
     async def forget(
         self,
