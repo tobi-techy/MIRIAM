@@ -188,9 +188,10 @@ class Settings(BaseSettings):
     # LLM tuning for the onboarding conductor (warm answers, not analytic).
     ONBOARDING_TEMPERATURE: float = Field(default=0.6)
     ONBOARDING_MAX_TOKENS: int = Field(default=800)
-    # Hard cap on dimensions covered per interview, so the conversation always
-    # reaches the plan no matter how chatty the model gets.
-    ONBOARDING_MAX_QUESTIONS: int = Field(default=12)
+    # Hard cap on interview questions. Salary, pay rhythm, and what must go
+    # out are the whole interview; six is the backstop so the plan and the
+    # stock sleeve still show up when the model keeps talking.
+    ONBOARDING_MAX_QUESTIONS: int = Field(default=6)
     # How long an interview may sit idle before it resets (sliding on each
     # turn). Days.
     ONBOARDING_STATE_TTL_DAYS: int = Field(default=30)

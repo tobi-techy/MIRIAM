@@ -44,8 +44,9 @@ def test_money_plan_text_carries_amounts():
 def test_state_migration_v2_to_v3():
     from miriam_agent.onboarding.state import OnboardingState, _migrate
     migrated = _migrate({"schema_version": 2, "stage": "interview"})
-    assert migrated["schema_version"] == 3
+    assert migrated["schema_version"] == 4
     assert migrated["money_plan"] is None and migrated["money_gap"] == [] and migrated["money_ready"] is False
+    assert migrated["asked_gaps"] == [] and migrated["last_poll_options"] == []
     assert OnboardingState(migrated).money_plan is None
 
 def test_reference_env_override_is_sourced():
@@ -100,6 +101,64 @@ def test_intake_derived_reads_are_properties():
     p = from_mapping({"income_amount":"500000","fixed_costs":"350000"})
     assert not callable(p.monthly_income) and p.monthly_income is not None
     assert not callable(p.missing_required) and p.missing_required == []
+
+def test_salary_and_numbered_pay_rhythm_are_understood():
+    from miriam_agent.onboarding.money_bridge import (
+        CADENCE_TAPS,
+        absorb_reply,
+        gap_question,
+        gap_taps,
+        money_readiness,
+    )
+    from miriam_agent.onboarding.state import OnboardingState
+
+    income_q = gap_question(["income_amount"])
+    assert income_q.count("?") == 1
+    assert len(income_q) <= 60
+    assert gap_taps(["income_amount"]) == ()
+
+    state = OnboardingState()
+    state.stage = "interview"
+    absorb_reply(state, "Between $50 or less", poll_title=income_q)
+    ready, missing = money_readiness(state)
+    assert ready is False
+    assert "income_amount" not in missing
+    assert "50" in state.learned["income"]
+
+    cadence_q = gap_question(["income_frequency"])
+    assert len(cadence_q) <= 60
+    assert gap_taps(["income_frequency"]) == CADENCE_TAPS
+    state.last_poll_options = list(CADENCE_TAPS)
+    absorb_reply(state, "1", poll_title=cadence_q)
+    assert state.learned["pay_rhythm"] == "weekly"
+    assert "income_frequency" not in money_readiness(state)[1]
+
+    absorb_reply(state, "rent is $20", poll_title=gap_question(["fixed_costs"]))
+    ready, missing = money_readiness(state)
+    assert ready is True and missing == []
+
+
+def test_plan_text_names_the_stock_sleeve():
+    from miriam_agent.onboarding.money_bridge import build_money_plan_dict, render_money_plan_text
+    from miriam_agent.onboarding.state import OnboardingState
+
+    state = OnboardingState({"learned": {"income": "I earn 500k every month", "fixed": "rent and food take 350k"}, "goal": "build buffer", "interview_turns": 4})
+    text = render_money_plan_text(build_money_plan_dict(state))
+    assert "Rail Stock Sleeve" in text
+    assert "Apple" in text and "Tesla" in text
+
+
+def test_same_gap_is_not_a_reason_to_keep_polling():
+    from miriam_agent.onboarding.money_bridge import cap_should_present, mark_gap_asked
+    from miriam_agent.onboarding.state import OnboardingState
+
+    state = OnboardingState({"money_moment": "money vanishes", "interview_turns": 6})
+    assert cap_should_present(state, "Investment") is False
+    mark_gap_asked(state, "income_amount")
+    mark_gap_asked(state, "income_frequency")
+    mark_gap_asked(state, "fixed_costs")
+    assert cap_should_present(state, "Investment") is True
+
 
 def test_naija_flavor_in_deterministic_copy():
     from miriam_agent.onboarding.completion import automated_completion_text, draft_completion_text

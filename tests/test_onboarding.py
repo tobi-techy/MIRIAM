@@ -1037,6 +1037,34 @@ def test_fallback_llm_down_completes_flow(monkeypatch):
     assert memory.entries
 
 
+def test_cap_reads_the_salary_answer_instead_of_repeating_the_poll(monkeypatch):
+    from miriam_agent.config.settings import get_settings
+
+    settings = get_settings()
+    original = settings.ONBOARDING_MAX_QUESTIONS
+    monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", 1)
+    try:
+        user = _user()
+        provider = FakeProvider([_greet("What should we start with?")])
+        service, states, _, _ = _service(monkeypatch, provider)
+        _run(service.handle_turn(user, message="hey"))
+        _run(service.handle_turn(user, message="Tola"))
+        turn = _run(service.handle_turn(user, message="$50"))
+        learned = states.data["u-1"]["learned"]
+        assert "50" in learned.get("income", "")
+        assert "hits your account" not in turn.response.lower()
+        assert turn.poll is not None
+        assert "Build my savings plan" not in turn.poll["options"]
+        assert turn.poll["options"][0] == "Weekly"
+        _run(service.handle_turn(user, message="1"))
+        assert states.data["u-1"]["learned"].get("pay_rhythm") == "weekly"
+        turn = _run(service.handle_turn(user, message="rent is $20"))
+        assert states.data["u-1"].get("stage") == "plan_consent"
+        assert turn.poll is None or "Build my savings plan" not in (turn.poll or {}).get("options", [])
+    finally:
+        monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", original)
+
+
 def test_interview_cap_closes_conversation(monkeypatch):
     from miriam_agent.config.settings import get_settings
 
@@ -1151,18 +1179,27 @@ def test_driver_garbage_and_empty_reply_none():
     )
 
 
-def test_driver_reply_clamped_with_taps():
+def test_driver_reply_not_cut_off_when_taps_would_truncate():
     from miriam_agent.onboarding import driver
 
-    long = "x" * 200
+    long = (
+        "Before crypto, would that money be spare this month, "
+        "or is it already spoken for?"
+    )
+    assert len(long) > driver.MAX_REPLY_WITH_TAPS
     out = driver._parse_driver_output(
-        json.dumps({"reply": long, "suggested_replies": ["y"]}),
+        json.dumps({"reply": long, "suggested_replies": ["It's spare"]}),
         "interview",
     )
-    assert len(out.reply) <= driver.MAX_REPLY_WITH_TAPS
-    assert out.reply.endswith("\u2026")
-    out2 = driver._parse_driver_output(json.dumps({"reply": long}), "interview")
-    assert out2.reply == long
+    assert out.reply == long
+    assert out.suggested == []
+    short = "Weekly, biweekly, or monthly?"
+    out2 = driver._parse_driver_output(
+        json.dumps({"reply": short, "suggested_replies": ["Weekly", "Monthly"]}),
+        "interview",
+    )
+    assert out2.reply == short
+    assert out2.suggested == ["Weekly", "Monthly"]
 
 
 def test_driver_reaction_validated_against_whitelist():
