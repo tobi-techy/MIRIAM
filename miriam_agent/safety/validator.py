@@ -736,6 +736,27 @@ class InputValidator:
     _local_buckets: dict[str, list[float]] = {}
     _MAX_LOCAL_BUCKETS: int = 10_000
 
+    # A Redis outage emits this warning on every request, so a busy deployment
+    # buries the signal in its own noise (and, when the URL carries no usable
+    # credential, that noise is the only sign that rate limiting has degraded
+    # to per-process state on every worker). Log the first failure loudly --
+    # with the cause and the credential hint -- then at most once per interval.
+    _redis_warn_interval: float = 60.0
+    _redis_last_warn: float = 0.0
+
+    def _warn_redis_fallback(self, exc: Exception) -> None:
+        now = time.time()
+        if now - self._redis_last_warn < self._redis_warn_interval:
+            logger.debug("Rate limit check failed, using local fallback: %s", exc)
+            return
+        self._redis_last_warn = now
+        logger.warning(
+            "Rate limit check failed, using local fallback (per-process). Rate "
+            "limiting is now degraded on every worker; check that REDIS_URL "
+            "carries valid credentials. Cause: %s",
+            exc,
+        )
+
     def _prune_local_bucket(self, key: str, now: float, window: float) -> list[float]:
         bucket = self._local_buckets.setdefault(key, [])
         cutoff = now - window
@@ -789,7 +810,7 @@ class InputValidator:
             return True
 
         except Exception as e:
-            logger.warning("Rate limit check failed, using local fallback: %s", e)
+            self._warn_redis_fallback(e)
             # Local fallback — same sliding window but per-process.
             bucket = self._prune_local_bucket(key, now, window)
             if len(bucket) >= limit:

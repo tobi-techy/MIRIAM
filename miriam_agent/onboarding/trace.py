@@ -119,6 +119,23 @@ class OnboardingTraceStore:
                 )
                 self._redis = None
         self._local: deque[str] = deque(maxlen=self._max)
+        self._degraded_logged = False
+
+    def _note_redis_failure(self, exc: Exception, operation: str) -> None:
+        """Keep the trace working, but stop hiding that it is now per-process:
+        drift evidence written during an outage is invisible to the other
+        workers and vanishes on restart."""
+        if self._degraded_logged:
+            logger.debug("Onboarding trace Redis %s failed: %s", operation, exc)
+            return
+        self._degraded_logged = True
+        logger.warning(
+            "Onboarding trace Redis %s failed; using the in-process trace, which "
+            "is not shared across workers and does not survive a restart. Check "
+            "REDIS_URL credentials. Cause: %s",
+            operation,
+            exc,
+        )
 
     def _key(self) -> str:
         return _KEY_PREFIX
@@ -131,7 +148,7 @@ class OnboardingTraceStore:
                 await self._redis.rpush(self._key(), raw)
                 await self._redis.ltrim(self._key(), -self._max, -1)
         except Exception as e:
-            logger.debug("Onboarding trace write failed (local kept): %s", e)
+            self._note_redis_failure(e, "write")
 
     async def list_entries(self, limit: int = 200) -> list[TraceRecord]:
         """Most-recent-first entries, at most ``limit``."""
@@ -141,7 +158,7 @@ class OnboardingTraceStore:
                 rows = await self._redis.lrange(self._key(), -limit, -1)
                 rows = list(reversed(rows))
         except Exception as e:
-            logger.debug("Onboarding trace read failed (local used): %s", e)
+            self._note_redis_failure(e, "read")
         if not rows:
             local = list(self._local)
             rows = list(reversed(local[-limit:]))
@@ -159,7 +176,7 @@ class OnboardingTraceStore:
             if self._redis is not None:
                 await self._redis.delete(self._key())
         except Exception as e:
-            logger.debug("Onboarding trace clear failed: %s", e)
+            self._note_redis_failure(e, "clear")
 
 
 _store: OnboardingTraceStore | None = None

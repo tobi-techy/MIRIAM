@@ -204,6 +204,24 @@ class OnboardingStateStore:
                 )
                 self._redis = None
         self._local: dict[str, dict[str, Any]] = {}
+        self._degraded_logged = False
+
+    def _note_redis_failure(self, exc: Exception, operation: str) -> None:
+        """Redis being unreachable silently demoted onboarding state to process
+        memory, which is not merely slower: interview progress stops being
+        shared between workers and dies with the process, so a user mid-plan can
+        be asked to start over. Say so once, then stay quiet."""
+        if self._degraded_logged:
+            logger.debug("Onboarding state Redis %s failed: %s", operation, exc)
+            return
+        self._degraded_logged = True
+        logger.warning(
+            "Onboarding state Redis %s failed; falling back to in-process state, "
+            "which is not shared across workers and does not survive a restart. "
+            "Check REDIS_URL credentials. Cause: %s",
+            operation,
+            exc,
+        )
 
     def _key(self, user_id: str) -> str:
         return f"{_KEY_PREFIX}:{user_id}"
@@ -223,7 +241,7 @@ class OnboardingStateStore:
                             await self.save_state(user_id, state)
                         return state
         except Exception as e:
-            logger.debug("Onboarding state Redis read failed: %s", e)
+            self._note_redis_failure(e, "read")
         record = self._local.get(key)
         if record is not None:
             # Local fallback borrows the same sliding TTL so a stale onboarding
@@ -246,7 +264,7 @@ class OnboardingStateStore:
             if self._redis is not None:
                 await self._redis.set(key, json.dumps(record), ex=self._ttl)
         except Exception as e:
-            logger.debug("Onboarding state Redis write failed (local kept): %s", e)
+            self._note_redis_failure(e, "write")
 
     async def clear(self, user_id: str) -> None:
         key = self._key(user_id)
@@ -255,7 +273,7 @@ class OnboardingStateStore:
             if self._redis is not None:
                 await self._redis.delete(key)
         except Exception as e:
-            logger.debug("Onboarding state Redis delete failed: %s", e)
+            self._note_redis_failure(e, "delete")
 
 
 _store: OnboardingStateStore | None = None

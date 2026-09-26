@@ -228,6 +228,35 @@ def test_state_store_round_trip_and_isolation():
     assert _run(store.get_state("u-1")) is None
 
 
+def test_state_store_warns_once_when_redis_is_down(caplog):
+    """Regression: a Redis failure silently demoted onboarding state to process
+    memory (logged at DEBUG). That is a correctness change -- the interview is
+    no longer shared between workers and does not survive a restart -- so it has
+    to be visible, once, instead of on every turn."""
+    import logging
+
+    from miriam_agent.onboarding.state import OnboardingState, OnboardingStateStore
+
+    class _DeadRedis:
+        async def get(self, *a, **k):
+            raise ConnectionError("Authentication required")
+
+        async def set(self, *a, **k):
+            raise ConnectionError("Authentication required")
+
+    store = OnboardingStateStore(redis_url="", ttl_days=None)
+    store._redis = _DeadRedis()
+
+    with caplog.at_level(logging.WARNING, logger="miriam_agent.onboarding.state"):
+        _run(store.save_state("u-1", OnboardingState()))
+        _run(store.get_state("u-1"))
+        _run(store.save_state("u-2", OnboardingState()))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "REDIS_URL" in warnings[0].getMessage()
+
+
 def test_state_coerces_corrupt_non_string_learned_values():
     """A corrupt persisted fact must load as text, never crash the turn
     (fail-open at the read boundary)."""
@@ -1151,16 +1180,34 @@ def test_driver_garbage_and_empty_reply_none():
     )
 
 
-def test_driver_reply_clamped_with_taps():
+def test_driver_long_reply_drops_taps():
+    """Regression: a long reply paired with taps used to be truncated to 59
+    chars + "…". That mangled the message (the reply becomes the poll label the
+    user reads) *and* still tripped lint R7, because a reply cut short can never
+    end in "?". The taps are the mistake, so they are dropped and Miriam's words
+    survive intact."""
     from miriam_agent.onboarding import driver
+    from miriam_agent.onboarding.quality import EvalMeta, evaluate_reply
 
-    long = "x" * 200
+    long = "Would that money be spare this month, or is it money you'd need "
+    long += "back soon? and here is a lot more sentenc" + "e" * 100
     out = driver._parse_driver_output(
         json.dumps({"reply": long, "suggested_replies": ["y"]}),
         "interview",
     )
-    assert len(out.reply) <= driver.MAX_REPLY_WITH_TAPS
-    assert out.reply.endswith("\u2026")
+    assert out.suggested == []
+    assert out.reply == long
+    # Without taps the tapping rule cannot fire at all.
+    assert evaluate_reply(out.reply, EvalMeta(has_taps=bool(out.suggested))) == []
+
+    # Taps that fit stay.
+    short = driver._parse_driver_output(
+        json.dumps({"reply": "Spare this month?", "suggested_replies": ["Yes"]}),
+        "interview",
+    )
+    assert short.suggested == ["Yes"]
+    assert short.reply == "Spare this month?"
+
     out2 = driver._parse_driver_output(json.dumps({"reply": long}), "interview")
     assert out2.reply == long
 

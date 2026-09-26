@@ -203,6 +203,26 @@ async def ready_check():
     except Exception as e:
         checks["go_backend"] = f"unreachable: {type(e).__name__}"
 
+    # Redis — rate limiting, onboarding state and trace, proactive quiet-hours
+    # state, and the money ledger all read it. A wrong URL or a bad credential
+    # makes every one of them fall back to process memory (or, for the ledger,
+    # refuse the turn), which is why an unreachable Redis must show up here
+    # instead of only as repeated "using local fallback" warnings in the log.
+    try:
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            await redis_client.ping()
+        finally:
+            try:
+                await redis_client.aclose()
+            except Exception:  # a slow close must not fail a healthy ping
+                pass
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"unavailable: {e}"
+
     # LLM provider
     try:
         from miriam_agent.agents.llm import get_llm_provider

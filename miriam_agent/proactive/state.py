@@ -75,6 +75,23 @@ class ProactiveStateStore:
                 self._redis = None
         # In-process fallback: user_id -> dict(hash, ts).
         self._local: dict[str, dict[str, Any]] = {}
+        self._degraded_logged = False
+
+    def _note_redis_failure(self, exc: Exception, operation: str) -> None:
+        """The quiet-hours/dedup window lives in Redis so every worker shares
+        it. Falling back to process memory means two workers can each decide the
+        user is due a message; say so once instead of hiding it."""
+        if self._degraded_logged:
+            logger.debug("Proactive state Redis %s failed: %s", operation, exc)
+            return
+        self._degraded_logged = True
+        logger.warning(
+            "Proactive state Redis %s failed; falling back to in-process state, "
+            "which is not shared across workers, so the quiet-hours window no "
+            "longer holds globally. Check REDIS_URL credentials. Cause: %s",
+            operation,
+            exc,
+        )
 
     # -- read / write ---------------------------------------------------
 
@@ -88,7 +105,7 @@ class ProactiveStateStore:
                     if isinstance(data, dict):
                         return data
         except Exception as e:
-            logger.debug("Proactive state Redis read failed, using local store: %s", e)
+            self._note_redis_failure(e, "read")
         return self._local.get(user_id)
 
     async def _write(self, user_id: str, record: dict[str, Any]) -> None:
@@ -98,7 +115,7 @@ class ProactiveStateStore:
             if self._redis is not None:
                 await self._redis.set(key, json.dumps(record), ex=_TTL_SECONDS)
         except Exception as e:
-            logger.debug("Proactive state Redis write failed (local store kept): %s", e)
+            self._note_redis_failure(e, "write")
 
     # -- API ------------------------------------------------------------
 

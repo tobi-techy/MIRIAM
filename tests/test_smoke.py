@@ -647,5 +647,38 @@ def test_health_endpoint():
     assert resp.json()["status"] == "healthy"
 
 
+def test_ready_endpoint_reports_redis(monkeypatch):
+    """The readiness probe must name Redis. A bad REDIS_URL silently degrades
+    rate limiting, onboarding state, proactive state and the money ledger to
+    process memory, and until now nothing on the API said so."""
+    import asyncio
+
+    import redis.asyncio as aioredis
+
+    from miriam_agent.api.main import ready_check
+
+    class _OkRedis:
+        async def ping(self):
+            return True
+
+        async def aclose(self):
+            return None
+
+    class _DeadRedis:
+        async def ping(self):
+            raise ConnectionError("Authentication required")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: _OkRedis())
+    checks = asyncio.run(ready_check())
+    assert checks["redis"] == "ok"
+
+    monkeypatch.setattr(aioredis, "from_url", lambda *a, **k: _DeadRedis())
+    checks = asyncio.run(ready_check())
+    assert checks["redis"].startswith("unavailable:")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])

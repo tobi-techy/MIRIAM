@@ -115,6 +115,29 @@ def test_rate_limit_fails_open_when_redis_is_unreachable(monkeypatch):
     assert _run(validator.validate_rate_limit("u-1", "chat")) is True
 
 
+def test_rate_limit_fallback_warning_is_throttled(monkeypatch, caplog):
+    """Regression: every request logged its own "using local fallback" warning,
+    which buried the signal. A broken REDIS_URL credential then looks like
+    routine noise instead of "rate limiting is per-process everywhere now". The
+    first failure stays loud; the rest drop to DEBUG."""
+    import logging
+
+    from miriam_agent.safety.validator import InputValidator
+
+    validator = InputValidator()
+    monkeypatch.setattr(validator, "_get_redis", lambda: ExplodingRedis())
+
+    with caplog.at_level(logging.WARNING, logger="miriam_agent.safety.validator"):
+        for _ in range(5):
+            assert _run(validator.validate_rate_limit("u-1", "chat")) is True
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "local fallback" in message
+    assert "REDIS_URL" in message
+
+
 # -----------------------------------------------------------------------
 # Sanitization no longer mangles honest text
 # -----------------------------------------------------------------------

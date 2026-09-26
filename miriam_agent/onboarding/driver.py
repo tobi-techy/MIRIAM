@@ -67,8 +67,9 @@ from miriam_agent.utils.text import valid_reaction
 logger = logging.getLogger(__name__)
 
 MAX_SUGGESTED_REPLIES = 4
-# Aligned with the quality lint R7 (tapped replies keep under 60 chars): a
-# longer tapped reply would itself always drift against the trace rules.
+# The most a tapped reply may be: it becomes the poll label verbatim, and lint
+# R7 requires it to read as one short question. A longer reply drops its taps
+# rather than being truncated (see _parse_driver_data).
 MAX_REPLY_WITH_TAPS = 60
 MAX_TAP_LENGTH = 56
 CHARS_PER_ATTRIBUTE = 400
@@ -423,12 +424,6 @@ def _default_intent(stage: str) -> str:
     return _SAFE_DEFAULT_INTENT.get(stage, "interview")
 
 
-def _clamp_reply(reply: str, has_taps: bool) -> str:
-    if has_taps and len(reply) > MAX_REPLY_WITH_TAPS:
-        return reply[: MAX_REPLY_WITH_TAPS - 1] + "\u2026"
-    return reply
-
-
 def _parse_driver_data(data: dict[str, Any], stage: str) -> DriverOutcome | None:
     """Validate a normalized outcome dict against the typed contract, then
     apply the deterministic bounds and the stage-intent whitelist."""
@@ -441,6 +436,20 @@ def _parse_driver_data(data: dict[str, Any], stage: str) -> DriverOutcome | None
     if not reply:
         return None
     suggested = _clean_suggested(list(model.suggested_replies))
+    # A tapped reply IS the poll label, so it has to read as one short question
+    # (lint R7: <= 60 chars). When the model writes a full message and still
+    # attaches taps, the taps are the mistake: drop them and keep Miriam's own
+    # words. Truncating her mid-sentence instead ("...would that money be spare
+    # this\u2026") mangled the one thing the user actually reads AND still tripped
+    # R7, because a reply cut short can never end in "?".
+    if suggested and len(reply) > MAX_REPLY_WITH_TAPS:
+        logger.debug(
+            "dropping %d tap(s): reply is %d chars, over the %d-char tap limit",
+            len(suggested),
+            len(reply),
+            MAX_REPLY_WITH_TAPS,
+        )
+        suggested = []
     intent_raw = model.intent.casefold().strip()
     intent = (
         intent_raw
@@ -451,7 +460,7 @@ def _parse_driver_data(data: dict[str, Any], stage: str) -> DriverOutcome | None
     if not valid_reaction(reaction):
         reaction = ""
     return DriverOutcome(
-        reply=_clamp_reply(reply, bool(suggested)),
+        reply=reply,
         suggested=suggested,
         facts=_clean_facts(dict(model.facts)),
         intent=intent,
