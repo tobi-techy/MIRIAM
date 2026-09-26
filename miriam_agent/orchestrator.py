@@ -36,6 +36,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from miriam_agent.hands.audit import AuditLog, Receipt
+from miriam_agent.hands.bills import bill_category, parse_bill_utterance
 from miriam_agent.hands.funding import extract_otp as _extract_funding_otp
 from miriam_agent.hands.funding import parse_funding_utterance, parse_offramp_utterance
 from miriam_agent.hands.invest import (
@@ -305,10 +306,17 @@ class Orchestrator(
     async def _handle_utterance(self, ledger: Ledger, event: Event) -> TurnResult:
         """Parse, decide, then act, ask, or stay quiet. Voice speaks last."""
         audit = AuditLog()
-        # NGN <-> crypto funding first: a crypto buy is an onramp, not a
-        # purchase-advice turn. The funding parser only claims sentences with
-        # a crypto/naira/top-up word, so grocery buys fall through below.
-        action = parse_funding_utterance(event.text)
+        # Airtime and other Nigerian bills are Airbills payments, never an
+        # onramp. "buy 500 naira airtime" contains both "buy" and "naira",
+        # which the funding parser would otherwise inspect.
+        action = parse_bill_utterance(event.text)
+        if action is not None and action.source != "user":
+            action = None
+        if action is None:
+            # NGN <-> crypto funding first: a crypto buy is an onramp, not a
+            # purchase-advice turn. The funding parser only claims sentences with
+            # a crypto/naira/top-up word, so grocery buys fall through below.
+            action = parse_funding_utterance(event.text)
         if action is not None and action.source != "user":
             # Structurally unreachable today, and it stays that way: anything not
             # built from the user's own words is not an action.
@@ -391,6 +399,7 @@ class Orchestrator(
                     "rebalance",
                     "onramp",
                     "offramp",
+                    "bill",
                     "set_allocation",
                     "pause",
                     "resume",
@@ -425,6 +434,7 @@ class Orchestrator(
                         "rebalance",
                         "onramp",
                         "offramp",
+                        "bill",
                         "set_allocation",
                         "pause",
                         "resume",
@@ -782,8 +792,13 @@ class Orchestrator(
             meta = {
                 "side": "onramp",
                 "symbol": counterparty or "USDC",
-                "provider": "paj",
+                "provider": "ramp",
                 "currency": "NGN",
+            }
+        elif action.type == "bill":
+            meta = {
+                "category": bill_category(action.raw),
+                "recipient": action.counterparty,
             }
         elif action.type == "offramp":
             meta = {

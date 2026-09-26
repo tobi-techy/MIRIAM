@@ -134,6 +134,30 @@ async def prepare_onramp(
         )
         return receipt, None, ledger
 
+    # RampHub buy orders return the NGN virtual account the user pays into.
+    # There is no OTP and no wallet address in that instruction: USDC is
+    # credited to the Circle wallet only after the bank transfer lands.
+    if (provider or "").lower() == "ramp":
+        created = await create_onramp(
+            token,
+            kind="ramp",
+            amount_ngn=amount,
+            currency="NGN",
+            verified=True,
+            idempotency_key=f"onramp:{confirm_id or decision_id}",
+            confirm_id=confirm_id or None,
+        )
+        return _finish_onramp_order(
+            ledger,
+            amount,
+            symbol,
+            decision_id,
+            confirm_id or decision_id,
+            quote,
+            created,
+            at=timestamp,
+        )
+
     initiated = await initiate_paj_session(
         token,
         idempotency_key=f"paj-initiate:{confirm_id or decision_id}",
@@ -273,10 +297,10 @@ def _finish_onramp_order(
         sleeves_before=before,
         sleeves_after=sleeves_snapshot(ledger.sleeves),
         detail=(
-            f"send exactly {raw.get('fiatAmount') or amount} NGN to "
+            f"Pay exactly {raw.get('fiatAmount') or amount} NGN into "
             f"{raw.get('accountName') or ''} {raw.get('accountNumber') or ''} "
-            f"({raw.get('bank') or ''}). USDC credits automatically; "
-            f"rate {quote.get('rate')}."
+            f"at {raw.get('bank') or ''}. That bank account is where the naira "
+            f"goes. Rate {raw.get('rate') or quote.get('rate')}."
         ),
     )
     ledger.remember_receipt(receipt)
@@ -284,11 +308,16 @@ def _finish_onramp_order(
         "kind": "onramp_order",
         "title": "ONRAMP ORDER",
         "amount": f"{amount:g} NGN",
-        "rate": str(quote.get("rate") or ""),
+        "rate": str(raw.get("rate") or quote.get("rate") or ""),
         "account_number": str(raw.get("accountNumber") or ""),
         "account_name": str(raw.get("accountName") or ""),
         "bank": str(raw.get("bank") or ""),
-        "token_amount": str(raw.get("tokenAmount") or ""),
+        "token_amount": str(
+            raw.get("tokenAmount")
+            or quote.get("estimatedOutput")
+            or quote.get("tokenAmount")
+            or ""
+        ),
         "order_id": str(raw.get("orderId") or raw.get("transactionId") or ""),
         "note": "Transfer the exact amount. Your deposit credits automatically.",
     }

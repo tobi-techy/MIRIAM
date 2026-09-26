@@ -39,6 +39,11 @@ _FUNDING_FACT_KEYS = (
     "rate",
     "amount",
     "recipient",
+    "category",
+    "network",
+    "airbills_id",
+    "status",
+    "amount_usdc",
 )
 
 
@@ -234,6 +239,165 @@ class FundingSettlementMixin:
             decision=state.decision,
             receipt=receipt,
             confirm_id=confirm_out,
+            card=card,
+            audit=audit.rows,
+        )
+
+    async def _handle_confirm_bill(
+        self, ledger: Ledger, event: Event, challenge: Any
+    ) -> TurnResult:
+        """Pay an Airbills bill after the confirm tap and speak the receipt."""
+        from miriam_agent.hands.audit import AuditLog as _AuditLog
+        from miriam_agent.hands.audit import Receipt as _Receipt
+        from miriam_agent.hands.audit import sleeves_snapshot
+        from miriam_agent.integrations.go_client import get_go_client
+
+        audit = _AuditLog()
+        now = self.clock()
+        meta = getattr(challenge, "meta", {}) or {}
+        category = str(meta.get("category") or "airtime")
+        recipient = str(meta.get("recipient") or challenge.counterparty or "")
+        action = ProposedAction(
+            type="bill",
+            amount=challenge.amount,
+            counterparty=recipient,
+            sleeve=challenge.sleeve,
+            source="user",
+            raw=f"{category} {recipient}",
+        )
+        decision = Decision(
+            id=challenge.decision_id,
+            at=now,
+            next_mode="act",
+            action_choice="allow",
+            suggested_amount=challenge.amount,
+            reasons=list(challenge.reasons),
+            confirm_id=challenge.id,
+        )
+
+        def _rejected(reasons: list[str], detail: str) -> Receipt:
+            before = sleeves_snapshot(ledger.sleeves)
+            receipt = _Receipt(
+                id=f"rcpt_bill_{challenge.id[-8:]}",
+                at=now,
+                status="rejected",
+                action="bill_pay",
+                currency=ledger.currency,
+                amount=challenge.amount,
+                counterparty=recipient,
+                sleeve=challenge.sleeve,
+                decision_id=challenge.decision_id,
+                idempotency_key=f"bill:{challenge.id}",
+                reasons=reasons,
+                sleeves_before=before,
+                sleeves_after=before,
+                detail=detail,
+                confirm_id=challenge.id,
+            )
+            ledger.remember_receipt(receipt)
+            return receipt
+
+        if not self.go_token:
+            receipt = _rejected(
+                ["NO_GO_TOKEN"], "no Go host token on this path; the bill was not paid"
+            )
+        else:
+            client = get_go_client()
+            network_name = ""
+            network_id = ""
+            if category in ("airtime", "data"):
+                try:
+                    detected = await client.detect_network(self.go_token, recipient)
+                except Exception as exc:  # noqa: BLE001
+                    detected = {"_tool_error": str(exc)[:200]}
+                if isinstance(detected, dict) and not detected.get("_tool_error"):
+                    network_id = str(
+                        detected.get("network_id") or detected.get("networkId") or ""
+                    )
+                    network_name = str(
+                        detected.get("network") or detected.get("name") or ""
+                    )
+            payload = {
+                "category": category,
+                "recipient": recipient,
+                "amount_ngn": float(challenge.amount),
+            }
+            if network_id:
+                payload["network_id"] = network_id
+            try:
+                paid = await client.pay_bill(
+                    self.go_token,
+                    payload,
+                    idempotency_key=f"bill:{challenge.id}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                paid = {"_tool_error": str(exc)[:200]}
+            if not isinstance(paid, dict) or paid.get("_tool_error"):
+                receipt = _rejected(
+                    ["BILL_PAY_FAILED"],
+                    str((paid or {}).get("_tool_error") or "Airbills did not accept the bill"),
+                )
+                card = None
+            else:
+                before = sleeves_snapshot(ledger.sleeves)
+                airbills_id = str(paid.get("airbills_id") or paid.get("order_id") or "")
+                receipt = _Receipt(
+                    id=f"rcpt_bill_{challenge.id[-8:]}",
+                    at=now,
+                    status="executed",
+                    action="bill_pay",
+                    currency="NGN",
+                    amount=challenge.amount,
+                    counterparty=recipient,
+                    sleeve=challenge.sleeve,
+                    decision_id=challenge.decision_id,
+                    idempotency_key=f"bill:{challenge.id}",
+                    rail_reference=airbills_id,
+                    confirm_id=challenge.id,
+                    sleeves_before=before,
+                    sleeves_after=before,
+                    detail=(
+                        f"Airbills {category} {challenge.amount} NGN for {recipient}"
+                        f" on {network_name or network_id}. Reference {airbills_id}."
+                    ),
+                )
+                ledger.remember_receipt(receipt)
+                card = {
+                    "kind": "bill_pay",
+                    "category": category,
+                    "recipient": recipient,
+                    "amount": f"{challenge.amount:g} NGN",
+                    "network": network_name or network_id,
+                    "airbills_id": airbills_id,
+                    "status": str(paid.get("status") or ""),
+                    "amount_usdc": str(paid.get("amount_usdc") or ""),
+                }
+        if "card" not in locals():
+            card = None
+        if receipt.status == "executed":
+            challenge.status = "consumed"
+        else:
+            challenge.status = "pending"
+        ledger.challenges[challenge.id] = challenge
+        await self.store.save(ledger)
+        execution = self._execution_from(receipt)
+        facts = _funding_facts(card)
+        if execution is not None and facts:
+            execution = execution.model_copy(update={"funding": facts})
+        state = build_state(
+            ledger=ledger,
+            policy=self.policy,
+            proposed_action=action,
+            decision=decision.model_dump(mode="json"),
+            execution=execution,
+            now=self.clock(),
+        )
+        return TurnResult(
+            state=state,
+            narration=await self._speak(state),
+            decision=state.decision,
+            receipt=receipt,
+            confirm_id="",
             card=card,
             audit=audit.rows,
         )

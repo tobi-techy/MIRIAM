@@ -381,8 +381,12 @@ class SettlementMixin:
             return await self._handle_confirm_rebalance(ledger, event, challenge)
 
         if challenge.action == "onramp":
-            # NGN -> USDC: quote, Paj initiate, await OTP, then order.
+            # NGN -> USDC. RampHub returns the bank account to pay. Paj, when
+            # selected, still starts with the recipient code.
             return await self._handle_confirm_funding(ledger, event, challenge)
+
+        if challenge.action == "bill":
+            return await self._handle_confirm_bill(ledger, event, challenge)
 
         if challenge.action == "offramp":
             # Funds-OUT is app-only: stage the envelope, never POST.

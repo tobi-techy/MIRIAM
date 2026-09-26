@@ -209,6 +209,23 @@ def _funding_line(state: HandlerState, execution: Any) -> str:
     def _get(key: str) -> str:
         return str(funding.get(key) or "").strip()
 
+    amount = _fmt(execution.amount)
+    if execution.action == "bill_pay":
+        category = _get("category") or "bill"
+        recipient = _get("recipient")
+        network = f" on {_get('network')}" if _get("network") else ""
+        ref = f" Reference {_get('airbills_id')}." if _get("airbills_id") else ""
+        status = f" Status {_get('status')}." if _get("status") else ""
+        charged = (
+            f" Charged {_get('amount_usdc')} USDC from spend."
+            if _get("amount_usdc")
+            else ""
+        )
+        pay_amount = _get("amount") or amount
+        who = f" for {recipient}" if recipient else ""
+        return (
+            f"Airbills {category} of {pay_amount} NGN{who}{network}.{ref}{status}{charged}"
+        )
     if execution.action == "onramp_initiate":
         to = f" to {_get('recipient')}" if _get("recipient") else ""
         rate = f" Rate {_get('rate')}." if _get("rate") else ""
@@ -216,21 +233,22 @@ def _funding_line(state: HandlerState, execution: Any) -> str:
             f"Verification code sent{to}. Reply with the code,"
             f" nothing moves until it verifies.{rate}"
         )
-    amount = _fmt(execution.amount)
     who = " ".join(
         part for part in (_get("account_name"), _get("account_number")) if part
     )
     if not who:
         return ""
-    bank = f" ({_get('bank')})" if _get("bank") else ""
+    bank = f" at {_get('bank')}" if _get("bank") else ""
+    pay_amount = _get("amount") or f"{amount} NGN"
     token = (
-        f" {_get('token_amount')} USDC credits automatically."
+        f" {_get('token_amount')} USDC credits after that transfer."
         if _get("token_amount")
-        else ""
+        else " USDC credits after that transfer."
     )
     rate = f" Rate {_get('rate')}." if _get("rate") else ""
     return (
-        f"Send exactly {amount} {state.currency} to {who}{bank}.{token}{rate}"
+        f"Pay exactly {pay_amount} into {who}{bank}. "
+        f"That is the bank account the naira goes to.{token}{rate}"
     )
 
 

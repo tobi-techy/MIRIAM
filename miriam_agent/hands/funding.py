@@ -95,6 +95,12 @@ def parse_funding_utterance(text: str) -> ProposedAction | None:
     lowered = (text or "").casefold()
     if not lowered.strip():
         return None
+    # Airtime and other Airbills sentences share "buy" and "naira" with an
+    # onramp. They are bills, not crypto purchases.
+    from miriam_agent.hands.bills import bill_category
+
+    if bill_category(text or ""):
+        return None
     # Strong triggers name the funding frame outright ("top up", "fund").
     # Weak triggers ("put", "deposit", "load") only count with a crypto or
     # naira word nearby, so "deposit 10k into savings" and "put 50 aside"
