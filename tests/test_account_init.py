@@ -64,6 +64,18 @@ def test_new_user_gets_account():
     session.commit.assert_awaited_once()
 
 
+def test_unknown_username_does_not_collide():
+    session = _session_mock(None)
+    store = _store_with_session(session)
+    user = _user("a28c1e1a-3e6d-4a3d-9fec-8186396cc478")
+    user.username = "unknown"
+    user.full_name = "Unknown User"
+    _run(store.ensure_user(user))
+    row = session.add.call_args.args[0]
+    assert row.username == "u-a28c1e1a-3e6d-4a3d-9fec-8186396cc478"
+    assert row.username != "unknown"
+
+
 def test_existing_user_is_noop():
     session = _session_mock(_user("u-old"))
     store = _store_with_session(session)
