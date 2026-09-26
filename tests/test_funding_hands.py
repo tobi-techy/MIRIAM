@@ -388,3 +388,53 @@ def test_bank_details_reach_the_narration(monkeypatch):
         return True
 
     assert _run(_go()) is True
+
+
+def test_missing_payin_account_is_not_executed_and_keeps_the_replay_key():
+    from miriam_agent.hands.funding_settle import _finish_onramp_order
+    from miriam_agent.hands.ledger import new_ledger
+
+    ledger = new_ledger("u-missing")
+    receipt, card, _ledger = _finish_onramp_order(
+        ledger,
+        Decimal("20000"),
+        "USDC",
+        "dec_1",
+        "confirm_1",
+        {"rate": "1416.65"},
+        {"ok": True, "raw": {"transactionId": "ord-1", "fiatAmount": 20000}},
+    )
+    assert card is None
+    assert receipt.status == "rejected"
+    assert "PAYIN_ACCOUNT_MISSING" in receipt.reasons
+    assert receipt.idempotency_key == "onramp-incomplete:confirm_1"
+    assert ledger.receipt_for("onramp:confirm_1") is None
+
+
+def test_card_amount_uses_the_provider_fiat_amount():
+    from miriam_agent.hands.funding_settle import _finish_onramp_order
+    from miriam_agent.hands.ledger import new_ledger
+
+    ledger = new_ledger("u-fiat")
+    receipt, card, _ledger = _finish_onramp_order(
+        ledger,
+        Decimal("20000"),
+        "USDC",
+        "dec_2",
+        "confirm_2",
+        {"rate": "1416"},
+        {
+            "ok": True,
+            "raw": {
+                "transactionId": "ord-2",
+                "fiatAmount": 20000.5,
+                "accountNumber": "0123456789",
+                "accountName": "RampHub Checkout",
+                "bank": "Wema Bank",
+            },
+        },
+    )
+    assert receipt.status == "executed"
+    assert card is not None
+    assert card["amount"] == "20000.5 NGN"
+    assert "Pay exactly 20000.5 NGN" in receipt.detail

@@ -246,6 +246,26 @@ async def prepare_onramp(
     return receipt, card, ledger
 
 
+def _provider_fiat_amount(raw: dict[str, Any], amount: Decimal) -> str:
+    """The naira figure the user must transfer, from the provider when present."""
+    fiat = raw.get("fiatAmount")
+    try:
+        if fiat is not None and str(fiat).strip() != "":
+            parsed = Decimal(str(fiat))
+            if parsed > 0:
+                return _trim_decimal(parsed)
+    except Exception:  # noqa: BLE001 - a bad provider figure falls back to the ask
+        pass
+    return _trim_decimal(amount)
+
+
+def _trim_decimal(value: Decimal) -> str:
+    text = f"{value:f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def _finish_onramp_order(
     ledger: Ledger,
     amount: Decimal,
@@ -260,6 +280,10 @@ def _finish_onramp_order(
     timestamp = at or _utcnow()
     before = sleeves_snapshot(ledger.sleeves)
     if not created.get("ok"):
+        reasons = list(created.get("reasons") or ["ONRAMP_FAILED"])
+        # ONRAMP_FAILED can mean the POST landed and the reply was lost.
+        # Keep onramp:{confirm_id} free so the next tap replays that key.
+        replayable = "ONRAMP_FAILED" in reasons
         receipt = Receipt(
             id=_id("rcpt"),
             at=timestamp,
@@ -270,8 +294,12 @@ def _finish_onramp_order(
             counterparty=symbol,
             sleeve="spendable",
             decision_id=decision_id,
-            idempotency_key=f"onramp:{confirm_id}",
-            reasons=list(created.get("reasons") or ["ONRAMP_FAILED"]),
+            idempotency_key=(
+                f"onramp-incomplete:{confirm_id}"
+                if replayable
+                else f"onramp:{confirm_id}"
+            ),
+            reasons=reasons,
             sleeves_before=before,
             sleeves_after=before,
             detail=str(
@@ -280,7 +308,36 @@ def _finish_onramp_order(
         )
         ledger.remember_receipt(receipt)
         return receipt, None, ledger
-    raw = created.get("raw") or {}
+    raw = created.get("raw") if isinstance(created.get("raw"), dict) else {}
+    account_number = str(raw.get("accountNumber") or "").strip()
+    bank = str(raw.get("bank") or "").strip()
+    # A RampHub buy is only payable once the virtual account is known. The
+    # create call already used onramp:{confirm_id}; a retry must POST that
+    # same key so Go replays the order instead of opening another one.
+    # This rejection is stored under a different key so that replay can run.
+    if not account_number or not bank:
+        receipt = Receipt(
+            id=_id("rcpt"),
+            at=timestamp,
+            status="rejected",
+            action="onramp_prepare",
+            currency=ledger.currency,
+            amount=amount,
+            counterparty=symbol,
+            sleeve="spendable",
+            decision_id=decision_id,
+            idempotency_key=f"onramp-incomplete:{confirm_id}",
+            reasons=["PAYIN_ACCOUNT_MISSING"],
+            sleeves_before=before,
+            sleeves_after=before,
+            detail=(
+                "the provider did not return the bank account to pay; "
+                f"replay idempotency key onramp:{confirm_id}"
+            ),
+        )
+        ledger.remember_receipt(receipt)
+        return receipt, None, ledger
+    pay_ngn = _provider_fiat_amount(raw, amount)
     receipt = Receipt(
         id=_id("rcpt"),
         at=timestamp,
@@ -297,9 +354,9 @@ def _finish_onramp_order(
         sleeves_before=before,
         sleeves_after=sleeves_snapshot(ledger.sleeves),
         detail=(
-            f"Pay exactly {raw.get('fiatAmount') or amount} NGN into "
-            f"{raw.get('accountName') or ''} {raw.get('accountNumber') or ''} "
-            f"at {raw.get('bank') or ''}. That bank account is where the naira "
+            f"Pay exactly {pay_ngn} NGN into "
+            f"{raw.get('accountName') or ''} {account_number} "
+            f"at {bank}. That bank account is where the naira "
             f"goes. Rate {raw.get('rate') or quote.get('rate')}."
         ),
     )
@@ -307,11 +364,11 @@ def _finish_onramp_order(
     card = {
         "kind": "onramp_order",
         "title": "ONRAMP ORDER",
-        "amount": f"{amount:g} NGN",
+        "amount": f"{pay_ngn} NGN",
         "rate": str(raw.get("rate") or quote.get("rate") or ""),
-        "account_number": str(raw.get("accountNumber") or ""),
+        "account_number": account_number,
         "account_name": str(raw.get("accountName") or ""),
-        "bank": str(raw.get("bank") or ""),
+        "bank": bank,
         "token_amount": str(
             raw.get("tokenAmount")
             or quote.get("estimatedOutput")
