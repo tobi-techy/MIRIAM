@@ -201,7 +201,7 @@ def apply_rules(
     if intent != "order" and proposed.type != "transfer":
         # NGN <-> crypto funding rides the same "order" intent as sleeve
         # orders: a buy/sell with an amount is an instruction, not advice.
-        if proposed.type not in ("onramp", "offramp"):
+        if proposed.type not in ("onramp", "offramp", "bill"):
             outcome.action_choice = _stricter_action(outcome.action_choice, "none")
             return outcome
 

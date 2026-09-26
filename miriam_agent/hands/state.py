@@ -50,6 +50,7 @@ ActionType = Literal[
     "resume",
     "onramp",
     "offramp",
+    "bill",
     "save_rule",
     "none",
 ]
