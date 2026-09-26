@@ -48,7 +48,11 @@ from miriam_agent.hands.ledger import LedgerUnavailable, RedisLedgerStore, money
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import InsufficientState
 from miriam_agent.hands.transfer import GoRail, parse_amount
-from miriam_agent.integrations.supermemory_client import container_tag_for
+from miriam_agent.integrations.supermemory_client import (
+    container_tag_for,
+    conversation_scope_for,
+    display_name_for,
+)
 from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
@@ -267,9 +271,10 @@ async def _finalize_money_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=conv_id,
+        channel="web",
         user_message=message,
         assistant_message=payload["response"],
+        name=_display_name(user),
     )
     payload["conversation_history"] = await memory_store.get_conversation_history(
         conv_id, user.id
@@ -356,7 +361,9 @@ async def chat_with_agent(
     # instead of the general agent. Action intents and completed interviews pass
     # straight through.
     try:
-        onboarding = await OnboardingService(memory_store).handle_turn(
+        onboarding = await OnboardingService(
+            memory_store, supermemory=supermemory_memory
+        ).handle_turn(
             user,
             message=message,
             is_poll_vote=bool(request.get("is_poll_vote", False)),
@@ -506,7 +513,9 @@ async def chat_stream(
     onboarding = None
     if not is_money_turn:
         try:
-            onboarding = await OnboardingService(memory_store).handle_turn(
+            onboarding = await OnboardingService(
+                memory_store, supermemory=supermemory_memory
+            ).handle_turn(
                 user,
                 message=message,
                 is_poll_vote=bool(request.get("is_poll_vote", False)),
@@ -567,9 +576,10 @@ async def chat_stream(
                 await _ingest_to_supermemory(
                     supermemory_memory,
                     user.id,
-                    conversation_id=conv_id,
+                    channel="onboarding",
                     user_message=message,
                     assistant_message=onboarding.response,
+                    name=_display_name(user),
                 )
                 if onboarding.poll:
                     yield _sse(
@@ -642,14 +652,16 @@ async def chat_stream(
                 await _ingest_to_supermemory(
                     supermemory_memory,
                     user.id,
-                    conversation_id=conv_id,
+                    channel="web",
                     user_message=message,
                     assistant_message=reply,
+                    name=_display_name(user),
                 )
                 yield _sse({"type": "token", "content": reply})
                 yield _sse({"type": "done"})
                 return
 
+            reply_parts: list[str] = []
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
@@ -662,6 +674,7 @@ async def chat_stream(
             ):
                 evt = event["type"]
                 if evt == "token":
+                    reply_parts.append(event["content"])
                     yield _sse({"type": "token", "content": event["content"]})
                 elif evt == "tool_call":
                     yield _sse({"type": "tool_call", "tool_call": event["tool_call"]})
@@ -675,6 +688,34 @@ async def chat_stream(
                         }
                     )
                 elif evt == "done":
+                    # The streamed answer used to close the stream without ever
+                    # being persisted: the busiest web surface wrote no history
+                    # and no memory. Record it exactly like the non-streaming
+                    # path before the client sees `done`.
+                    reply = event.get("content") or "".join(reply_parts)
+                    conv_id = conversation_id or f"conv_{user.id}"
+                    await memory_store.store_interaction(
+                        user_id=user.id,
+                        role="user",
+                        content=message,
+                        conversation_id=conv_id,
+                        metadata={"channel": "api"},
+                    )
+                    await memory_store.store_interaction(
+                        user_id=user.id,
+                        role="assistant",
+                        content=reply,
+                        conversation_id=conv_id,
+                        metadata={"channel": "api"},
+                    )
+                    await _ingest_to_supermemory(
+                        supermemory_memory,
+                        user.id,
+                        channel="web",
+                        user_message=message,
+                        assistant_message=reply,
+                        name=_display_name(user),
+                    )
                     yield _sse({"type": "done"})
                     return
             yield _sse({"type": "done"})
@@ -900,9 +941,10 @@ async def _finish_onboarding_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=conv_id,
+        channel="onboarding",
         user_message=message,
         assistant_message=onboarding.response,
+        name=_display_name(user),
     )
     payload = onboarding.to_payload(conv_id)
     payload["conversation_history"] = await memory_store.get_conversation_history(
@@ -991,30 +1033,49 @@ async def _load_memory_facts(
 async def _ingest_to_supermemory(
     supermemory_memory: Any,
     user_id: str,
-    conversation_id: str,
+    *,
+    channel: str,
     user_message: str,
     assistant_message: str,
+    name: str | None = None,
 ) -> None:
     """Send a user/assistant turn into Supermemory's memory graph.
+
+    The turn is keyed to a stable per-person, per-channel scope rather than the
+    client's conversation id. That is the whole point: a client that starts a
+    new conversation per session used to hand Supermemory a new document each
+    time, which is how one person's memory ended up as several disconnected
+    clusters. With a stable scope, a person's web turns are one document, their
+    onboarding another, and dynamic dreaming links the memories across them.
 
     Fire-and-forget and fail-open: memory ingest must never break the chat
     response, so any error is swallowed here.
     """
     if supermemory_memory is None or not supermemory_memory.enabled:
         return
-    if not conversation_id:
-        return
     try:
         container_tag = container_tag_for(user_id)
         await supermemory_memory.ingest_turn(
             container_tag=container_tag,
-            conversation_id=conversation_id,
+            conversation_id=conversation_scope_for(user_id, channel),
             user_message=user_message,
             assistant_message=assistant_message,
-            metadata={"channel": "api", "agent": "miriam-python"},
+            metadata={
+                "channel": channel,
+                "source": "miriam",
+                "agent": "miriam-python",
+            },
         )
+        # The settings call 404s until the container exists, so it runs after
+        # the first turn lands. It is memoised after that.
+        await supermemory_memory.ensure_container(container_tag, user_id, name=name)
     except Exception as e:
         logger.warning("Memorizing turn failed (non-blocking): %s", e)
+
+
+def _display_name(user: User) -> str | None:
+    """The name Supermemory should label and ground this person's space with."""
+    return display_name_for(user.full_name, user.username)
 
 
 async def _finalize_turn(
@@ -1047,9 +1108,10 @@ async def _finalize_turn(
     await _ingest_to_supermemory(
         supermemory_memory,
         user.id,
-        conversation_id=result.conversation_id,
+        channel="web",
         user_message=message,
         assistant_message=result.response,
+        name=_display_name(user),
     )
     payload = _serialize_agent_result(result)
     payload["conversation_history"] = await memory_store.get_conversation_history(

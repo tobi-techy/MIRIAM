@@ -38,6 +38,7 @@ from miriam_agent.api.dependencies import (
     get_bearer_token,
     get_current_user,
     get_memory_store,
+    get_supermemory_memory_dep,
 )
 from miriam_agent.charts import png_base64, sleeve_donut, split_bar
 from miriam_agent.charts.cards import allocate_jpg, jpg_base64
@@ -47,6 +48,11 @@ from miriam_agent.database.models import User
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.transfer import GoRail
 from miriam_agent.integrations import go_client as go_client_mod
+from miriam_agent.integrations.supermemory_client import (
+    container_tag_for,
+    conversation_scope_for,
+    display_name_for,
+)
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.orchestrator import Event, Orchestrator
 
@@ -148,6 +154,7 @@ async def spectrum_chat(
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
     memory_store: MemoryStore = Depends(get_memory_store),
+    supermemory_memory: Any = Depends(get_supermemory_memory_dep),
 ) -> dict[str, Any]:
     """One gateway turn in, rendered parts out."""
     channel = str(request.get("channel") or "terminal").strip().lower()
@@ -202,6 +209,34 @@ async def spectrum_chat(
             )
         except Exception:  # noqa: BLE001 - memory never breaks the turn
             logger.warning("spectrum: memory store failed (non-blocking)")
+        # The gateway is where people actually text Miriam, so its turns belong
+        # in the person's memory graph too. Scoped stably per channel, the same
+        # turns append to one document instead of a new one per space id, so the
+        # iMessage/WhatsApp history joins the rest of the person's memory.
+        if supermemory_memory is None or not getattr(
+            supermemory_memory, "enabled", False
+        ):
+            return
+        try:
+            container_tag = container_tag_for(user.id)
+            await supermemory_memory.ingest_turn(
+                container_tag=container_tag,
+                conversation_id=conversation_scope_for(user.id, channel),
+                user_message=user_text,
+                assistant_message=reply,
+                metadata={
+                    "channel": channel,
+                    "source": "miriam",
+                    "spectrum": True,
+                },
+            )
+            await supermemory_memory.ensure_container(
+                container_tag,
+                user.id,
+                name=display_name_for(user.full_name, user.username),
+            )
+        except Exception:  # noqa: BLE001 - memory never breaks the turn
+            logger.warning("spectrum: memory ingest failed (non-blocking)")
 
     # -- 1. structured or text confirmation tap ---------------------------
     confirm_id = str(request.get("confirm_id") or "").strip()

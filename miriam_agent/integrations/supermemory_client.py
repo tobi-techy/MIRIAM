@@ -34,6 +34,7 @@ Streamlined to the endpoints the agent actually uses:
 - PATCH /v4/memories      update a memory (versioned)
 - DELETE /v4/memories     forget a memory
 - POST /v4/memories/forget-matching  forget everything about X
+- PATCH /v3/container-tags/{tag}  container display name + entityContext
 """
 
 import asyncio
@@ -71,6 +72,64 @@ def container_tag_for(user_id: str) -> str:
 
     digest = hashlib.sha256(value.encode()).hexdigest()[:32]
     return f"user_{digest}"
+
+
+_CHANNEL_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _sanitize_channel(channel: str) -> str:
+    token = _CHANNEL_RE.sub("-", (channel or "").strip().lower()).strip("-")
+    return token[:24] or "web"
+
+
+def conversation_scope_for(user_id: str, channel: str = "web") -> str:
+    """Stable per-person, per-channel conversation id.
+
+    One person must accumulate one connected memory graph, not a new document
+    per chat session. Keying every ingest to a stable
+    ``miriam:<channel>:<container>`` scope keeps a channel's turns in a single
+    document that Supermemory can diff, and gives ``dreaming: dynamic`` a
+    coherent unit to link across, instead of scattering the person across one
+    document per session id.
+
+    The container tag (the isolation boundary) is still derived from the user
+    id alone, so this remains per-person: two people never share a scope.
+    """
+    return f"miriam:{_sanitize_channel(channel)}:{container_tag_for(user_id)}"
+
+
+_PLACEHOLDER_NAMES = {"unknown", "unknown user", "n/a"}
+
+
+def display_name_for(*candidates: str | None) -> str | None:
+    """First real name among the candidates, ignoring token placeholders.
+
+    ``get_current_user`` fills in a missing JWT claim with ``"unknown"`` /
+    ``"Unknown User"``. Lifting those into a container name would label a
+    person's whole memory space "Unknown User", which is worse than leaving it
+    unlabelled, so placeholders are dropped.
+    """
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if value and value.casefold() not in _PLACEHOLDER_NAMES:
+            return value
+    return None
+
+
+def person_entity_context(user_id: str, name: str | None = None) -> str:
+    """Container-level grounding for a person's memory space.
+
+    Supermemory reads this while processing documents in the container, so it
+    is what stops extraction from drifting on unanchored pronouns: without it,
+    "I'm saving for a house" is a fact about nobody in particular.
+    """
+    who = (name or "").strip() or "this person"
+    return (
+        f"This space holds the long-term memory of {who} (user id {user_id}), "
+        f"a person using Miriam, their personal financial assistant. Every fact "
+        f"here is about {who} personally; resolve first-person statements "
+        f'("I", "me", "my") to {who}.'
+    )
 
 
 class SupermemoryError(Exception):
@@ -363,6 +422,35 @@ class SupermemoryClient:
         if reason:
             payload["reason"] = reason
         return await self._post("/v4/memories/forget-matching", payload)
+
+    # ------------------------------------------------------------------
+    # Container settings: grounding + labelling
+    # ------------------------------------------------------------------
+
+    async def update_container_settings(
+        self,
+        container_tag: str,
+        name: str | None = None,
+        entity_context: str | None = None,
+        profile_buckets: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Set a container's display name and extraction grounding.
+
+        ``name`` is cosmetic (what the console shows instead of a raw id).
+        ``entity_context`` is not: it is the context Supermemory reads when
+        processing documents in this tag, and it is how a personal agent keeps
+        facts attached to the right person. Requires the container to exist.
+        """
+        payload: dict[str, Any] = {}
+        if name and name.strip():
+            payload["name"] = name.strip()[:100]
+        if entity_context and entity_context.strip():
+            payload["entityContext"] = entity_context.strip()[:1500]
+        if profile_buckets:
+            payload["profileBuckets"] = profile_buckets
+        if not payload:
+            return None
+        return await self._patch(f"/v3/container-tags/{container_tag}", payload)
 
     # ------------------------------------------------------------------
     # Internals

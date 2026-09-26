@@ -422,12 +422,16 @@ class OnboardingService:
         state_store: Any | None = None,
         provider: LLMProvider | None = None,
         trace_store: Any | None = None,
+        supermemory: Any | None = None,
     ) -> None:
         self._memory = memory_store
         self._state_store = state_store or get_onboarding_state_store()
         self._trace = trace_store or get_onboarding_trace_store()
         self._settings = get_settings()
         self._provider = provider
+        # Injected by the chat entrypoint; ``None`` means memory mirroring is
+        # off (keyless runs and tests), never a hidden network call.
+        self._supermemory = supermemory
 
     # -- public -------------------------------------------------------------
 
@@ -1745,6 +1749,56 @@ class OnboardingService:
             )
         except Exception:
             logger.warning("failed to store onboarding answer (non-blocking)")
+        # SQL is the system of record for onboarding answers; the memory graph
+        # is where Miriam can *recall* them. Mirror the structured fact too, or
+        # the interview's findings never reach the person's long-term memory.
+        await self._mirror_to_supermemory(user_id, question_id, dimension, content)
+
+    async def _mirror_to_supermemory(
+        self, user_id: str, question_id: str, dimension: str, content: str
+    ) -> None:
+        """Append one decided onboarding fact to the person's memory graph.
+
+        The interview *turns* already reach Supermemory through the chat path.
+        These are the facts the interview actually settled, appended as system
+        notes to the same stable onboarding document so they strengthen the
+        graph without spawning a new source document per answer. Best-effort:
+        memory must never break onboarding.
+        """
+        content = (content or "").strip()
+        if not content:
+            return
+        service = self._supermemory
+        if service is None or not getattr(service, "enabled", False):
+            return
+        try:
+            from miriam_agent.integrations.supermemory_client import (
+                container_tag_for,
+                conversation_scope_for,
+            )
+
+            container_tag = container_tag_for(user_id)
+            await service.ingest_note(
+                container_tag=container_tag,
+                conversation_id=conversation_scope_for(user_id, "onboarding"),
+                content=f"[{dimension}/{question_id}] {content}",
+                metadata={
+                    "channel": "onboarding",
+                    "kind": dimension,
+                    "source": "miriam",
+                },
+            )
+            # A name is the one fact worth pinning as a permanent trait, so the
+            # always-on profile carries it from then on.
+            if question_id == "name":
+                await service.remember_person_fact(
+                    container_tag,
+                    f"The person's name is {content}",
+                    kind="identity",
+                    is_static=True,
+                )
+        except Exception as exc:  # noqa: BLE001 - memory never breaks onboarding
+            logger.info("onboarding memory mirror failed (non-blocking): %s", exc)
 
     async def _persist_rules(
         self, user_id: str, state: OnboardingState, *, automate: bool
