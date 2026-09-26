@@ -71,12 +71,9 @@ def money_readiness(state: Any) -> tuple[bool, list[str]]:
         missing.append("income_frequency")
     if intake.fixed_costs is None and turns < 4:
         missing.append("fixed_costs")
-    # A goal does not block the plan. Income plus fixed costs is the plan.
-    # After three interview turns, income alone is enough and the plan labels
-    # whatever it had to assume.
-    ready = intake.monthly_income is not None and (
-        intake.fixed_costs is not None or turns >= 3
-    )
+    # Income alone is not a plan. Missing costs were being stored as zero,
+    # which put the whole paycheck in guilt-free and still offered a stock buy.
+    ready = intake.monthly_income is not None and intake.fixed_costs is not None
     if ready:
         missing = []
     return ready, missing
@@ -287,7 +284,7 @@ def render_money_plan_text(money_plan: dict[str, Any]) -> str:
         )
     else:
         lines.append(
-            "Once the month closes, that invest slice buys the Rail Stock Sleeve: tokenized Apple, Nvidia, and Tesla."
+            "Nothing goes to stocks yet. The Rail Stock Sleeve waits until the month leaves an invest slice."
         )
     lines += ["", "Want me to lock this in sharp sharp, or adjust anything?"]
     assumptions = money_plan.get("assumptions") or []

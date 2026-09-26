@@ -1037,6 +1037,31 @@ def test_fallback_llm_down_completes_flow(monkeypatch):
     assert memory.entries
 
 
+def test_okay_on_the_plan_locks_it_in(monkeypatch):
+    from miriam_agent.onboarding.state import OnboardingState
+
+    user = _user()
+    service, states, _, provider = _service(monkeypatch, FakeProvider())
+    state = OnboardingState(
+        {
+            "stage": "plan_consent",
+            "name": "Tola",
+            "goal": "invest",
+            "learned": {"income": "50000 a month", "fixed": "rent is 20000"},
+            "plan": {
+                "diagnostic_state": "Stability Seeker",
+                "steps": [{"id": "buffer", "title": "Build the buffer"}],
+                "standing_rules": [],
+            },
+        }
+    )
+    states.data[user.id] = state.to_dict()
+    turn = _run(service.handle_turn(user, message="Okay"))
+    assert turn.completed is True
+    assert "what should we change" not in turn.response.lower()
+    assert provider.calls == []
+
+
 def test_cap_reads_the_salary_answer_instead_of_repeating_the_poll(monkeypatch):
     from miriam_agent.config.settings import get_settings
 

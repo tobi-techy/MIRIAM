@@ -138,14 +138,34 @@ def test_salary_and_numbered_pay_rhythm_are_understood():
     assert ready is True and missing == []
 
 
-def test_plan_text_names_the_stock_sleeve():
+def test_zero_invest_slice_does_not_pretend_to_buy():
+    from miriam_agent.onboarding.completion import automated_completion_text
+    from miriam_agent.onboarding.money_bridge import render_money_plan_text
+    from miriam_agent.onboarding.state import OnboardingState
+
+    plan = {
+        "currency": "USD",
+        "cashflow": {"fixed": 0, "debt": 0, "savings": 0, "investments": 0, "guilt_free": 50},
+        "automation_rules": ["Automate the transfers themselves, not the intention to make them."],
+        "disclaimer": "",
+    }
+    state = OnboardingState({"learned": {"income": "$50"}, "money_plan": plan})
+    text = automated_completion_text(state)
+    assert "placeholder" in text.lower()
+    assert "buys the Rail Stock Sleeve" not in text
+    spoken = render_money_plan_text(plan)
+    assert "Nothing goes to stocks yet" in spoken
+
+
+def test_plan_text_names_the_stock_sleeve_only_when_it_is_funded():
     from miriam_agent.onboarding.money_bridge import build_money_plan_dict, render_money_plan_text
     from miriam_agent.onboarding.state import OnboardingState
 
     state = OnboardingState({"learned": {"income": "I earn 500k every month", "fixed": "rent and food take 350k"}, "goal": "build buffer", "interview_turns": 4})
     text = render_money_plan_text(build_money_plan_dict(state))
-    assert "Rail Stock Sleeve" in text
-    assert "Apple" in text and "Tesla" in text
+    assert "Nothing goes to stocks yet" in text
+    funded = render_money_plan_text({"currency": "USD", "cashflow": {"fixed": 20, "debt": 0, "savings": 10, "investments": 15, "guilt_free": 5}, "disclaimer": ""})
+    assert "Rail Stock Sleeve" in funded and "Apple" in funded and "Tesla" in funded
 
 
 def test_same_gap_is_not_a_reason_to_keep_polling():

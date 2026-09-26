@@ -227,6 +227,20 @@ _YES_PHRASES = {
 }
 _NO_PHRASES = {"no", "nope", "nah", "not now", "later", "skip it", "no thanks"}
 _ADJUST_HINTS = ("adjust", "change", "tweak", "edit", "rework", "instead")
+# A short yes on the plan. "Okay" and "yeah would love to" are consent.
+# A longer sentence ("okay, but change the rent") is not.
+_SHORT_YES = re.compile(
+    r"^(?:(?:"
+    r"yeah would love to|i would love to|let's do it|lets do it|"
+    r"ok|okay|k|yeah|yep|yup|yes|sure|alright|all right|"
+    r"thanks|thank you|no wahala"
+    r")[\s!.]*){1,4}$",
+    re.IGNORECASE,
+)
+
+
+def _is_short_yes(text: str) -> bool:
+    return bool(_SHORT_YES.match((text or "").strip()))
 
 # Phrases that restart an already-finished/abandoned interview. Deliberately
 # narrow: post-completion casual chit-chat ("let's go", "try again") must never
@@ -643,6 +657,11 @@ class OnboardingService:
 
         if not text:
             return OnboardingTurn(conversation_id=conversation_id)
+
+        # "Okay" on the plan is a yes. The conductor was reading it as a
+        # request to rework, which sent people back into another interview.
+        if state.stage == STAGE_PLAN_CONSENT and _is_short_yes(text):
+            return await self._complete_automated(user.id, state, conversation_id)
 
         if is_poll_vote and state.stage in (
             STAGE_AWAITING_STATEMENT,

@@ -14,17 +14,31 @@ def automated_completion_text(state: Any) -> str:
                 return str(_fmt(v, cur))
             except Exception:
                 return f"{cur} {v}"
-        rules = money_plan.get("automation_rules") or []
         body = "Locked in - e don set. Your month now runs like this:\n"
         for label, key in (("Fixed costs", "fixed"), ("Savings (buffer)", "savings"), ("Debt attack", "debt"), ("Guilt-free", "guilt_free")):
             body += f"\u2022 {label}: {_amt(cashflow.get(key, 0))}\n"
-        if rules and str(rules[0]).strip():
-            body += f"\nAutomation: {str(rules[0]).strip()}.\n"
-        body += (
-            "\nThe invest slice buys the Rail Stock Sleeve: "
-            "tokenized Apple, Nvidia, and Tesla.\n"
-        )
-        body += "\nI keep an eye on it and bring things up when they deserve attention. You stay the one who decides."
+        try:
+            invest_amount = float(cashflow.get("investments") or 0)
+        except (TypeError, ValueError):
+            invest_amount = 0
+        learned = getattr(state, "learned", None) or {}
+        costs_known = bool(str(learned.get("fixed") or "").strip())
+        if not costs_known and float(cashflow.get("fixed") or 0) == 0:
+            body += (
+                "\nI still don't have what must go out each month, so this split "
+                "is a placeholder and nothing is invested.\n"
+            )
+        elif invest_amount > 0:
+            body += (
+                "\nThe invest slice buys the Rail Stock Sleeve: "
+                "tokenized Apple, Nvidia, and Tesla.\n"
+            )
+        else:
+            body += (
+                "\nNothing goes to stocks yet. The Rail Stock Sleeve waits until "
+                "the month leaves an invest slice.\n"
+            )
+        body += "\nWhen pay lands, the buffer comes out first. You stay the one who decides."
         return body
     plank = getattr(state, "plan", None) or {}
     bullets = [s["title"].lower() for s in plank.get("steps", [])][:4]
