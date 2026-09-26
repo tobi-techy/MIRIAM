@@ -181,12 +181,15 @@ def test_investment_reads_use_agent_paths():
     _run(client.close())
 
 
-def test_the_client_has_no_investment_mutation_methods():
-    """The rail-calling investment client is deleted, not just unwired.
+def test_the_client_has_no_strategy_or_withdrawal_writers():
+    """The rail-calling strategy/withdrawal writers stay deleted.
 
-    Every one of these methods existed to carry a mutation out of the agent, and
-    the agent has no money path. ``hands/`` is the only thing that moves money,
-    and it reaches the rail through its own two verbs.
+    Order/allocations/rebalance/pause/resume are now real client methods, but
+    they are reachable only from ``hands/orders.py`` after a confirm_id tap --
+    never from a chat-turn tool (pinned in test_money_tools.py). The app-only
+    writers that hands never calls must not come back, and the withdrawal
+    endpoint is app-only. Strategy create/version-publish stay absent because
+    no hands verb reaches them.
     """
     from miriam_agent.integrations.go_client import GoBackendClient
 
@@ -194,11 +197,8 @@ def test_the_client_has_no_investment_mutation_methods():
         "create_investment_strategy",
         "publish_investment_strategy_version",
         "enroll_investment",
-        "create_investment_order",
-        "set_investment_allocation",
-        "pause_investment_strategy",
-        "resume_investment_strategy",
-        "rebalance_investment_strategy",
+        "create_withdrawal",
+        "submit_withdrawal",
     ):
         assert not hasattr(GoBackendClient, gone), gone
 
@@ -206,14 +206,24 @@ def test_the_client_has_no_investment_mutation_methods():
     for kept in ("get_investment_portfolio", "list_investment_strategies"):
         assert hasattr(GoBackendClient, kept), kept
 
+    # The server-signed Glider transaction writers exist on the client, for the
+    # hands layer only. Each is paired with a hands verb; the registry scan in
+    # test_money_tools.py is what proves they are not chat-reachable.
+    for writer in (
+        "create_investment_order",
+        "set_investment_allocation",
+        "rebalance_investment_strategy",
+        "pause_investment_strategy",
+        "resume_investment_strategy",
+    ):
+        assert hasattr(GoBackendClient, writer), writer
+
 
 def test_agent_client_exposes_no_withdrawal_method():
     from miriam_agent.integrations.go_client import GoBackendClient
 
     methods = [name for name in dir(GoBackendClient) if not name.startswith("__")]
-    assert not any(
-        "withdraw" in name and "preview" not in name for name in methods
-    )
+    assert not any("withdraw" in name and "preview" not in name for name in methods)
 
 
 def test_stash_transfers_use_real_paths_and_idempotency_header():
@@ -392,7 +402,16 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
         return httpx.Response(404, json={"error": "not found"})
 
     client = _client_for(handler)
-    plan = _run(client.get_financial_plan("tok"))
+
+    # The composition lives in the financial layer now (the client is a raw
+    # adapter), so the engine functions are called with the client injected.
+    from miriam_agent.financial.intelligence import (
+        cash_flow_forecast_live,
+        financial_health_live,
+        financial_plan_live,
+    )
+
+    plan = _run(financial_plan_live(client, "tok"))
     assert "/api/v1/analytics/financial-snapshot" in seen_paths
     assert "/api/v1/financial-obligations" in seen_paths
     assert "/api/v1/ai/financial-plan" not in seen_paths
@@ -402,11 +421,11 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
     assert plan["engine"] == "financial-snapshot"
     assert plan["next_steps"][0]["priority"] == 1
     assert plan["health"]["score"] >= 0
-    health = _run(client.get_financial_health("tok"))
+    health = _run(financial_health_live(client, "tok"))
     assert health["source"] == "python"
     assert health["engine"] == "financial-snapshot"
     assert "/api/v1/ai/financial-health" not in seen_paths
-    forecast = _run(client.get_cash_flow_forecast("tok"))
+    forecast = _run(cash_flow_forecast_live(client, "tok"))
     assert forecast["engine"] == "financial-snapshot"
     assert forecast["spend_balance"] == 10.0
     _run(client.close())
@@ -414,6 +433,93 @@ def test_get_financial_plan_uses_snapshot_engine_not_ai_endpoint():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
+
+
+def test_list_investable_merges_the_rail_sleeve():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(
+                200,
+                json={
+                    "strategies": [
+                        {
+                            "strategy_id": "sleeve",
+                            "name": "Rail Stock Sleeve",
+                            "glider_strategy_id": "glider-1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(
+                200,
+                json={"strategies": [{"strategy_id": "mine", "name": "Mine"}]},
+            )
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    ids = [row["strategy_id"] for row in merged["strategies"]]
+    assert ids == ["mine", "sleeve"]
+    assert "partial" not in merged
+    _run(client.close())
+
+
+def test_list_investable_survives_a_rail_outage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(500, json={"message": "rail down"})
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(
+                200,
+                json={"strategies": [{"strategy_id": "mine", "name": "Mine"}]},
+            )
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    assert [r["strategy_id"] for r in merged["strategies"]] == ["mine"]
+    assert merged.get("partial") is True
+    assert "rail_error" in merged
+    _run(client.close())
+
+
+def test_list_investable_survives_a_user_list_outage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/investments/strategies/rail":
+            return httpx.Response(
+                200,
+                json={
+                    "strategies": [
+                        {
+                            "strategy_id": "sleeve",
+                            "name": "Rail Stock Sleeve",
+                            "glider_strategy_id": "glider-1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/v1/investments/strategies":
+            return httpx.Response(500, json={"message": "user list down"})
+        return httpx.Response(404, json={"message": "no"})
+
+    client = _client_for(handler)
+    merged = _run(client.list_investable_strategies("tok", status="active"))
+    assert [r["strategy_id"] for r in merged["strategies"]] == ["sleeve"]
+    assert merged.get("partial") is True
+    _run(client.close())
+
+
+def test_list_investable_raises_when_both_sources_down():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "all down"})
+
+    from miriam_agent.core.exceptions import IntegrationError
+
+    client = _client_for(handler)
+    with pytest.raises(IntegrationError):
+        _run(client.list_investable_strategies("tok", status="active"))
+    _run(client.close())
 
 
 def test_user_enroll_hits_prepare_and_complete_paths():
@@ -429,9 +535,7 @@ def test_user_enroll_hits_prepare_and_complete_paths():
     client = _client_for(handler)
     owner = _run(client.get_investment_owner("tok"))
     assert owner["owner_account_id"] == "solana:x:y"
-    out = _run(
-        client.prepare_user_enroll("tok", {"strategy_id": "s1"})
-    )
+    out = _run(client.prepare_user_enroll("tok", {"strategy_id": "s1"}))
     assert out["status"] == "COMPLETED"
     out = _run(
         client.complete_user_enroll(

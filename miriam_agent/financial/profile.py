@@ -29,7 +29,7 @@ Design rules:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -93,7 +93,7 @@ DEFAULT_SOURCE_RANK = 1
 
 
 def _now() -> float:
-    return datetime.now(timezone.utc).timestamp()
+    return datetime.now(UTC).timestamp()
 
 
 class FinancialFact(BaseModel):
@@ -204,6 +204,7 @@ class FinancialProfile(BaseModel):
             return fact.currency.upper()
         return "NGN"
 
+    @property
     def volatile_income(self) -> bool:
         """True when the profile says the income is not steady."""
         fact = self.fact("income_volatility")
@@ -295,7 +296,7 @@ class FinancialProfile(BaseModel):
             )
         return applied
 
-    def merge(self, other: "FinancialProfile") -> dict[str, bool]:
+    def merge(self, other: FinancialProfile) -> dict[str, bool]:
         """Fold another profile in, honoring the same merge policy."""
         return self.set_all(
             {f: fact for f in PROFILE_FIELDS if (fact := other.fact(f)) is not None}
@@ -310,7 +311,7 @@ class FinancialProfile(BaseModel):
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "FinancialProfile":
+    def from_dict(cls, data: dict[str, Any] | None) -> FinancialProfile:
         """Rebuild a profile from a dump. Unknown keys and malformed facts are
         skipped rather than raising, so schema drift in stored memory can never
         break the conversation (fail-open, like the rest of onboarding)."""
@@ -546,9 +547,7 @@ def detect_currency(text: str, default: str = "NGN") -> tuple[str, bool]:
     return default.upper(), True
 
 
-_FREQUENCY_CHECKS: tuple[
-    tuple[str, tuple[str, ...], tuple[str, ...]], ...
-] = (
+_FREQUENCY_CHECKS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
         "weekly",
         ("every week", "per week", "a week", "/week", "/wk", "weekly", "each week"),
@@ -597,6 +596,19 @@ def _detect_frequency(window: str) -> tuple[str | None, float]:
     "this month" is often just a time reference.
     """
     lowered = (window or "").casefold()
+    # Checked before "week" / "month", which are substrings of the longer phrases.
+    if any(
+        phrase in lowered
+        for phrase in (
+            "biweekly",
+            "bi-weekly",
+            "every two weeks",
+            "every 2 weeks",
+            "twice a month",
+            "fortnight",
+        )
+    ):
+        return "biweekly", 0.95
     for name, strong, _weak in _FREQUENCY_CHECKS:
         if any(phrase in lowered for phrase in strong):
             return name, 0.95
@@ -737,7 +749,6 @@ def _kind_owners(
                 owners.setdefault(id(preceder), []).append((field, phrase))
             hit = lowered.find(phrase, hit + 1)
     return owners
-
 
 
 # Context radius used to attribute an amount to a field. Wide enough for
@@ -1209,6 +1220,9 @@ def extract_profile(
 # keys, so this is deliberately keyword-based: "cashflow", "monthly_income" and
 # "what_i_earn" all land on income.
 _FIELD_BY_KEY: tuple[tuple[str, str], ...] = (
+    ("pay_rhythm", "income_frequency"),
+    ("payday", "income_frequency"),
+    ("cadence", "income_frequency"),
     ("income", "income_amount"),
     ("cashflow", "income_amount"),
     ("earn", "income_amount"),
@@ -1227,6 +1241,9 @@ _FIELD_BY_KEY: tuple[tuple[str, str], ...] = (
     ("bill", "essential_expenses"),
     ("rent", "essential_expenses"),
     ("outgo", "essential_expenses"),
+    ("fixed", "essential_expenses"),
+    ("food", "essential_expenses"),
+    ("transport", "essential_expenses"),
     ("goal", "financial_goal"),
     ("rich_life", "financial_goal"),
     ("desired_life", "financial_goal"),
@@ -1259,7 +1276,7 @@ def _goal_horizon_from_date(raw: str) -> str:
     years = [int(y) for y in re.findall(r"\b(19\d\d|20\d\d)\b", raw)]
     if not years:
         return ""
-    delta = max(years) - datetime.now(timezone.utc).year
+    delta = max(years) - datetime.now(UTC).year
     if delta <= 1:
         return "short"
     if delta <= 3:
@@ -1344,9 +1361,7 @@ def profile_from_onboarding_state(
     document_summary = getattr(state, "document_summary", None)
     if document_summary:
         # Statement numbers are the strongest evidence we hold.
-        profile.merge(
-            extract_profile(str(document_summary), source="statement")
-        )
+        profile.merge(extract_profile(str(document_summary), source="statement"))
 
     corpus_parts = [p for p in (str(money_moment), str(goal)) if p.strip()]
     if corpus_parts:

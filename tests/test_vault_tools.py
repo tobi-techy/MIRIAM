@@ -147,8 +147,8 @@ def test_client_has_no_vault_write_or_withdraw_submit():
 
 
 def test_vault_context_no_vault(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     _patch_go(monkeypatch, _FakeGo(vault=None))
     reg = build_tool_registry()
@@ -157,8 +157,8 @@ def test_vault_context_no_vault(monkeypatch):
 
 
 def test_vault_context_active_vault(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     _patch_go(monkeypatch, _FakeGo(vault=ACTIVE_VAULT))
     reg = build_tool_registry()
@@ -171,8 +171,8 @@ def test_vault_context_active_vault(monkeypatch):
 
 
 def test_vault_context_plan_unavailable(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     _patch_go(monkeypatch, _FakeGo(vault=ACTIVE_VAULT, strategies=UNSEEDED))
     reg = build_tool_registry()
@@ -182,8 +182,8 @@ def test_vault_context_plan_unavailable(monkeypatch):
 
 
 def test_preview_withdraw_passes_go_through_unchanged(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     _patch_go(monkeypatch, _FakeGo(vault=ACTIVE_VAULT))
     reg = build_tool_registry()
@@ -233,12 +233,17 @@ def test_money_plan_with_active_vault_emits_no_draft_book():
 
 
 def test_no_vault_mutation_in_llm_schemas():
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     reg = build_tool_registry()
     names = {s["function"]["name"] for s in reg.llm_schemas()}
-    assert {"get_vault_context", "preview_plan", "preview_withdraw", "propose_vault_plan"} <= names
+    assert {
+        "get_vault_context",
+        "preview_plan",
+        "preview_withdraw",
+        "propose_vault_plan",
+    } <= names
     for banned in ("create_vault", "update_vault", "submit_vault_withdraw"):
         assert banned not in names, banned
     preview = reg.get("preview_withdraw")
@@ -257,8 +262,8 @@ def test_copy_guard_rejects_banned_words():
 
 
 def test_propose_stages_confirm_and_never_posts(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     fake = _FakeGo(vault=None)
 
@@ -283,8 +288,8 @@ def test_propose_stages_confirm_and_never_posts(monkeypatch):
 
 
 def test_unseeded_propose_speaks_not_live_no_ids(monkeypatch):
-    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
     from miriam_agent.tools import build_tool_registry
+    from miriam_agent.tools import vault_definitions as vd  # noqa: F401
 
     _patch_go(monkeypatch, _FakeGo(vault=None, strategies=UNSEEDED))
     reg = build_tool_registry()

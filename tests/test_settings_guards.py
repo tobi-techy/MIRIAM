@@ -49,6 +49,7 @@ def _strong(**overrides):
         ENCRYPTION_KEY="e" * 40,
         JWT_AUDIENCE="miriam-api",
         JWT_ISSUER="rail-backend",
+        RAIL_SERVICE_KEY="r" * 40,
         ALLOWED_ORIGINS="https://app.example.com",
         DATABASE_URL="postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
@@ -61,20 +62,61 @@ def test_production_rejects_short_encryption_key():
         _strong(ENCRYPTION_KEY="short")
 
 
-def test_production_rejects_missing_audience_issuer():
-    with pytest.raises(Exception):
-        _strong(JWT_AUDIENCE="")
+def test_production_allows_unset_audience_because_go_omits_it():
+    settings = _strong(JWT_AUDIENCE="")
+    assert settings.JWT_AUDIENCE == ""
+
+
+def test_production_rejects_missing_issuer():
     with pytest.raises(Exception):
         _strong(JWT_ISSUER="")
 
 
-def test_production_rejects_wildcard_origins():
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="*")
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="https://app.example.com,*")
-    with pytest.raises(Exception):
-        _strong(ALLOWED_ORIGINS="https://app.example.com, *, https://other.example.com")
+def test_production_uses_go_issuer_and_open_cors_when_unset(monkeypatch):
+    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    settings = _settings(
+        ENVIRONMENT="production",
+        JWT_SECRET="j" * 40,
+        SECRET_KEY="s" * 40,
+        ENCRYPTION_KEY="e" * 40,
+        DATABASE_URL=(
+            "postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam"
+        ),
+        RAIL_SERVICE_KEY="r" * 40,
+    )
+    assert settings.JWT_AUDIENCE == ""
+    assert settings.JWT_ISSUER == "rail_service"
+    assert settings.ALLOWED_ORIGINS == "*"
+
+
+def test_decode_accepts_go_agent_token_when_dashboard_audience_is_set(monkeypatch):
+    """Go mints iss=rail_service and omits aud. A leftover JWT_AUDIENCE must not 401 the chat."""
+    import jwt as pyjwt
+
+    monkeypatch.setenv("JWT_SECRET", "j" * 40)
+    monkeypatch.setenv("JWT_AUDIENCE", "miriam-api")
+    monkeypatch.setenv("JWT_ISSUER", "rail-backend")
+    from miriam_agent.auth.jwt import decode_token
+    from miriam_agent.config.settings import get_settings
+
+    get_settings.cache_clear()
+    try:
+        token = pyjwt.encode(
+            {"sub": "user-1", "iss": "rail_service", "exp": 9999999999, "token_type": "agent"},
+            "j" * 40,
+            algorithm="HS256",
+        )
+        payload = decode_token(token)
+        assert payload["sub"] == "user-1"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_production_allows_wildcard_origins():
+    settings = _strong(ALLOWED_ORIGINS="*")
+    assert "*" in {origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",")}
 
 
 def test_production_rejects_dev_example_secrets():
@@ -84,7 +126,9 @@ def test_production_rejects_dev_example_secrets():
     with pytest.raises(Exception):
         _strong(SECRET_KEY="dev-secret-key-change-in-production")
     with pytest.raises(Exception):
-        _strong(ENCRYPTION_KEY="dev-encryption-key-change-in-production-must-be-32-chars")
+        _strong(
+            ENCRYPTION_KEY="dev-encryption-key-change-in-production-must-be-32-chars"
+        )
 
 
 def test_production_rejects_default_db_password():
@@ -92,6 +136,36 @@ def test_production_rejects_default_db_password():
         _strong(
             DATABASE_URL="postgresql+asyncpg://miriam:miriam_password@localhost:5432/miriam"
         )
+
+
+def test_blank_typed_env_falls_back_to_defaults(monkeypatch):
+    """A host that injects KEY= for unset vars must not crash startup."""
+    monkeypatch.setenv("DEBUG", "")
+    monkeypatch.setenv("GO_REQUEST_TIMEOUT", "")
+    monkeypatch.setenv("OPENAI_MAX_TOKENS", "")
+    settings = _settings(ENVIRONMENT="development")
+    assert settings.DEBUG is False
+    assert settings.GO_REQUEST_TIMEOUT == 15.0
+    assert settings.OPENAI_MAX_TOKENS == 4096
+
+
+def test_libpq_database_url_uses_asyncpg():
+    settings = _settings(
+        ENVIRONMENT="development",
+        DATABASE_URL="postgresql://miriam:pw@db:5432/miriam",
+    )
+    assert settings.DATABASE_URL.startswith("postgresql+asyncpg://")
+    postgres = _settings(
+        ENVIRONMENT="development",
+        DATABASE_URL="postgres://miriam:pw@db:5432/miriam",
+    )
+    assert postgres.DATABASE_URL.startswith("postgresql+asyncpg://")
+
+
+def test_explicit_database_driver_is_kept():
+    url = "postgresql+psycopg://miriam:pw@db:5432/miriam"
+    settings = _settings(ENVIRONMENT="development", DATABASE_URL=url)
+    assert settings.DATABASE_URL == url
 
 
 def test_development_allows_defaults(monkeypatch):

@@ -15,24 +15,25 @@ A rail failure changes nothing and produces a ``rejected`` receipt. A ledger
 commit failure *after* a successful rail call is compensated with
 :meth:`Rail.reverse`, so the ledger and the rail do not drift apart.
 
-The parser at the bottom turns a user's sentence into a structured action with
-regex, not with a model. Handing a model a ``send_money`` tool is exactly the
-design this package exists to prevent.
+The sentence-to-action parser lives in :mod:`miriam_agent.hands.nl` (regex,
+not a model) and is re-exported here. Handing a model a ``send_money`` tool
+is exactly the design this package exists to prevent.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Protocol
 
 from miriam_agent.hands.audit import AuditRow, Receipt, sleeves_snapshot
 from miriam_agent.hands.ledger import Ledger, LedgerStore, Movement, money
 from miriam_agent.hands.limits import Policy, evaluate_limits
+from miriam_agent.hands.nl import parse_amount as parse_amount
+from miriam_agent.hands.nl import parse_transfer_utterance as parse_transfer_utterance
 from miriam_agent.hands.state import (
     HandlerState,
     ProposedAction,
@@ -452,6 +453,17 @@ async def execute_transfer(
         # to be, or the incident is invisible and a later turn re-sends against a
         # ledger that never heard about it.
         rolled_back = pre_rail
+        if reversal.ok:
+            reversal_fact = "the rail move was reversed"
+        else:
+            # The Go rail cannot reverse a settled transfer. The receipt must
+            # say so plainly: the move is live on the rail and reconciliation
+            # is owed against the reference, not "asked for" and forgotten.
+            reversal_fact = (
+                f"the rail could NOT reverse it ({reversal.error}); the move is "
+                f"live on the rail and reconciliation is owed against "
+                f"reference {outcome.reference}"
+            )
         receipt = _rejected(
             ledger=rolled_back,
             action="transfer",
@@ -462,8 +474,7 @@ async def execute_transfer(
             idempotency_key=idempotency_key,
             at=timestamp,
             detail=(
-                f"the ledger could not record the movement ({exc}); the rail was "
-                f"asked to reverse it ({'ok' if reversal.ok else reversal.error})"
+                f"the ledger could not record the movement ({exc}); " f"{reversal_fact}"
             ),
         )
         # Keep the rail reference on the receipt, not only in a log line: this is
@@ -873,102 +884,9 @@ async def move_between_sleeves(
     )
 
 
-# ---------------------------------------------------------------------------
-# The deterministic parse
-# ---------------------------------------------------------------------------
-
-_AMOUNT_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k|m|mille|thousand)?", re.IGNORECASE)
-_TO_RE = re.compile(r"\bto\s+([A-Za-z][A-Za-z'\- ]{1,40})", re.IGNORECASE)
-_SEND_WORDS = ("send", "transfer", "pay", "give", "move")
-_BUY_WORDS = ("buy", "purchase", "afford", "get")
-_LOCK_WORDS = ("lock", "freeze", "reserve")
-_UNLOCK_WORDS = ("unlock", "release", "unfreeze")
-
-_MULTIPLIERS = {"k": 1000, "thousand": 1000, "m": 1_000_000, "mille": 1000}
-
-# Names that name the user's own sleeves, never a person. A sentence that says
-# "move N to <sleeve>" is an internal move, not a P2P send.
-_SLEEVE_WORDS = ("spendable", "savings", "stash", "yield", "locked")
-
-_SLEEVE_ALIASES = {"stash": "savings"}
-
-
-def parse_amount(text: str) -> Decimal | None:
-    """The first money amount in a sentence, with a k/m suffix understood."""
-    match = _AMOUNT_RE.search(text or "")
-    if match is None:
-        return None
-    try:
-        value = Decimal(match.group(1).replace(",", ""))
-    except InvalidOperation:
-        return None
-    suffix = (match.group(2) or "").lower()
-    if suffix in _MULTIPLIERS:
-        value *= _MULTIPLIERS[suffix]
-    return money(value)
-
-
-def parse_transfer_utterance(text: str) -> ProposedAction | None:
-    """Turn a user's sentence into a structured action, with regex.
-
-    Returns ``None`` when the sentence does not clearly ask for a concrete
-    action. A model is never asked what the user meant in money terms: an
-    unknown sentence becomes no action, and Judgment asks a question instead.
-
-    Sleeve names are never counterparties. "move 1k to savings|stash|yield|
-    locked" is an internal move between the user's own sleeves; a person name
-    stays a P2P transfer.
-    """
-    lowered = (text or "").casefold()
-    if not lowered.strip():
-        return None
-    amount = parse_amount(lowered)
-    if amount is None:
-        return None
-
-    match = _TO_RE.search(text or "")
-    counterparty = match.group(1).strip() if match else ""
-    destination = counterparty.casefold().strip(" .,;:")
-
-    if any(word in lowered for word in _SEND_WORDS) and destination in _SLEEVE_WORDS:
-        to_sleeve = _SLEEVE_ALIASES.get(destination, destination)
-        return ProposedAction(
-            type="internal_move",
-            amount=amount,
-            counterparty="",
-            sleeve=to_sleeve,
-            raw=text,
-            source="user",
-        )
-
-    if any(word in lowered for word in _UNLOCK_WORDS):
-        return ProposedAction(
-            type="unlock", amount=amount, sleeve="locked", raw=text, source="user"
-        )
-    if any(word in lowered for word in _LOCK_WORDS):
-        return ProposedAction(
-            type="lock", amount=amount, sleeve="spendable", raw=text, source="user"
-        )
-    if any(word in lowered for word in _SEND_WORDS):
-        return ProposedAction(
-            type="transfer",
-            amount=amount,
-            counterparty=counterparty,
-            sleeve="spendable",
-            raw=text,
-            source="user",
-        )
-    if any(word in lowered for word in _BUY_WORDS):
-        return ProposedAction(
-            type="purchase",
-            amount=amount,
-            counterparty=counterparty,
-            sleeve="spendable",
-            raw=text,
-            source="user",
-        )
-    return None
-
+# The deterministic parse lives in hands/nl.py (blob ratchet split);
+# parse_amount / parse_transfer_utterance are re-exported through the
+# import block above so every existing import path keeps working.
 
 __all__ = [
     "GoRail",

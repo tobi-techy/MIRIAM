@@ -111,7 +111,7 @@ def assess_readiness(
     buffer_months = _buffer_months(profile)
     debt_months = debt / income if income else None
     horizon = horizon_months(profile)
-    volatile = profile.volatile_income()
+    volatile = profile.volatile_income
 
     blockers: list[str] = []
     signals = {
@@ -119,7 +119,9 @@ def assess_readiness(
         "essential_expenses": essentials or None,
         "surplus_ratio": round(surplus_ratio, 3) if surplus_ratio is not None else None,
         "buffer_months": round(buffer_months, 2) if buffer_months is not None else None,
-        "debt_income_months": round(debt_months, 2) if debt_months is not None else None,
+        "debt_income_months": (
+            round(debt_months, 2) if debt_months is not None else None
+        ),
         "income_volatility": "variable" if volatile else "steady",
         "goal_horizon_months": horizon,
         "kyc_verified": bool(kyc_verified),

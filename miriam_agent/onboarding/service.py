@@ -51,6 +51,23 @@ from miriam_agent.agents.llm import LLMProvider, get_llm_provider
 from miriam_agent.config.settings import get_settings
 from miriam_agent.onboarding import driver
 from miriam_agent.onboarding import plan as plan_builder
+from miriam_agent.onboarding.completion import (
+    automated_completion_text,
+    draft_completion_text,
+    resume_payload,
+)
+from miriam_agent.onboarding.money_bridge import (
+    absorb_reply,
+    build_money_plan_dict,
+    cap_should_present,
+    gap_question,
+    gap_taps,
+    mark_gap_asked,
+    money_readiness,
+    next_unasked_gap,
+    remember_poll,
+    render_money_plan_text,
+)
 from miriam_agent.onboarding.contracts import (
     ConversationState,
     GoalMeta,
@@ -344,7 +361,7 @@ STATEMENT_POLL = PollSpec(
     options=["Yes, send it now", "Skip for now"],
 )
 CONSENT_POLL = PollSpec(
-    title="Set this up as standing rules so you don't have to think about it?",
+    title="Lock this in and put the invest slice into Apple, Nvidia, and Tesla?",
     options=["Yes, set it up", "Let's adjust it first", "Not now"],
 )
 
@@ -391,6 +408,31 @@ class OnboardingTurn:
             "reaction": self.reaction,
             "share": self.share,
         }
+
+
+_PLAN_CTA_OPTIONS = {"build my savings plan", "how much can i save"}
+
+
+def _taps_for_reply(reply: str, taps: list[str]) -> list[str]:
+    """Drop plan-button taps when the question is asking for a number."""
+    cleaned = [item.strip() for item in taps if item and str(item).strip()]
+    if not cleaned:
+        return []
+    cta_only = all(
+        item.casefold().rstrip(" ?") in _PLAN_CTA_OPTIONS for item in cleaned
+    )
+    if not cta_only:
+        return cleaned
+    folded = (reply or "").casefold()
+    if any(phrase in folded for phrase in ("plan", "lock", "set this up", "set it up")):
+        return cleaned
+    return []
+
+
+def _same_poll(state: Any, title: str, taps: list[str]) -> bool:
+    prev_title = str(getattr(state, "last_poll_title", "") or "").strip()
+    prev = [str(item) for item in (getattr(state, "last_poll_options", None) or [])]
+    return prev_title == title.strip() and prev == list(taps)
 
 
 def _match_option(text: str, options: list[str] | tuple[str, ...]) -> str | None:
@@ -572,12 +614,34 @@ class OnboardingService:
                 )
             return await self._name_turn(user.id, state, conversation_id, text)
 
-        # Never let the interview drag: the agent carries it, but the cap closes
-        # it deterministically.
+        # Salary, pay rhythm, and fixed costs are read off the message itself.
+        # The model is not required to notice "$50", "1", or "biweekly".
+        if state.stage == STAGE_INTERVIEW and text:
+            absorb_reply(state, text, poll_title=poll_title)
+            _ready_now, _ = money_readiness(state)
+            if _ready_now:
+                self._emit(user.id, "interview_finished")
+                return await self._present_plan(user.id, state, conversation_id)
+
+        # Never let the interview drag. Past the cap, ask a missing fact once.
+        # The same question is never sent again, and its taps have to answer it.
         if (
             state.stage == STAGE_INTERVIEW
             and state.interview_turns >= self._settings.ONBOARDING_MAX_QUESTIONS
         ):
+            _ready, _missing = money_readiness(state)
+            gap_key = "" if cap_should_present(state, text) or _ready else next_unasked_gap(state, _missing)
+            if gap_key:
+                question = gap_question([gap_key])
+                taps = list(gap_taps([gap_key]))
+                mark_gap_asked(state, gap_key)
+                if taps:
+                    remember_poll(state, question, taps)
+                await self._state_store.save_state(user.id, state)
+                gap_turn = self._turn(question, stage=state.stage)
+                if taps:
+                    gap_turn.poll = {"title": question, "options": taps}
+                return gap_turn
             self._emit(user.id, "interview_finished")
             return await self._present_plan(user.id, state, conversation_id)
 
@@ -626,9 +690,15 @@ class OnboardingService:
             return []
 
     def _moving_on_hint(self, state: OnboardingState) -> str:
-        """Gently nudge the agent to hand off once the interview has run a few
-        turns; the hard cap still closes it no matter what."""
+        """Nudge the agent to present once numbers exist; hard cap still closes."""
         cap = self._settings.ONBOARDING_MAX_QUESTIONS
+        ready, _ = money_readiness(state)
+        if ready and state.stage == STAGE_INTERVIEW:
+            return (
+                "You already hold enough numbers for a real savings plan "
+                "(income captured). Stop exploring: intent \"present_plan\" now "
+                "so the user gets amounts, not more questions."
+            )
         if state.stage != STAGE_INTERVIEW or state.interview_turns < max(cap - 2, 0):
             return ""
         return (
@@ -741,8 +811,8 @@ class OnboardingService:
         return OnboardingTurn(
             took_over=True,
             response=(
-                "Hey, I'm Miriam! Before we dive in - what should I call you? "
-                "Just your first name works."
+                "Hey! I'm Miriam - your money person, no long thing. "
+                "What should I call you? Just your first name works."
             ),
             stage=STAGE_GREETING,
         )
@@ -1110,11 +1180,20 @@ class OnboardingService:
         # interview cap nudges the agent to hand off; it keeps ticking.
         if source_stage == STAGE_INTERVIEW and outcome.intent == "interview":
             state.interview_turns += 1
+            # Proactive readiness override: if we now hold enough numbers for
+            # a real savings plan, stop interviewing and present it. The LLM
+            # never gets to chat forever when the numbers are already in.
+            _ready_now, _ = money_readiness(state)
+            if _ready_now:
+                if source_stage == STAGE_INTERVIEW:
+                    self._emit(user_id, "interview_finished")
+                return await self._present_plan(user_id, state, conversation_id)
         self._update_conversation_state(state)
-        await self._state_store.save_state(user_id, state)
-        return self._turn_with_suggestions(
-            outcome, conversation_id, state.stage, name=name
+        turn = self._turn_with_suggestions(
+            outcome, conversation_id, state.stage, name=name, state=state
         )
+        await self._state_store.save_state(user_id, state)
+        return turn
 
     def _turn_with_suggestions(
         self,
@@ -1123,11 +1202,16 @@ class OnboardingService:
         stage: str,
         *,
         name: str = "",
+        state: OnboardingState | None = None,
     ) -> OnboardingTurn:
         reply = clean_text(outcome.reply or "").strip()
         main, extras = bubble_sets(reply)
         poll = None
-        if outcome.suggested:
+        taps = _taps_for_reply(reply, list(outcome.suggested))
+        if taps and state is not None and _same_poll(state, (main or reply).strip(), taps):
+            # The same poll on a new bubble is how the chat fills with repeats.
+            taps = []
+        if taps:
             title = (main or reply).strip()
             if not title:
                 # Never emit a poll with an empty title: spectrum-ts
@@ -1143,9 +1227,11 @@ class OnboardingService:
                 import logging as _logging
 
                 _logging.getLogger(__name__).info(
-                    "poll created title=%r options=%r", title, list(outcome.suggested)
+                    "poll created title=%r options=%r", title, list(taps)
                 )
-                poll = {"title": title.strip(), "options": list(outcome.suggested)}
+                poll = {"title": title.strip(), "options": list(taps)}
+                if state is not None:
+                    remember_poll(state, title.strip(), taps)
         return OnboardingTurn(
             took_over=True,
             response=main,
@@ -1290,6 +1376,10 @@ class OnboardingService:
             logger.warning("deterministic plan failed contract validation: %s", exc)
             return plan
 
+
+
+
+
     async def _present_plan(
         self,
         user_id: str,
@@ -1309,17 +1399,50 @@ class OnboardingService:
         state.stage = STAGE_PLAN_CONSENT
         fresh_present = not state.plan_presented
         state.plan_presented = True
+        # The real savings plan: deterministic MoneyPlan with amounts. Stored
+        # on state so the consent turn, memory, and resume all share it. The
+        # legacy ``plan`` above stays for back-compat narrators/tests.
+        money_plan = build_money_plan_dict(state)
+        if money_plan is not None:
+            state.money_plan = money_plan
+            state.money_ready = True
+            state.money_gap = []
+        else:
+            _ready, _missing = money_readiness(state)
+            state.money_gap = list(_missing)
+            state.money_ready = False
         self._update_conversation_state(state)
+        remember_extra: dict[str, Any] = {
+            "diagnostic_state": plan["diagnostic_state"],
+            "overlays": plan["overlays"],
+        }
+        if state.money_plan:
+            try:
+                remember_extra["money_plan"] = {
+                    "diagnosis": state.money_plan.get("diagnosis"),
+                    "problem_type": state.money_plan.get("problem_type"),
+                    "currency": state.money_plan.get("currency"),
+                    "surplus_monthly": str(state.money_plan.get("surplus_monthly")),
+                    "confidence": state.money_plan.get("confidence"),
+                }
+                _cf = state.money_plan.get("cashflow") or {}
+                remember_extra["cashflow_split"] = {
+                    k: str(_cf.get(k)) for k in
+                    ("fixed", "debt", "savings", "investments", "guilt_free")
+                    if _cf.get(k) is not None
+                }
+                remember_extra["automation_rules"] = list(
+                    state.money_plan.get("automation_rules") or []
+                )[:5]
+            except Exception:
+                pass
         await self._remember(
             user_id,
             "plan",
             "goal",
             plan["summary"],
             is_a_vote=True,
-            extra={
-                "diagnostic_state": plan["diagnostic_state"],
-                "overlays": plan["overlays"],
-            },
+            extra=remember_extra,
         )
         await self._state_store.save_state(user_id, state)
         self._emit(user_id, "plan_presented")
@@ -1329,6 +1452,18 @@ class OnboardingService:
         if fresh_present:
             self._emit(user_id, "aha_generated")
 
+        # Deterministic savings-plan line: when the money pipeline produced a
+        # real plan with amounts, it is remembered as the first assistant
+        # message so chat history, resume, and memory all share it. The LLM
+        # narration below still carries the voice; the deterministic text is
+        # the fallback if the LLM drifts or is down.
+        if state.money_plan:
+            try:
+                await self._memory.add_message(
+                    conversation_id, "assistant", render_money_plan_text(state.money_plan)
+                )
+            except Exception:
+                pass
         history = await self._history(conversation_id)
         try:
             outcome = await driver.present_plan_turn(
@@ -1408,8 +1543,8 @@ class OnboardingService:
                 if just_named:
                     await self._state_store.save_state(user_id, state)
                     return self._turn(
-                        f"Nice to meet you, {state.name}! What's been on your "
-                        "mind about money lately?",
+                        f"Nice to meet you, {state.name}! So - what's been on "
+                        "your mind about money lately?",
                         stage=state.stage,
                     )
                 if not state.money_moment:
@@ -1465,7 +1600,7 @@ class OnboardingService:
                 option = _match_option(text, STATEMENT_POLL.options)
                 if option == "Yes, send it now" or _lower(text) in _YES_PHRASES:
                     return self._turn(
-                        "Great - send it over here, a PDF works best.",
+                        "Send it over here - a PDF works best.",
                         stage=state.stage,
                     )
                 if option == "Skip for now" or _lower(text) in _NO_PHRASES | _ABANDON:
@@ -1540,15 +1675,7 @@ class OnboardingService:
         state.completed_at = time.time()
         await self._state_store.save_state(user_id, state)
         self._emit(user_id, "completed_automated")
-        plank = state.plan or {}
-        bullets = [s["title"].lower() for s in plank.get("steps", [])][:4]
-        body = "Done, this is now how I work for you:\n"
-        for b in bullets:
-            body += f"\u2022 {b} first\n"
-        body += (
-            "\nI keep an eye on it and bring things up when they deserve attention. "
-            "You stay the one who decides."
-        )
+        body = automated_completion_text(state)
         return OnboardingTurn(
             took_over=True,
             response=body,
@@ -1568,10 +1695,7 @@ class OnboardingService:
         self._emit(user_id, "completed_draft")
         return OnboardingTurn(
             took_over=True,
-            response=(
-                "No problem at all. I've saved the plan - ask me to put it into "
-                "action anytime and there's no need to go through this again."
-            ),
+            response=draft_completion_text(),
             conversation_id=conversation_id,
             stage=STAGE_COMPLETE,
             completed=True,
@@ -1588,6 +1712,10 @@ class OnboardingService:
         self._emit(user_id, "abandoned")
 
     # -- reply builders -------------------------------------------------------
+
+    def resume(self, state: OnboardingState) -> dict[str, Any]:
+        """Resume payload for API/proactive: stage, done, missing, next step."""
+        return resume_payload(state)
 
     def _plan_share(self, user_id: str) -> dict[str, Any] | None:
         """A rich link to the user's plan page, when the deployment configures
@@ -1830,15 +1958,32 @@ class OnboardingService:
                         f"{rule['trigger']} -> {rule['action']} ({rule['cadence']})",
                         metadata={"kind": rule["kind"], "source": "onboarding"},
                     )
+            completed_meta: dict[str, Any] = {
+                "plan": plan,
+                "automate": automate,
+                "adjustments": state.adjustments,
+            }
+            if state.money_plan:
+                try:
+                    _cf = state.money_plan.get("cashflow") or {}
+                    completed_meta["money_plan"] = {
+                        "diagnosis": state.money_plan.get("diagnosis"),
+                        "problem_type": state.money_plan.get("problem_type"),
+                        "currency": state.money_plan.get("currency"),
+                        "surplus_monthly": str(state.money_plan.get("surplus_monthly")),
+                        "confidence": state.money_plan.get("confidence"),
+                    }
+                    completed_meta["cashflow_split"] = {
+                        k: str(_cf.get(k)) for k in ("fixed", "debt", "savings", "investments", "guilt_free") if _cf.get(k) is not None
+                    }
+                    completed_meta["automation_rules"] = list(state.money_plan.get("automation_rules") or [])[:5]
+                except Exception:
+                    pass
             await self._memory.store_memory(
                 user_id,
                 "onboarding",
                 "onboarding completed",
-                metadata={
-                    "plan": plan,
-                    "automate": automate,
-                    "adjustments": state.adjustments,
-                },
+                metadata=completed_meta,
             )
         except Exception:
             logger.warning("failed to persist onboarding plan (non-blocking)")

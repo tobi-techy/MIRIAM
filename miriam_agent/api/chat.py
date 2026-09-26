@@ -25,12 +25,14 @@ any other and settles nothing.
 import json
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer
+from pydantic import BaseModel
 
 from miriam_agent.agents.agent_loop import Agent, AgentRunResult
 from miriam_agent.agents.base import AgentConfig
@@ -40,11 +42,17 @@ from miriam_agent.api.dependencies import (
     get_current_user,
     get_memory_store,
     get_supermemory_memory_dep,
+    require_rail_service_key,
 )
 from miriam_agent.config.settings import get_settings
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
-from miriam_agent.hands.ledger import LedgerUnavailable, RedisLedgerStore, money
+from miriam_agent.hands.ledger import (
+    LedgerConflictError,
+    LedgerUnavailable,
+    RedisLedgerStore,
+    money,
+)
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import InsufficientState
 from miriam_agent.hands.transfer import GoRail, parse_amount
@@ -52,6 +60,7 @@ from miriam_agent.integrations.supermemory_client import (
     container_tag_for,
     conversation_scope_for,
     display_name_for,
+    person_entity_context,
 )
 from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
@@ -90,6 +99,32 @@ def _get_ledger_store() -> RedisLedgerStore:
     return _ledger_store
 
 
+async def _persist_money_audit(event: Any, result: Any) -> None:
+    """Write a finished turn's receipt to the Postgres audit store.
+
+    Injected into the Orchestrator as its audit sink. The receipt is the
+    compliance fact — what was attempted, moved, or refused — and until now
+    it lived only in the rewritable Redis ledger blob. Fail-open: the
+    orchestrator catches sink errors, so this raising never breaks a turn.
+    """
+    audit = await get_audit_system().__anext__()
+    if audit is None:
+        return
+    receipt = result.receipt
+    await audit.log_money_movement(
+        user_id=event.user_id,
+        transaction_id=receipt.id,
+        amount=float(receipt.amount or 0),
+        currency=receipt.currency,
+        action=receipt.action,
+        status=receipt.status,
+        from_account=receipt.sleeve,
+        to_account=receipt.counterparty,
+        requires_approval=False,
+        approval_id=result.confirm_id or None,
+    )
+
+
 def _orchestrator_for(token: str) -> Orchestrator:
     """The money entrypoint for one request.
 
@@ -97,11 +132,20 @@ def _orchestrator_for(token: str) -> Orchestrator:
     per-request because it carries the caller's token, and Go remains the
     authority for identity and for money.
     """
+    settings = get_settings()
+    channels = [
+        part.strip().lower()
+        for part in (settings.GO_CONFIRM_CARD_CHANNELS or "").split(",")
+        if part.strip()
+    ]
     return Orchestrator(
         store=_get_ledger_store(),
         policy=Policy.from_settings(),
         rail=GoRail(token),
         go_token=token,
+        audit_sink=_persist_money_audit,
+        cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
+        card_channels=tuple(channels) if channels else ("imessage",),
     )
 
 
@@ -216,18 +260,32 @@ async def _run_money_turn(
     A confirmation tap is settled by id and nothing else. Everything else is an
     utterance, except an inflow alert pasted into chat, which is split against a
     stable id derived from the alert so a re-paste cannot split twice.
+
+    Two turns for the same user race on the ledger's compare-and-set; the loser
+    gets a typed conflict mapped to a retryable 409, not a 500 that tells the
+    client the server is broken.
     """
     orchestrator = _orchestrator_for(token)
-    if confirm_id:
-        return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-    if looks_like_inflow_alert(message):
-        return await orchestrator.handle_inflow(
-            user.id,
-            payment_id=inflow_id_for_alert(message),
-            amount=_alert_amount(message),
-            source_raw=message,
-        )
-    return await orchestrator.handle_utterance(user.id, message)
+    try:
+        if confirm_id:
+            return await orchestrator.handle_confirm(user.id, confirm_id, yes)
+        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
+            # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
+            # stable id derived from the alert so a re-paste cannot split twice.
+            # Off by default and refused in production entirely — chat text is
+            # not a payment fact, so it must not mint ledger money.
+            return await orchestrator.handle_inflow(
+                user.id,
+                payment_id=inflow_id_for_alert(message),
+                amount=_alert_amount(message),
+                source_raw=message,
+            )
+        return await orchestrator.handle_utterance(user.id, message)
+    except LedgerConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="that ledger is busy; try again in a moment",
+        ) from exc
 
 
 def _alert_amount(message: str) -> Decimal:
@@ -282,22 +340,53 @@ async def _finalize_money_turn(
     return payload
 
 
-@router.post("/chat")
-async def chat_with_agent(
-    request: dict[str, Any],
-    user: User = Depends(get_current_user),
-    token: str = Depends(get_bearer_token),
-    memory_store: MemoryStore = Depends(get_memory_store),
-    supermemory_memory: Any = Depends(get_supermemory_memory_dep),
-) -> dict[str, Any]:
-    """Chat with the financial agent (non-streaming)."""
-    message = request.get("message", "")
-    conversation_id = request.get("conversation_id")
-    # A confirmation tap. Only the id settles anything; `yes` decides whether it
-    # is a confirmation or a decline. Anything else is not a confirmation, so a
-    # missing `yes` declines rather than moves money.
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    confirmed = bool(request.get("yes", False))
+class ChatRequest(BaseModel):
+    """Body for ``/chat`` and ``/chat/stream``.
+
+    Replaces the hand-parsed ``dict[str, Any]`` the endpoints used to take:
+    types are enforced at the boundary now, so ``"yes": "no"`` is False
+    instead of truthy, a non-bool cannot slip through as a confirmation, and
+    unknown fields are ignored rather than silently meaning nothing.
+    """
+
+    message: str = ""
+    conversation_id: str | None = None
+    confirm_id: str = ""
+    # Only the id settles anything; ``yes`` decides confirmation vs decline.
+    # A missing ``yes`` declines rather than moves money.
+    yes: bool = False
+    is_poll_vote: bool = False
+    poll_title: str = ""
+    document: dict[str, Any] | None = None
+
+
+@dataclass
+class _PreparedTurn:
+    """The request after validation, with a decision on who owns the turn."""
+
+    message: str
+    conversation_id: str | None
+    confirm_id: str
+    yes: bool
+    is_money_turn: bool
+    onboarding: OnboardingTurn | None
+
+
+async def _prepare_turn(
+    *,
+    body: ChatRequest,
+    memory_store: MemoryStore,
+    user: User,
+    supermemory_memory: Any = None,
+) -> _PreparedTurn:
+    """Validate one turn and decide who handles it.
+
+    Shared by /chat and /chat/stream: the two endpoints used to keep two
+    hand-maintained copies of this pipeline and the copies had already
+    drifted. One pipeline, two renderers.
+    """
+    message = body.message
+    confirm_id = body.confirm_id.strip()
 
     # A confirmation tap carries no message, so an id is an acceptable turn on
     # its own. Everything else is a message.
@@ -312,7 +401,6 @@ async def chat_with_agent(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded. Please try again shortly.",
         )
-
     is_valid, validation_errors = await _validator.validate_user_input(
         {"message": message}, "chat"
     )
@@ -330,59 +418,49 @@ async def chat_with_agent(
     # another user's conversation returned their messages (and appended this
     # user's turns into their conversation).
     conversation_id = await _require_owned_conversation(
-        memory_store, user, conversation_id
+        memory_store, user, body.conversation_id
     )
 
     # The turn is classified before anything else runs, and a money turn goes
-    # to the orchestrator. That is the only path in the process that can move
-    # money, and it is deliberately reached before onboarding: "send 200k to
-    # Femi" is an instruction, not an interview answer.
-    if get_settings().MONEY_LAYERS_ENABLED and (
-        confirm_id or classify_turn(message) == "orchestrator"
-    ):
-        money_result = await _run_money_turn(
-            user=user,
-            token=token,
-            message=message,
-            confirm_id=confirm_id,
-            yes=confirmed,
-        )
-        return await _finalize_money_turn(
-            memory_store=memory_store,
-            supermemory_memory=supermemory_memory,
-            user=user,
-            message=message,
-            result=money_result,
-            conversation_id=conversation_id,
-        )
+    # to the orchestrator, which is the only path in the process that can move
+    # money.
+    is_money_turn = get_settings().MONEY_LAYERS_ENABLED and (
+        bool(confirm_id) or classify_turn(message) == "orchestrator"
+    )
 
-    # Conversational onboarding: while a user has an unfinished financial
-    # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
-    # instead of the general agent. Action intents and completed interviews pass
-    # straight through.
-    try:
-        onboarding = await OnboardingService(
-            memory_store, supermemory=supermemory_memory
-        ).handle_turn(
-            user,
-            message=message,
-            is_poll_vote=bool(request.get("is_poll_vote", False)),
-            poll_title=request.get("poll_title") or "",
-            document=request.get("document"),
-        )
-    except Exception:
-        # Fail-open: onboarding must never 500 a message. If it crashes we
-        # hand the turn to the general agent rather than lose the user's
-        # message to a broken flow.
-        logger.exception("onboarding handle_turn failed for %s", user.id)
-        onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
-    if onboarding.took_over:
-        return await _finish_onboarding_turn(
-            memory_store, supermemory_memory, user, message, onboarding
-        )
+    # Conversational onboarding owns the turn when an interview is unfinished
+    # (polls + plan + consent). Fail-open, as everywhere: onboarding must
+    # never lose the user's message to a broken flow. The memory service is
+    # injected so the facts the interview settles reach the person's graph.
+    onboarding: OnboardingTurn | None = None
+    if not is_money_turn:
+        try:
+            onboarding = await OnboardingService(
+                memory_store, supermemory=supermemory_memory
+            ).handle_turn(
+                user,
+                message=message,
+                is_poll_vote=body.is_poll_vote,
+                poll_title=body.poll_title,
+                document=body.document,
+            )
+        except Exception:
+            logger.exception("onboarding handle_turn failed for %s", user.id)
+            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
 
-    registry = build_tool_registry()
-    agent = Agent(
+    return _PreparedTurn(
+        message=message,
+        conversation_id=conversation_id,
+        confirm_id=confirm_id,
+        yes=body.yes,
+        is_money_turn=is_money_turn,
+        onboarding=onboarding,
+    )
+
+
+def _build_agent(registry: Any) -> Agent:
+    """The general agent, built the same way on every path."""
+    return Agent(
         registry=registry,
         safety_policy=SafetyPolicy(),
         config=AgentConfig(
@@ -391,26 +469,58 @@ async def chat_with_agent(
             system_prompt="Miriam Financial Agent",
         ),
     )
-    _install_audit_observer()
 
+
+async def _agent_inputs(
+    *,
+    memory_store: MemoryStore,
+    supermemory_memory: Any,
+    user: User,
+    token: str,
+    message: str,
+    conversation_id: str | None,
+    registry: Any,
+) -> dict[str, Any]:
+    """The context bundle both agent paths run with (history, facts, plan)."""
     # Load user context (from Go backend when reachable; local memory otherwise)
     user_context = await _load_user_context(memory_store, user)
-    history = (
-        await memory_store.get_conversation_history(conversation_id, user.id)
-        if conversation_id
-        else []
-    )
+    # Always load against the effective id: a fresh install sends no id, but
+    # the agent still answers under ``conv_{user_id}`` (see Agent.run), so
+    # history must come from that same default or the first turn after
+    # reinstall/reopen loses its window while the DB still holds it.
+    effective_id = conversation_id or f"conv_{user.id}"
+    history = await memory_store.get_conversation_history(effective_id, user.id)
     memory_facts = await _load_memory_facts(
         memory_store, user.id, query=message, supermemory_memory=supermemory_memory
     )
     financial_plan = await _load_financial_plan(token)
+    return {
+        "history": history,
+        "user_context": user_context,
+        "memory_facts": memory_facts,
+        "financial_plan": financial_plan,
+    }
 
-    # TypeSafe ingress gate: classify the turn and short-circuit jailbreaks,
-    # PII pastes, and vague asks before the generator ever sees them.
+
+async def _ingress_decision(
+    *,
+    user_id: str,
+    message: str,
+    registry: Any,
+    history: list,
+    user_context: Any,
+    **_: Any,
+) -> Any:
+    """TypeSafe ingress gate, failing open.
+
+    A judgment-layer bug must never 500 a chat turn; network errors are
+    already handled (fail-closed) inside ingress_gate, so this only catches
+    unexpected code paths.
+    """
     try:
-        ingress_decision = await ingress_gate(
+        return await ingress_gate(
             build_ingress_state(
-                user_id=user.id,
+                user_id=user_id,
                 message=message,
                 history=history,
                 user_context=user_context,
@@ -418,20 +528,87 @@ async def chat_with_agent(
             )
         )
     except Exception:
-        # A judgment-layer bug must never 500 a chat turn; fail open to the
-        # generator. Network errors are already handled (fail-closed) inside
-        # ingress_gate, so this only catches unexpected code paths.
         logger.exception("ingress gate failed; failing open to generator")
-        ingress_decision = None
+        return None
+
+
+@router.post("/chat")
+async def chat_with_agent(
+    body: ChatRequest,
+    user: User = Depends(get_current_user),
+    token: str = Depends(get_bearer_token),
+    memory_store: MemoryStore = Depends(get_memory_store),
+    supermemory_memory: Any = Depends(get_supermemory_memory_dep),
+) -> dict[str, Any]:
+    """Chat with the financial agent (non-streaming)."""
+    turn = await _prepare_turn(
+        body=body,
+        memory_store=memory_store,
+        user=user,
+        supermemory_memory=supermemory_memory,
+    )
+
+    # A money turn goes to the orchestrator. That is the only path in the
+    # process that can move money, and it is deliberately reached before
+    # onboarding: "send 200k to Femi" is an instruction, not an interview
+    # answer.
+    if turn.is_money_turn:
+        money_result = await _run_money_turn(
+            user=user,
+            token=token,
+            message=turn.message,
+            confirm_id=turn.confirm_id,
+            yes=turn.yes,
+        )
+        return await _finalize_money_turn(
+            memory_store=memory_store,
+            supermemory_memory=supermemory_memory,
+            user=user,
+            message=turn.message,
+            result=money_result,
+            conversation_id=turn.conversation_id,
+        )
+
+    # Conversational onboarding: while a user has an unfinished financial
+    # interview, Miriam's onboarding flow owns the turn (polls + plan + consent)
+    # instead of the general agent. Action intents and completed interviews pass
+    # straight through.
+    if turn.onboarding is not None and turn.onboarding.took_over:
+        return await _finish_onboarding_turn(
+            memory_store, supermemory_memory, user, turn.message, turn.onboarding
+        )
+
+    registry = build_tool_registry()
+    agent = _build_agent(registry)
+    _install_audit_observer()
+
+    inputs = await _agent_inputs(
+        memory_store=memory_store,
+        supermemory_memory=supermemory_memory,
+        user=user,
+        token=token,
+        message=turn.message,
+        conversation_id=turn.conversation_id,
+        registry=registry,
+    )
+
+    # TypeSafe ingress gate: classify the turn and short-circuit jailbreaks,
+    # PII pastes, and vague asks before the generator ever sees them.
+    ingress_decision = await _ingress_decision(
+        user_id=user.id,
+        message=turn.message,
+        registry=registry,
+        **inputs,
+    )
     if ingress_decision is not None and ingress_decision.short_circuits:
         return await _finalize_turn(
             memory_store=memory_store,
             supermemory_memory=supermemory_memory,
             user=user,
-            message=message,
+            message=turn.message,
             result=AgentRunResult(
                 response=ingress_decision.reply or "",
-                conversation_id=conversation_id or f"conv_{user.id}",
+                conversation_id=turn.conversation_id or f"conv_{user.id}",
             ),
         )
 
@@ -439,112 +616,71 @@ async def chat_with_agent(
         result = await agent.run(
             user_id=user.id,
             token=token,
-            message=message,
-            conversation_id=conversation_id,
-            history=history,
-            user_context=user_context,
-            memory_facts=memory_facts,
-            financial_plan=financial_plan,
+            message=turn.message,
+            conversation_id=turn.conversation_id,
+            **inputs,
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        # Internal error text can carry stack fragments, SQL, or provider
+        # details; the client gets an opaque message and the trace id that
+        # links it to the server log.
+        logger.exception("chat request failed", extra={"trace_id": current_trace_id()})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error processing chat request: {str(e)}",
+            detail="something went wrong processing that message",
         )
 
     return await _finalize_turn(
         memory_store=memory_store,
         supermemory_memory=supermemory_memory,
         user=user,
-        message=message,
+        message=turn.message,
         result=result,
     )
 
 
 @router.post("/chat/stream")
 async def chat_stream(
-    request: dict[str, Any],
+    body: ChatRequest,
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
     memory_store: MemoryStore = Depends(get_memory_store),
     supermemory_memory: Any = Depends(get_supermemory_memory_dep),
 ) -> StreamingResponse:
-    """Stream chat tokens via Server-Sent Events."""
-    message = request.get("message", "")
-    conversation_id = request.get("conversation_id")
-    confirm_id = str(request.get("confirm_id") or "").strip()
-    confirmed = bool(request.get("yes", False))
-    if not message and not confirm_id:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    """Stream chat tokens via Server-Sent Events.
 
-    if not await _validator.validate_rate_limit(user.id, "chat"):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Please try again shortly.",
-        )
-    is_valid, validation_errors = await _validator.validate_user_input(
-        {"message": message}, "chat"
+    Validation, ownership, classification and onboarding run through the same
+    ``_prepare_turn`` pipeline as /chat — a refused turn is an HTTP 4xx before
+    the stream opens, never a mystery error frame mid-stream.
+    """
+    turn = await _prepare_turn(
+        body=body,
+        memory_store=memory_store,
+        user=user,
+        supermemory_memory=supermemory_memory,
     )
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Validation errors: {', '.join(validation_errors)}",
-        )
-
-    await memory_store.ensure_user(user)
-
-    # Same untrusted-id rule as /chat: refuse a conversation that isn't the
-    # caller's before a single token is streamed.
-    conversation_id = await _require_owned_conversation(
-        memory_store, user, conversation_id
-    )
-
-    # A money turn streams its one reply instead of tokens. It never reaches the
-    # agent loop, and it is not offered to onboarding.
-    is_money_turn = get_settings().MONEY_LAYERS_ENABLED and (
-        bool(confirm_id) or classify_turn(message) == "orchestrator"
-    )
-
-    # Conversational onboarding owns the turn here too, exactly as in /chat
-    # (polls only render in the iMessage bridge; the web stream carries the text
-    # and, when one is pending, the poll payload for the client to render).
-    onboarding = None
-    if not is_money_turn:
-        try:
-            onboarding = await OnboardingService(
-                memory_store, supermemory=supermemory_memory
-            ).handle_turn(
-                user,
-                message=message,
-                is_poll_vote=bool(request.get("is_poll_vote", False)),
-                poll_title=request.get("poll_title") or "",
-                document=request.get("document"),
-            )
-        except Exception:
-            # Fail-open, mirroring /chat: never 500 the stream over onboarding;
-            # fall through to the general agent.
-            logger.exception("onboarding handle_turn failed for %s", user.id)
-            onboarding = OnboardingTurn(conversation_id=f"onboarding:{user.id}")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            if is_money_turn:
+            # A money turn streams its one reply instead of tokens. It never
+            # reaches the agent loop, and it is not offered to onboarding.
+            if turn.is_money_turn:
                 money_result = await _run_money_turn(
                     user=user,
                     token=token,
-                    message=message,
-                    confirm_id=confirm_id,
-                    yes=confirmed,
+                    message=turn.message,
+                    confirm_id=turn.confirm_id,
+                    yes=turn.yes,
                 )
                 payload = await _finalize_money_turn(
                     memory_store=memory_store,
                     supermemory_memory=supermemory_memory,
                     user=user,
-                    message=message,
+                    message=turn.message,
                     result=money_result,
-                    conversation_id=conversation_id,
+                    conversation_id=turn.conversation_id,
                 )
                 yield _sse(
                     {
@@ -557,19 +693,19 @@ async def chat_stream(
                 yield _sse({"type": "token", "content": payload["response"]})
                 yield _sse({"type": "done"})
                 return
-            if onboarding is not None and onboarding.took_over:
-                conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
+            if turn.onboarding is not None and turn.onboarding.took_over:
+                conv_id = turn.onboarding.conversation_id or f"onboarding:{user.id}"
                 await memory_store.store_interaction(
                     user_id=user.id,
                     role="user",
-                    content=message,
+                    content=turn.message,
                     conversation_id=conv_id,
                     metadata={"channel": "api", "onboarding": True},
                 )
                 await memory_store.store_interaction(
                     user_id=user.id,
                     role="assistant",
-                    content=onboarding.response,
+                    content=turn.onboarding.response,
                     conversation_id=conv_id,
                     metadata={"channel": "api", "onboarding": True},
                 )
@@ -577,105 +713,78 @@ async def chat_stream(
                     supermemory_memory,
                     user.id,
                     channel="onboarding",
-                    user_message=message,
-                    assistant_message=onboarding.response,
+                    user_message=turn.message,
+                    assistant_message=turn.onboarding.response,
                     name=_display_name(user),
                 )
-                if onboarding.poll:
+                if turn.onboarding.poll:
                     yield _sse(
                         {
                             "type": "onboarding",
-                            "onboarding": onboarding.to_payload(conv_id).get(
+                            "onboarding": turn.onboarding.to_payload(conv_id).get(
                                 "onboarding", {}
                             ),
-                            "poll": onboarding.poll,
+                            "poll": turn.onboarding.poll,
                         }
                     )
-                yield _sse({"type": "token", "content": onboarding.response})
+                yield _sse({"type": "token", "content": turn.onboarding.response})
                 yield _sse({"type": "done"})
                 return
 
             registry = build_tool_registry()
-            agent = Agent(
-                registry=registry,
-                safety_policy=SafetyPolicy(),
-                config=AgentConfig(name="financial_agent", tools=registry.list_names()),
-            )
+            agent = _build_agent(registry)
             _install_audit_observer()
-            history = (
-                await memory_store.get_conversation_history(conversation_id, user.id)
-                if conversation_id
-                else []
-            )
-            user_context = await _load_user_context(memory_store, user)
-            memory_facts = await _load_memory_facts(
-                memory_store,
-                user.id,
-                query=message,
+            inputs = await _agent_inputs(
+                memory_store=memory_store,
                 supermemory_memory=supermemory_memory,
+                user=user,
+                token=token,
+                message=turn.message,
+                conversation_id=turn.conversation_id,
+                registry=registry,
             )
-            financial_plan = await _load_financial_plan(token)
 
             # TypeSafe ingress gate, mirroring /chat. A short-circuit streams the
             # fixed reply instead of running the generator, so a jailbreak/PII/
             # vague ask never reaches it here either.
-            try:
-                ingress_decision = await ingress_gate(
-                    build_ingress_state(
-                        user_id=user.id,
-                        message=message,
-                        history=history,
-                        user_context=user_context,
-                        registry=registry,
-                    )
-                )
-            except Exception:
-                logger.exception("ingress gate failed; failing open to generator")
-                ingress_decision = None
+            ingress_decision = await _ingress_decision(
+                user_id=user.id,
+                message=turn.message,
+                registry=registry,
+                **inputs,
+            )
             if ingress_decision is not None and ingress_decision.short_circuits:
-                conv_id = conversation_id or f"conv_{user.id}"
-                reply = ingress_decision.reply or ""
-                await memory_store.store_interaction(
-                    user_id=user.id,
-                    role="user",
-                    content=message,
-                    conversation_id=conv_id,
-                    metadata={"channel": "api"},
+                # Persisted through the same finalize as /chat, so a refused
+                # turn is recorded exactly like any other exchange.
+                payload = await _finalize_turn(
+                    memory_store=memory_store,
+                    supermemory_memory=supermemory_memory,
+                    user=user,
+                    message=turn.message,
+                    result=AgentRunResult(
+                        response=ingress_decision.reply or "",
+                        conversation_id=turn.conversation_id or f"conv_{user.id}",
+                    ),
                 )
-                await memory_store.store_interaction(
-                    user_id=user.id,
-                    role="assistant",
-                    content=reply,
-                    conversation_id=conv_id,
-                    metadata={"channel": "api"},
-                )
-                await _ingest_to_supermemory(
-                    supermemory_memory,
-                    user.id,
-                    channel="web",
-                    user_message=message,
-                    assistant_message=reply,
-                    name=_display_name(user),
-                )
-                yield _sse({"type": "token", "content": reply})
+                yield _sse({"type": "token", "content": payload["response"]})
                 yield _sse({"type": "done"})
                 return
 
-            reply_parts: list[str] = []
+            collected: list[str] = []
+            done_content: str | None = None
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
-                message=message,
-                conversation_id=conversation_id,
-                history=history,
-                user_context=user_context,
-                memory_facts=memory_facts,
-                financial_plan=financial_plan,
+                message=turn.message,
+                conversation_id=turn.conversation_id,
+                **inputs,
             ):
                 evt = event["type"]
                 if evt == "token":
-                    reply_parts.append(event["content"])
-                    yield _sse({"type": "token", "content": event["content"]})
+                    content = event.get("content", "")
+                    if isinstance(content, str) and content:
+                        collected.append(content)
+                    yield _sse({"type": "token", "content": event.get("content", "")})
                 elif evt == "tool_call":
                     yield _sse({"type": "tool_call", "tool_call": event["tool_call"]})
                 elif evt == "tool_result":
@@ -688,39 +797,64 @@ async def chat_stream(
                         }
                     )
                 elif evt == "done":
-                    # The streamed answer used to close the stream without ever
-                    # being persisted: the busiest web surface wrote no history
-                    # and no memory. Record it exactly like the non-streaming
-                    # path before the client sees `done`.
-                    reply = event.get("content") or "".join(reply_parts)
-                    conv_id = conversation_id or f"conv_{user.id}"
-                    await memory_store.store_interaction(
-                        user_id=user.id,
-                        role="user",
-                        content=message,
-                        conversation_id=conv_id,
-                        metadata={"channel": "api"},
+                    raw = event.get("content", "")
+                    if isinstance(raw, str) and raw:
+                        done_content = raw
+                    break
+                elif evt == "error":
+                    yield _sse(
+                        {
+                            "type": "error",
+                            "message": str(
+                                event.get("message") or "internal error; try again"
+                            ),
+                        }
                     )
-                    await memory_store.store_interaction(
-                        user_id=user.id,
-                        role="assistant",
-                        content=reply,
-                        conversation_id=conv_id,
-                        metadata={"channel": "api"},
+                    return
+            # The stream already emitted tokens; now persist the same turn
+            # through the non-stream finalize path so a closed app, a dropped
+            # connection, or a reinstall still finds the exchange on resume.
+            # Without this the streamed reply lived only in the client's
+            # memory and server history diverged from what the user saw.
+            reply = done_content if done_content is not None else "".join(collected)
+            if reply.strip():
+                try:
+                    payload = await _finalize_turn(
+                        memory_store=memory_store,
+                        supermemory_memory=supermemory_memory,
+                        user=user,
+                        message=turn.message,
+                        result=AgentRunResult(
+                            response=reply,
+                            conversation_id=turn.conversation_id or f"conv_{user.id}",
+                        ),
                     )
-                    await _ingest_to_supermemory(
-                        supermemory_memory,
-                        user.id,
-                        channel="web",
-                        user_message=message,
-                        assistant_message=reply,
-                        name=_display_name(user),
+                    yield _sse(
+                        {
+                            "type": "done",
+                            "conversation_id": payload.get("conversation_id"),
+                        }
+                    )
+                except Exception:
+                    logger.exception(
+                        "chat stream persist failed",
+                        extra={"trace_id": current_trace_id()},
                     )
                     yield _sse({"type": "done"})
-                    return
+                return
             yield _sse({"type": "done"})
-        except Exception as e:
-            yield _sse({"type": "error", "message": str(e)})
+        except HTTPException as e:
+            # Typed refusals (e.g. the 409 for a lost ledger race) carry a
+            # message the client can act on; anything else stays opaque.
+            logger.exception(
+                "chat stream failed", extra={"trace_id": current_trace_id()}
+            )
+            yield _sse({"type": "error", "message": str(e.detail)})
+        except Exception:
+            logger.exception(
+                "chat stream failed", extra={"trace_id": current_trace_id()}
+            )
+            yield _sse({"type": "error", "message": "internal error; try again"})
 
     return StreamingResponse(
         event_stream(),
@@ -737,6 +871,7 @@ async def money_inflow(
     request: dict[str, Any],
     user: User = Depends(get_current_user),
     token: str = Depends(get_bearer_token),
+    _rail: None = Depends(require_rail_service_key),
 ) -> dict[str, Any]:
     """Tell the ledger that money arrived. Called by the rail, not by chat.
 
@@ -746,8 +881,10 @@ async def money_inflow(
     and the rail webhook are the same code, and ``payment_id`` is the
     idempotency key either way.
 
-    The reply carries the receipt Hands wrote, so the caller can see the split
-    rather than infer it.
+    Auth is two-factor by design: the bearer JWT names the account to credit,
+    and the ``X-Rail-Service-Key`` header proves the caller is the rail. A
+    user token alone is refused — this endpoint mints ledger money, so it is
+    never callable with ordinary user credentials.
     """
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
@@ -795,6 +932,13 @@ async def money_inflow(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"insufficient_state: {', '.join(exc.missing)}",
         )
+    except LedgerConflictError:
+        # Two deliveries for the same user raced on the compare-and-set. The
+        # rail retries; it must not read the 500 that says "server broken".
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ledger busy; retry the delivery",
+        )
     except LedgerUnavailable as exc:
         # The rail must retry: money arriving is a fact it can deliver again,
         # and a 200 here would tell it the payment had been recorded.
@@ -804,10 +948,15 @@ async def money_inflow(
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        # Same rule as /chat: no internals to the caller. The rail retries on
+        # 5xx, so the message must not pretend to be a payload diagnosis.
+        logger.exception(
+            "inflow handling failed", extra={"trace_id": current_trace_id()}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error handling inflow: {str(e)}",
+            detail="internal error handling inflow",
         )
 
     return {
@@ -817,6 +966,148 @@ async def money_inflow(
         "receipt": result.receipt.model_dump(mode="json") if result.receipt else None,
         "trace_id": current_trace_id(),
     }
+
+
+class SettleRequest(BaseModel):
+    """Body for ``POST /chat/settle``. Called by the Go backend, not by chat."""
+
+    confirm_id: str = ""
+    biometric: str = ""
+    card_action_id: str = ""
+
+
+class CardTerminalRequest(BaseModel):
+    """Body for ``POST /chat/card-terminal``. Called by the Go backend."""
+
+    confirm_id: str = ""
+    state: str = ""
+
+
+@router.post("/chat/settle")
+async def chat_settle(
+    body: SettleRequest,
+    user: User = Depends(get_current_user),
+    token: str = Depends(get_bearer_token),
+    _rail: None = Depends(require_rail_service_key),
+) -> dict[str, Any]:
+    """Settle a challenge off the back of a Face ID tap on a live card.
+
+    Auth is two-factor like the inflow webhook: the bearer JWT names the
+    account, and ``X-Rail-Service-Key`` proves the caller is the Go backend.
+    The tap runs the existing ``handle_confirm`` path (full binding re-checks,
+    no second JEV) with face_id provenance on the audit rows.
+
+    Always 200 on a settled-or-terminal challenge: ``completed`` when this
+    call executed, ``already_settled`` when the chat tap won the race or the
+    challenge is unknown (idempotent replay, never 500), ``rejected`` when
+    settle genuinely failed. Ledger races/outages are 409/503 so Go retries.
+    """
+    if (body.biometric or "").strip() != "pass":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="biometric must be 'pass'",
+        )
+    confirm_id = (body.confirm_id or "").strip()
+    if not confirm_id:
+        # An empty/unknown id must never report "already_settled" (200):
+        # that tells Go a payment completed when nothing existed.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="confirm_id is required",
+        )
+    orchestrator = _orchestrator_for(token)
+    try:
+        result = await orchestrator.handle_confirm(
+            user.id, confirm_id, True, provenance="face_id"
+        )
+    except LedgerConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="that ledger is busy; try again in a moment",
+        ) from exc
+    except LedgerUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    receipt = result.receipt
+    if receipt is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the ledger store is unavailable; try again in a moment",
+        )
+    reasons = list(receipt.reasons or [])
+    if receipt.status == "executed":
+        settle_status, settle_state = "completed", "completed"
+    elif "NO_SUCH_CHALLENGE" in reasons or "CHALLENGE_EXPIRED" in reasons:
+        # Terminal no-op: someone else settled first, or nothing was open.
+        settle_status = "already_settled"
+        settle_state = "expired" if "CHALLENGE_EXPIRED" in reasons else "rejected"
+    else:
+        settle_status, settle_state = "rejected", "rejected"
+    return {
+        "status": settle_status,
+        "state": settle_state,
+        "result_summary": receipt.detail or result.narration or "",
+        "receipt_id": receipt.id,
+    }
+
+
+@router.post("/chat/card-terminal")
+async def chat_card_terminal(
+    body: CardTerminalRequest,
+    user: User = Depends(get_current_user),
+    token: str = Depends(get_bearer_token),
+    _rail: None = Depends(require_rail_service_key),
+) -> dict[str, Any]:
+    """Close the challenge behind a card that died on the Go side first.
+
+    ``rejected`` (Face ID cancelled) declines the challenge with a
+    USER_DECLINED receipt; ``expired`` (Go TTL hit) expires it with a
+    CHALLENGE_EXPIRED receipt. Unknown or already-terminal challenges are a
+    200 no-op without touching the ledger, so replays never 500 and never
+    write a second receipt.
+    """
+    from datetime import UTC, datetime
+
+    state = (body.state or "").strip().lower()
+    if state not in ("rejected", "expired"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="state must be rejected|expired",
+        )
+    confirm_id = (body.confirm_id or "").strip()
+    if not confirm_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="confirm_id is required",
+        )
+    orchestrator = _orchestrator_for(token)
+    try:
+        ledger = await _get_ledger_store().load(user.id)
+    except LedgerUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    challenge = ledger.challenges.get(confirm_id) if ledger is not None else None
+    if challenge is not None and challenge.is_open(datetime.now(UTC)):
+        try:
+            if state == "rejected":
+                await orchestrator.handle_confirm(user.id, confirm_id, False)
+            else:
+                await orchestrator.expire_challenge(user.id, confirm_id)
+        except LedgerConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="that ledger is busy; try again in a moment",
+            ) from exc
+        except LedgerUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+    return {"status": "ok", "state": state, "confirm_id": confirm_id}
 
 
 @router.get("/conversations")
@@ -847,6 +1138,217 @@ async def create_conversation(
     title = request.get("title", "New Conversation")
     conversation = await memory_store.create_conversation(user.id, title)
     return {"conversation": {"id": conversation.id, "title": conversation.title}}
+
+
+@router.get("/onboarding/resume")
+async def get_onboarding_resume(
+    user: User = Depends(get_current_user),
+    memory_store: MemoryStore = Depends(get_memory_store),
+) -> dict[str, Any]:
+    """Resume payload: stage, completed, unresolved, next recommended step.
+
+    Fail-open: a missing store or state returns the not-started shape, never
+    a 500, so a fresh app install still gets a usable answer.
+    """
+    from miriam_agent.onboarding.completion import resume_payload
+    from miriam_agent.onboarding.state import OnboardingState
+
+    try:
+        from miriam_agent.onboarding.state import get_onboarding_state_store
+
+        state = await get_onboarding_state_store().get_state(user.id)
+    except Exception:
+        state = None
+    if state is None:
+        return {
+            "current_stage": "not_started",
+            "completed_stages": [],
+            "unresolved": ["income_amount"],
+            "money_ready": False,
+            "has_money_plan": False,
+            "next_recommended_step": "say hello to start your savings plan",
+        }
+    if isinstance(state, OnboardingState):
+        return resume_payload(state)
+    try:
+        return resume_payload(OnboardingState(state.to_dict()))
+    except Exception:
+        return resume_payload(state)
+
+
+@router.get("/conversations/latest")
+async def get_latest_conversation(
+    user: User = Depends(get_current_user),
+    memory_store: MemoryStore = Depends(get_memory_store),
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Resume hook for a reopened / reinstalled app.
+
+    Returns the most recently touched conversation plus its tail messages so
+    the client can continue where the user stopped with a single call, even
+    when it lost its stored ``conversation_id``. ``{"conversation": None}``
+    when the user has no history yet — the next turn will start
+    ``conv_{user_id}``.
+    """
+    capped = max(1, min(limit, 200))
+    conversations = await memory_store.get_conversations(user.id, limit=1)
+    if not conversations:
+        return {"conversation": None, "messages": []}
+    conv = conversations[0]
+    messages = await memory_store.get_conversation_messages(conv.id, user.id)
+    tail = messages[-capped:]
+    return {
+        "conversation": {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat(),
+            "updated_at": conv.updated_at.isoformat(),
+        },
+        "messages": [
+            {
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "metadata": msg.extra_data,
+                "created_at": msg.created_at.isoformat(),
+            }
+            for msg in tail
+        ],
+    }
+
+
+class IdentityLinkRequest(BaseModel):
+    """Body for ``POST /identities/link``."""
+
+    channel: str = ""
+    handle: str = ""
+
+
+class UserMergeRequest(BaseModel):
+    """Body for ``POST /users/merge``. Rail-authenticated only."""
+
+    from_user_id: str = ""
+
+
+@router.get("/identities")
+async def list_identities(
+    user: User = Depends(get_current_user),
+    memory_store: MemoryStore = Depends(get_memory_store),
+) -> dict[str, Any]:
+    """List the channel handles bound to the caller."""
+    rows = await memory_store.list_identities(user.id)
+    return {
+        "identities": [
+            {
+                "channel": row.channel,
+                "handle": row.handle,
+                "verified": bool(row.verified),
+                "last_seen_at": (
+                    row.last_seen_at.isoformat() if row.last_seen_at else None
+                ),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/identities/link")
+async def link_identity(
+    body: IdentityLinkRequest,
+    user: User = Depends(get_current_user),
+    memory_store: MemoryStore = Depends(get_memory_store),
+) -> dict[str, Any]:
+    """Bind a channel handle (phone, iMessage, WhatsApp) to the caller.
+
+    First-seen auto-link: reinstalls and new devices land here. A handle
+    already owned by someone else is 409 — claiming it needs the verified
+    merge path (Go verifies OTP/email/wallet, then calls ``/users/merge``),
+    so guessing an old number never steals history.
+    """
+    from miriam_agent.core.exceptions import AuthorizationError
+
+    channel = (body.channel or "").strip()
+    handle = (body.handle or "").strip()
+    if not channel or not handle:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="channel and handle are required",
+        )
+    await memory_store.ensure_user(user)
+    try:
+        row = await memory_store.link_identity(user.id, channel, handle)
+    except AuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return {
+        "channel": row.channel,
+        "handle": row.handle,
+        "verified": bool(row.verified),
+    }
+
+
+@router.post("/users/merge")
+async def merge_users(
+    body: UserMergeRequest,
+    user: User = Depends(get_current_user),
+    memory_store: MemoryStore = Depends(get_memory_store),
+    _rail: None = Depends(require_rail_service_key),
+) -> dict[str, Any]:
+    """Move portable history onto the caller's stable id after verification.
+
+    Number-change recovery: the user reinstalls, Go issues a fresh ``sub``,
+    verifies they own the old account (OTP to the old number / email /
+    wallet), then calls this with the old id. Conversations, memories and
+    handles move; audit rows stay for compliance. The bearer JWT names the
+    *target*; the rail key proves Go verified the claim.
+    """
+    from_user = (body.from_user_id or "").strip()
+    if not from_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="from_user_id is required",
+        )
+    if from_user == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="from_user_id must differ from the authenticated user",
+        )
+    await memory_store.ensure_user(user)
+    counts = await memory_store.merge_user_data(from_user, user.id)
+    # Supermemory is keyed by containerTag(user_id), so the graph under the
+    # old tag does not follow the DB move on its own. Best-effort: re-ground
+    # the new tag with the moved tail so semantic recall keeps working from
+    # the first turn on the new id. Fail-open — the DB move already commits.
+    try:
+        from miriam_agent.integrations.supermemory_client import (
+            container_tag_for,
+            get_supermemory_client,
+        )
+
+        convs = await memory_store.get_conversations(user.id, limit=3)
+        lines: list[str] = []
+        for conv in convs:
+            msgs = await memory_store.get_conversation_messages(conv.id, user.id)
+            for msg in msgs[-20:]:
+                role = getattr(msg, "role", "?")
+                content = (getattr(msg, "content", "") or "")[:2000]
+                if content.strip():
+                    lines.append(f"{role}: {content.strip()}")
+            if len(lines) >= 40:
+                break
+        if lines:
+            client = get_supermemory_client()
+            if client.enabled:
+                await client.add_document(
+                    container_tag=container_tag_for(user.id),
+                    content="Carried-over history after verified account merge:\n"
+                    + "\n".join(lines[:40]),
+                    metadata={"merge_from": from_user, "agent": "miriam-python"},
+                )
+    except Exception:
+        logger.warning("merge supermemory re-grounding failed (non-blocking)")
+    return {"merged_from": from_user, "merged_into": user.id, **counts}
 
 
 @router.get("/conversations/{conversation_id}")
@@ -960,10 +1462,11 @@ async def _load_financial_plan(token: str) -> dict[str, Any] | None:
     Does not call the retired Go AI ``/api/v1/ai/financial-plan`` endpoint.
     """
     try:
+        from miriam_agent.financial.intelligence import financial_plan_live
         from miriam_agent.integrations.go_client import get_go_client
 
         client = get_go_client()
-        plan = await client.get_financial_plan(token)
+        plan = await financial_plan_live(client, token)
         if plan:
             return plan
     except Exception as e:
@@ -1005,11 +1508,11 @@ async def _load_memory_facts(
     if supermemory_memory is not None and supermemory_memory.enabled:
         try:
             container_tag = container_tag_for(user_id)
-            facts = await supermemory_memory.build_memory_facts(
+            smart_facts = await supermemory_memory.build_memory_facts(
                 container_tag, query=query or "What should I know about this user?"
             )
-            if facts:
-                return facts
+            if smart_facts:
+                return smart_facts
         except Exception:
             pass  # fail open to local store
 
@@ -1049,7 +1552,10 @@ async def _ingest_to_supermemory(
     onboarding another, and dynamic dreaming links the memories across them.
 
     Fire-and-forget and fail-open: memory ingest must never break the chat
-    response, so any error is swallowed here.
+    response, so any error is swallowed here. ``entityContext`` grounds
+    extraction about the right person (rules doc: "User is X, talking to
+    Miriam"), so a fact like "I'm saving for a house" is filed against
+    someone rather than nobody.
     """
     if supermemory_memory is None or not supermemory_memory.enabled:
         return
@@ -1065,6 +1571,7 @@ async def _ingest_to_supermemory(
                 "source": "miriam",
                 "agent": "miriam-python",
             },
+            entity_context=person_entity_context(user_id, name),
         )
         # The settings call 404s until the container exists, so it runs after
         # the first turn lands. It is memoised after that.

@@ -74,7 +74,9 @@ class SidecarOCRProvider:
         client = self._client or httpx.AsyncClient(timeout=self.timeout_seconds)
         owned = self._client is None
         try:
-            resp = await client.post(f"{self.base_url}/ocr", json=payload, headers=headers)
+            resp = await client.post(
+                f"{self.base_url}/ocr", json=payload, headers=headers
+            )
         except httpx.HTTPError as e:
             raise IntegrationError(f"OCR service unreachable: {e}") from e
         finally:
@@ -113,9 +115,8 @@ class SidecarOCRProvider:
         text = str(body.get("text", ""))
         if not pages and text:
             pages = [PageText(page=1, text=text)]
-        mean_conf = (
-            float(body.get("mean_confidence", 0.0) or 0.0)
-            or (sum(confidences) / len(confidences) if confidences else 0.0)
+        mean_conf = float(body.get("mean_confidence", 0.0) or 0.0) or (
+            sum(confidences) / len(confidences) if confidences else 0.0
         )
         started = time.perf_counter()
         void = started

@@ -20,46 +20,41 @@ ROLE_LEVELS: dict[str, set[str]] = {
     "admin": {"read", "plan", "execute", "admin"},
 }
 
-# Tool name -> minimum required permission (filled from registry on import).
+# Tool name -> minimum required permission.
 #
 # A name that is not in here is denied rather than defaulted. It used to default
 # to "read", which was harmless while every money tool was registered and
 # classified as "execute" -- but the registry no longer holds a money tool, so
 # that default would have quietly granted read access to `send_money`. An
 # unknown name now requires the tool to be registered before it can be called.
-_TOOL_PERMISSIONS: dict[str, str] = {}
+#
+# This map used to be filled by importing the tool registry from here, which
+# pointed cross-cutting auth at the adapters layer (forbidden by
+# docs/ARCHITECTURE-CONTRACT.md §3). The direction is inverted now: the tools
+# layer pushes its permissions in through ``register_tool_permissions`` when
+# the registry is built, which is the allowed adapters -> cross_cutting edge.
+_TOOL_PERMISSIONS: dict[str, str] = {
+    # Static floor for cold start, before any registry build: legacy money
+    # tool names that no longer exist in the registry stay classified as
+    # execute so a stale caller is refused, not mis-graded.
+    "transfer_funds": "execute",
+    "withdraw_funds": "execute",
+    "deposit_funds": "execute",
+    "execute_strategy": "execute",
+}
 
 
-def _load_tool_permissions() -> None:
-    """Populate tool permissions from the registered tool metadata."""
-    try:
-        from miriam_agent.tools import build_tool_registry
+def register_tool_permissions(permissions: dict[str, str]) -> None:
+    """Record the permission each registered tool requires.
 
-        registry = build_tool_registry()
-        for tool in registry:
-            if tool.is_mutation or tool.requires_approval:
-                _TOOL_PERMISSIONS[tool.name] = "execute"
-            else:
-                _TOOL_PERMISSIONS[tool.name] = "read"
-    except Exception:
-        # Registry not available (e.g. cold import); fall back to static map.
-        _TOOL_PERMISSIONS.update(
-            {
-                "transfer_funds": "execute",
-                "withdraw_funds": "execute",
-                "deposit_funds": "execute",
-                "execute_strategy": "execute",
-            }
-        )
-
-
-_load_tool_permissions()
+    Called by the tools layer when the registry is built; values are
+    ``"execute"`` for mutation/approval tools and ``"read"`` otherwise.
+    """
+    _TOOL_PERMISSIONS.update(permissions)
 
 
 def can_execute(user_roles: set[str], tool_name: str) -> bool:
     """Check whether the user's roles allow executing the given tool."""
-    if tool_name not in _TOOL_PERMISSIONS:
-        _load_tool_permissions()
     required = _TOOL_PERMISSIONS.get(tool_name)
     if required is None:
         # Not a registered tool: nothing to grant access to.

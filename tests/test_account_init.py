@@ -146,8 +146,7 @@ def test_authenticated_user_id_reaches_tool_context():
         seen.update(ctx)
         return {"ok": True}
 
-    from miriam_agent.agents.tools import get_registry
-    from miriam_agent.agents.tools import Tool
+    from miriam_agent.agents.tools import Tool, get_registry
 
     registry = get_registry()
     name = "ctx_probe_account_test_tool"
@@ -160,10 +159,6 @@ def test_authenticated_user_id_reaches_tool_context():
                 handler=handler,
             )
         )
-    _run(
-        registry.execute(
-            name, {}, {"user_id": "auth-user-9", "token": "tok-9"}
-        )
-    )
+    _run(registry.execute(name, {}, {"user_id": "auth-user-9", "token": "tok-9"}))
     assert seen["user_id"] == "auth-user-9"
     assert seen["token"] == "tok-9"

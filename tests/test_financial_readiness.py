@@ -14,7 +14,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
 
 from miriam_agent.financial.eligibility import evaluate_investment_action  # noqa: E402
-from miriam_agent.financial.profile import FinancialProfile, extract_profile  # noqa: E402
+from miriam_agent.financial.profile import (  # noqa: E402
+    FinancialProfile,
+    extract_profile,
+)
 from miriam_agent.financial.readiness import (  # noqa: E402
     BUILD_SAFETY_FIRST,
     NOT_READY,
@@ -143,7 +146,10 @@ def test_volatile_income_wants_a_six_month_buffer():
 def test_unknown_kyc_does_not_block_strategy_start():
     verdict = assess_readiness(_healthy(), kyc_verified=False)
     assert verdict.status in (READY_TO_START, READY_TO_AUTOMATE)
-    assert verdict.recommended_next_step in ("investment_education", "set_up_the_investment")
+    assert verdict.recommended_next_step in (
+        "investment_education",
+        "set_up_the_investment",
+    )
 
 
 def test_unsupported_jurisdiction_blocks():
@@ -249,7 +255,9 @@ def test_missing_idempotency_is_recorded():
 
 def test_unreported_limit_is_unknown_not_zero():
     """A limit the backend did not report must never read as 'unlimited'."""
-    decision = evaluate_investment_action(1_000, {"can_invest": True}, kyc_verified=True)
+    decision = evaluate_investment_action(
+        1_000, {"can_invest": True}, kyc_verified=True
+    )
     assert decision.checks["max_transaction"] == "unknown"
     assert "max_transaction" not in decision.limits_used
 

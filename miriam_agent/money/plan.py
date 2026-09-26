@@ -135,6 +135,15 @@ def _run_pipeline(
     Both public entrypoints below call this, so there is exactly one place the
     maths happens and no way for two callers to disagree.
     """
+    if reference is None:
+        # Operator-supplied live rates (MONEY_REF_* env) win over the placeholder
+        # table without a code change; absent env keeps the table behavior.
+        try:
+            from miriam_agent.money.reference import reference_from_env
+
+            reference = reference_from_env()
+        except Exception:
+            reference = None
     ref, status = lookup(intake.country, overrides=reference, today=today)
     diagnosis = diagnose(intake, reference=ref, status=status)
     safety = assess_safety(intake, ref, status=status)
@@ -187,7 +196,9 @@ def _coerce_vault(state: VaultState | dict | None) -> VaultState:
         except (ArithmeticError, TypeError, ValueError):
             data["vault_pct"] = Decimal("0")
         data["active"] = bool(data.get("active"))
-        return VaultState(**{k: v for k, v in data.items() if k in VaultState.model_fields})
+        return VaultState(
+            **{k: v for k, v in data.items() if k in VaultState.model_fields}
+        )
     return VaultState()
 
 
@@ -401,7 +412,10 @@ def _actions(
                     ),
                     amount=book.investable_surplus,
                     currency=currency,
-                    how="The locked sleeve is the long-horizon book, approved in the app",
+                    how=(
+                        "The locked sleeve is the long-horizon book, "
+                        "approved in the app"
+                    ),
                 )
             )
         else:
@@ -415,7 +429,10 @@ def _actions(
                     ),
                     amount=book.investable_surplus,
                     currency=currency,
-                    how=("Broad, low-cost index exposure, funded automatically on payday"),
+                    how=(
+                        "Broad, low-cost index exposure, funded "
+                        "automatically on payday"
+                    ),
                 )
             )
 
@@ -620,7 +637,7 @@ def _what_would_change(pipeline: Pipeline, buffer: BufferPlan) -> list[str]:
         "A change in income -- up or down -- changes the buffer target and the "
         "book, so tell me when it moves"
     )
-    horizon = pipeline.intake.horizon_months()
+    horizon = pipeline.intake.horizon_months
     changes.append(
         f"The goal horizon moving past three years would allow market exposure; "
         f"it is currently {horizon} months"

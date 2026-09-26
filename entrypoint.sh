@@ -11,6 +11,10 @@ start_uvicorn() {
 }
 
 start_uvicorn "$PORT"
+# Atlasflow probes port 3000. The image healthcheck and compose use 8000.
+if [ "$PORT" != "3000" ]; then
+    start_uvicorn 3000
+fi
 
 trap 'kill $(jobs -p) 2>/dev/null' TERM INT
 wait

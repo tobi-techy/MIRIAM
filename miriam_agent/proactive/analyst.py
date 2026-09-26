@@ -21,6 +21,10 @@ from typing import Any
 
 from miriam_agent.agents.llm import ChatMessage, LLMProvider, get_llm_provider
 from miriam_agent.config.settings import get_settings
+from miriam_agent.financial.intelligence import (
+    financial_health_live,
+    financial_plan_live,
+)
 from miriam_agent.proactive.state import ProactiveStateStore, get_proactive_state
 
 logger = logging.getLogger(__name__)
@@ -171,7 +175,7 @@ async def _go_snapshot_lines(
         ("Upcoming bills", lambda: client.get_upcoming_bills(token)),
         (
             "Financial health",
-            lambda: client.get_financial_health(token, period=period),
+            lambda: financial_health_live(client, token, period=period),
         ),
     ]
     for label, fetch in fetchers:
@@ -184,7 +188,7 @@ async def _go_snapshot_lines(
     # when one is already loaded (avoids a duplicate Go call).
     if financial_plan is None:
         try:
-            financial_plan = await client.get_financial_plan(token)
+            financial_plan = await financial_plan_live(client, token)
         except Exception as e:
             logger.info("Proactive snapshot: financial plan unavailable (%s)", e)
     if financial_plan:

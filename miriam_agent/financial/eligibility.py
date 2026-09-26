@@ -169,9 +169,7 @@ def evaluate_investment_action(
         else:
             checks["max_daily"] = "unknown"
 
-        can_invest = _first_bool(
-            limits, "can_invest", "canInvest", "investing_enabled"
-        )
+        can_invest = _first_bool(limits, "can_invest", "canInvest", "investing_enabled")
         if can_invest is False:
             deny("investing is not enabled for this account yet")
             checks["can_invest"] = "fail"
@@ -186,9 +184,7 @@ def evaluate_investment_action(
             checks["kyc_tier"] = "reported"
     else:
         checks["limits"] = "unavailable"
-        deny(
-            "investment limits are unavailable, so the action cannot be authorized"
-        )
+        deny("investment limits are unavailable, so the action cannot be authorized")
 
     if asset is not None:
         tradable = _first_bool(asset, "tradable", "is_tradable", "tradeable")

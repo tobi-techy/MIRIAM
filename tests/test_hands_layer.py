@@ -41,16 +41,11 @@ from miriam_agent.hands.state import (
     require_complete,
 )
 from miriam_agent.hands.transfer import (
-    GoRail,
     InMemoryRail,
-    TransferInstruction,
     execute_transfer,
     handle_debit,
-    handle_reversal,
     move_between_sleeves,
-    parse_amount,
     parse_transfer_utterance,
-    record_refusal,
     route_yield,
 )
 from miriam_agent.orchestrator import Event, Orchestrator
@@ -605,7 +600,11 @@ async def test_the_rollback_receipt_carries_the_rail_reference():
 
 
 async def test_nine_under_cap_pass_and_tenth_rejects():
-    """Nine sends under the daily cap succeed; the tenth is rejected."""
+    """The cap is inclusive: exact fill passes, one more is rejected.
+
+    The old `>=` comparison refused the send that exactly filled the remaining
+    allowance, so the last slot of a 10k cap could never be used.
+    """
     ledger = ledger_with(spendable=500000)
     store = await _seeded(ledger)
     rail = InMemoryRail()
@@ -613,7 +612,7 @@ async def test_nine_under_cap_pass_and_tenth_rejects():
     policy = Policy(max_daily=cap)
     amount = Decimal("1000")
 
-    for i in range(9):
+    for i in range(10):
         state, action = _authorised(ledger, str(amount), counterparty=f"Femi{i}")
         outcome = await execute_transfer(
             store=store, ledger=ledger, state=state, policy=policy, rail=rail
@@ -621,7 +620,7 @@ async def test_nine_under_cap_pass_and_tenth_rejects():
         ledger = await store.load("u1")
         assert outcome.receipt.status == "executed", f"send {i+1} should pass"
 
-    state, action = _authorised(ledger, str(amount), counterparty="Femi9")
+    state, action = _authorised(ledger, str(amount), counterparty="Femi10")
     outcome = await execute_transfer(
         store=store, ledger=ledger, state=state, policy=policy, rail=rail
     )
@@ -655,6 +654,117 @@ async def test_untapped_confirm_does_not_block_next_send():
     assert "DAILY_CAP" in outcome2.receipt.reasons
 
 
+def test_day_boundary_uses_the_configured_money_timezone():
+    """The cap's day rolls over at midnight in the money timezone, not the server's."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from miriam_agent.hands.limits import _day_start
+
+    # 23:30 UTC on the 22nd is already 00:30 on the 23rd in Lagos, so the
+    # financial day has rolled over even though the server-UTC day has not.
+    at = datetime(2026, 9, 22, 23, 30, tzinfo=ZoneInfo("UTC"))
+    start = _day_start(at)
+    assert start == datetime(2026, 9, 23, 0, 0, tzinfo=ZoneInfo("Africa/Lagos"))
+
+
+def test_day_boundary_falls_back_to_utc_for_an_unknown_zone(monkeypatch):
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from miriam_agent.config.settings import get_settings
+    from miriam_agent.hands.limits import _day_start
+
+    monkeypatch.setenv("MONEY_DAY_TIMEZONE", "Mars/Olympus_Mons")
+    get_settings.cache_clear()
+    try:
+        at = datetime(2026, 9, 22, 23, 30, tzinfo=ZoneInfo("UTC"))
+        start = _day_start(at)
+        assert start == datetime(2026, 9, 22, 0, 0, tzinfo=UTC)
+    finally:
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Journal retention (ledger.py)
+# ---------------------------------------------------------------------------
+
+
+async def test_journal_trims_bodies_but_idempotency_keys_survive(monkeypatch):
+    """Old receipt bodies are dropped; their keys still block re-execution.
+
+    The dangerous failure was never the trimming itself — it was a replay that
+    found no receipt and executed a second time. ``receipt_for`` must return
+    an archived stub for a trimmed key so every replay stays on the
+    already-done path.
+    """
+    from datetime import UTC, datetime
+
+    from miriam_agent.hands import ledger as ledger_module
+    from miriam_agent.hands.audit import Receipt
+
+    monkeypatch.setattr(ledger_module, "RECEIPT_RETENTION", 2)
+    ledger = ledger_with(spendable=0)
+
+    def _receipt(n: int) -> Receipt:
+        return Receipt(
+            id=f"rcpt_{n}",
+            at=datetime.now(UTC),
+            status="executed",
+            action="inflow_split",
+            currency="NGN",
+            idempotency_key=f"pay_{n}",
+        )
+
+    for n in range(4):
+        ledger.remember_receipt(_receipt(n))
+
+    # Only the last two bodies remain, but all four keys are known.
+    assert [r.id for r in ledger.receipts] == ["rcpt_2", "rcpt_3"]
+    assert set(ledger.processed) == {f"pay_{n}" for n in range(4)}
+
+    # A live key replays the real receipt; a trimmed key gets the stub.
+    live = ledger.receipt_for("pay_3")
+    assert live is not None and live.id == "rcpt_3"
+    archived = ledger.receipt_for("pay_0")
+    assert archived is not None
+    assert archived.id == "rcpt_0"
+    assert archived.status == "noop"
+    assert "already processed" in archived.detail
+    # An unknown key still executes normally.
+    assert ledger.receipt_for("pay_never_seen") is None
+
+
+async def test_a_replayed_inflow_whose_receipt_was_trimmed_splits_nothing(monkeypatch):
+    """End-to-end: the same inflow id after trimming still moves nothing."""
+    from miriam_agent.hands import ledger as ledger_module
+
+    monkeypatch.setattr(ledger_module, "RECEIPT_RETENTION", 1)
+    ledger = ledger_with(spendable=0)
+    store = InMemoryLedgerStore()
+    await store.save(ledger)
+
+    first = await split_inflow(
+        store=store, ledger=ledger, inflow_id="pay_trim", amount=Decimal("100000")
+    )
+    assert first.receipt.status == "executed"
+
+    # Simulate a long-lived ledger: the receipt body aged out, the key did not.
+    aged = await store.load("u1")
+    assert aged is not None
+    aged.receipts[:] = aged.receipts[-1:]
+    await store.save(aged)
+
+    second = await split_inflow(
+        store=store, ledger=aged, inflow_id="pay_trim", amount=Decimal("100000")
+    )
+    assert second.idempotent_replay is True
+    final = await store.load("u1")
+    assert final is not None
+    # 70/30 split happened exactly once.
+    assert final.sleeves["savings"] == money(30000)
+
+
 # ---------------------------------------------------------------------------
 # Sleeve parse
 # ---------------------------------------------------------------------------
@@ -662,7 +772,12 @@ async def test_untapped_confirm_does_not_block_next_send():
 
 def test_move_to_sleeve_is_internal_move():
     """move/transfer + sleeve destination is internal_move, never P2P."""
-    for text in ("move 1k to savings", "move 1k to stash", "move 1k to yield", "move 1k to locked"):
+    for text in (
+        "move 1k to savings",
+        "move 1k to stash",
+        "move 1k to yield",
+        "move 1k to locked",
+    ):
         action = parse_transfer_utterance(text)
         assert action is not None, text
         assert action.type == "internal_move", text
@@ -709,10 +824,18 @@ async def test_debit_idempotent_on_replay():
     ledger = ledger_with(spendable=10000)
     store = await _seeded(ledger)
     outcome1 = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_dup", amount=Decimal("500"), reason="go_debit"
+        store=store,
+        ledger=ledger,
+        payment_id="pay_dup",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     outcome2 = await handle_debit(
-        store=store, ledger=await store.load("u1"), payment_id="pay_dup", amount=Decimal("500"), reason="go_debit"
+        store=store,
+        ledger=await store.load("u1"),
+        payment_id="pay_dup",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     assert outcome1.receipt.id == outcome2.receipt.id
     assert outcome2.receipt.idempotent_replay is True
@@ -722,7 +845,11 @@ async def test_debit_short_fails_closed():
     ledger = ledger_with(spendable=100)
     store = await _seeded(ledger)
     outcome = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_short", amount=Decimal("500"), reason="go_debit"
+        store=store,
+        ledger=ledger,
+        payment_id="pay_short",
+        amount=Decimal("500"),
+        reason="go_debit",
     )
     assert outcome.receipt.status == "rejected"
     assert "INSUFFICIENT_SPENDABLE" in outcome.receipt.reasons
@@ -735,7 +862,11 @@ async def test_reversal_does_not_credit_income():
     ledger = ledger_with(spendable=10000)
     store = await _seeded(ledger)
     outcome = await handle_debit(
-        store=store, ledger=ledger, payment_id="pay_rev", amount=Decimal("500"), reason="go_reversal"
+        store=store,
+        ledger=ledger,
+        payment_id="pay_rev",
+        amount=Decimal("500"),
+        reason="go_reversal",
     )
     after = await store.load("u1")
     assert outcome.receipt.status == "executed"
@@ -760,7 +891,8 @@ def test_approval_required_above_default_is_zero():
 
 
 async def test_challenge_stores_required_fields():
-    """A challenge must carry confirm_id, user_id, amount, destination, sleeve, created_at, expires_at."""
+    """A challenge must carry confirm_id, user_id, amount, destination,
+    sleeve, created_at, expires_at."""
     ledger = ledger_with(spendable=50000)
     store = await _seeded(ledger)
     orchestrator = Orchestrator(
@@ -789,7 +921,8 @@ async def test_challenge_stores_required_fields():
 
 
 async def test_settle_only_if_all_match():
-    """Settle requires confirm_id + user_id + amount + destination + sleeve to all match."""
+    """Settle requires confirm_id + user_id + amount + destination +
+    sleeve to all match."""
     ledger = ledger_with(spendable=50000)
     store = await _seeded(ledger)
     orchestrator = Orchestrator(

@@ -16,15 +16,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("OPENAI_API_KEY", "sk-placeholder-for-tests")
 
 from miriam_agent.financial.diagnosis import (  # noqa: E402
-    PROBLEMS,
     PRIORITY_FOR_PROBLEM,
+    PROBLEMS,
     SECONDARY_FLOOR,
     diagnose,
     missing_for_diagnosis,
     ready_to_diagnose,
 )
-from miriam_agent.financial.profile import FinancialProfile, extract_profile  # noqa: E402
-
+from miriam_agent.financial.profile import (  # noqa: E402
+    FinancialProfile,
+    extract_profile,
+)
 
 # -----------------------------------------------------------------------
 # The spec's own scenarios
@@ -213,9 +215,10 @@ def test_health_evidence_moves_the_read():
     }
     without_ledger = diagnose(extract_profile(spoken), goal_expected=False)
     with_ledger = diagnose(extract_profile(spoken), health=health, goal_expected=False)
-    assert with_ledger.scores["cashflow_imbalance"] >= without_ledger.scores[
-        "cashflow_imbalance"
-    ]
+    assert (
+        with_ledger.scores["cashflow_imbalance"]
+        >= without_ledger.scores["cashflow_imbalance"]
+    )
     assert (
         with_ledger.scores["excessive_discretionary_spending"]
         >= without_ledger.scores["excessive_discretionary_spending"]
@@ -235,9 +238,10 @@ def test_spoken_leaks_corroborate_but_never_invent():
     assert "excessive_discretionary_spending" in base.problems()
     # Corroboration lifts the same read within the same sentence.
     boosted = diagnose(profile, text="i keep overspending on stuff")
-    assert boosted.scores[
-        "excessive_discretionary_spending"
-    ] >= base.scores["excessive_discretionary_spending"]
+    assert (
+        boosted.scores["excessive_discretionary_spending"]
+        >= base.scores["excessive_discretionary_spending"]
+    )
 
     # Against a thin profile with no related base, the same words invent
     # nothing: the corroboration needs something to corroborate.

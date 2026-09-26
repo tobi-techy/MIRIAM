@@ -3,8 +3,18 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import JSON as SQLAlchemyJSON
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
+
+from miriam_agent.core.timeutil import utcnow_naive
 
 Base = declarative_base()
 
@@ -20,7 +30,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     preferences: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
 
@@ -29,6 +39,7 @@ class User(Base):
     conversations = relationship("Conversation", back_populates="user")
     memory_entries = relationship("MemoryEntry", back_populates="user")
     audit_logs = relationship("AuditLog", back_populates="user")
+    channel_identities = relationship("ChannelIdentity", back_populates="user")
 
 
 class FinancialProfile(Base):
@@ -39,17 +50,15 @@ class FinancialProfile(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id"), nullable=False
-    )
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     monthly_income: Mapped[float] = mapped_column(Float, nullable=False)
     current_savings: Mapped[float] = mapped_column(Float, default=0.0)
     risk_tolerance: Mapped[str] = mapped_column(String, default="medium")
     investment_goals: Mapped[list[Any]] = mapped_column(SQLAlchemyJSON, default=list)
     financial_goals: Mapped[list[Any]] = mapped_column(SQLAlchemyJSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )
 
     # Relationships
@@ -73,11 +82,12 @@ class Transaction(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)  # income, expense, transfer
+    # income, expense, transfer
+    type: Mapped[str] = mapped_column(String, nullable=False)
     transaction_date: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow
+        DateTime, default=utcnow_naive
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
     )
@@ -102,9 +112,9 @@ class Investment(Base):
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     purchase_price: Mapped[float] = mapped_column(Float, nullable=False)
     current_price: Mapped[float] = mapped_column(Float, nullable=False)
-    purchase_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    purchase_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     current_value: Mapped[float] = mapped_column(Float, nullable=False)
-    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Relationships
     financial_profile = relationship("FinancialProfile", back_populates="investments")
@@ -124,7 +134,7 @@ class Budget(Base):
     category: Mapped[str] = mapped_column(String, nullable=False)
     monthly_limit: Mapped[float] = mapped_column(Float, nullable=False)
     current_spend: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Relationships
     financial_profile = relationship("FinancialProfile", back_populates="budgets")
@@ -140,9 +150,9 @@ class Conversation(Base):
     )
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )
 
     # Relationships
@@ -166,7 +176,7 @@ class Message(Base):
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Relationships
     conversation = relationship("Conversation", back_populates="messages")
@@ -181,7 +191,8 @@ class MemoryEntry(Base):
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)  # conversation, financial, preference
+    # conversation, financial, preference
+    type: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
@@ -189,13 +200,47 @@ class MemoryEntry(Base):
     embedding: Mapped[dict[str, Any] | None] = mapped_column(
         SQLAlchemyJSON, nullable=True
     )  # For vector search
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )
 
     # Relationships
     user = relationship("User", back_populates="memory_entries")
+
+
+class ChannelIdentity(Base):
+    """A channel handle (phone, iMessage, WhatsApp) bound to a stable user.
+
+    The Go backend owns the stable ``users.id``; a phone number is just one
+    handle that can die (SIM swap, reinstall, new device). Binding every
+    handle the user ever contacts us from to the same ``user_id`` is what
+    lets Miriam keep knowledge when the number changes: history stays keyed
+    by ``user_id``, handles are only pointers.
+
+    ``(channel, handle)`` is globally unique — one handle points at exactly
+    one user at a time. Moving a handle between users (number recycled, user
+    claims old history) goes through the rail-authenticated merge endpoint,
+    never through a bare user call, so user A cannot steal user B's history
+    by guessing their old number.
+    """
+
+    __tablename__ = "channel_identities"
+    __table_args__ = (UniqueConstraint("channel", "handle", name="uq_channel_handle"),)
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    handle: Mapped[str] = mapped_column(String, nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
+    )
+
+    user = relationship("User", back_populates="channel_identities")
 
 
 class AuditLog(Base):
@@ -211,7 +256,7 @@ class AuditLog(Base):
     resource: Mapped[str] = mapped_column(String, nullable=False)
     resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
@@ -229,7 +274,5 @@ class ToolUsage(Base):
     tool_name: Mapped[str] = mapped_column(String, nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
-    execution_time: Mapped[float] = mapped_column(
-        Float, nullable=False
-    )  # in seconds
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    execution_time: Mapped[float] = mapped_column(Float, nullable=False)  # in seconds
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

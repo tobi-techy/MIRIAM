@@ -68,9 +68,10 @@ def build_evidence(
     if ext.closing_balance is not None:
         add("closing_balance", 1, 0, ocr_conf)
     for txn in ext.transactions:
+        date_part = txn.date.normalized.isoformat() if txn.date else "?"
         evidence.append(
             DocumentEvidence(
-                field=f"transaction:{txn.date.normalized.isoformat() if txn.date else '?'}:{txn.description[:40]}",
+                field=f"transaction:{date_part}:{txn.description[:40]}",
                 page=txn.page,
                 region=region(txn.page, txn.line_index),
                 engine=text.engine or method,
@@ -108,7 +109,9 @@ def compose_confidence(
     else:
         factors["reconciliation"] = 0.6
     with_amounts = [t for t in ext.transactions if t.amount is not None]
-    factors["txns"] = len(with_amounts) / max(1, len(ext.transactions)) if ext.transactions else 0.0
+    factors["txns"] = (
+        len(with_amounts) / max(1, len(ext.transactions)) if ext.transactions else 0.0
+    )
     score = (
         0.25 * factors["ocr"]
         + 0.20 * factors["field_presence"]

@@ -1,8 +1,9 @@
 """Configuration settings for Miriam Financial Agent."""
 
+import sys
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -59,11 +60,23 @@ class Settings(BaseSettings):
     JWT_SECRET: str = Field(default="change-me-in-production")
     JWT_ALGORITHM: str = Field(default="HS256")
     JWT_EXPIRATION_MINUTES: int = Field(default=60)
-    # Optional audience/issuer pinning. Left empty by default because the Go
-    # issuer does not set them; when set, decode_token enforces them instead
-    # of accepting any token signed with the shared secret.
+    # Go access tokens (pkg/auth/jwt.go) set iss=rail_service and do not set
+    # aud. Leave audience empty: a configured audience makes decode_token
+    # require that claim and rejects every live Rail token. Issuer defaults
+    # to the value Go writes; override it only if the issuer changes there.
     JWT_AUDIENCE: str = Field(default="")
-    JWT_ISSUER: str = Field(default="")
+    JWT_ISSUER: str = Field(default="rail_service")
+    # Shared service credential for rail -> Python calls (e.g. the inflow
+    # webhook). A user JWT must never be enough to mint ledger inflows, so
+    # POST /money/inflow requires this key via the X-Rail-Service-Key header.
+    # Must be set in production (guarded below); empty in development keeps
+    # local runs working with the dev fallback.
+    RAIL_SERVICE_KEY: str = Field(default="")
+    # Demo escape hatch: let chat text like "I just got paid 100" split the
+    # ledger as if the rail had reported an inflow. Off by default; the
+    # production guard refuses to boot with it on. Only the rail turns text
+    # into money in any real deployment.
+    ALLOW_CHAT_INFLOW_SYNTH: bool = Field(default=False)
 
     # CORS
     ALLOWED_ORIGINS: str = Field(default="*")
@@ -77,6 +90,15 @@ class Settings(BaseSettings):
     # a hard failure the user saw as "couldn't do that".
     GO_REQUEST_TIMEOUT: float = Field(default=15.0)
     GO_MAX_RETRIES: int = Field(default=2)
+    # Live Face ID confirmation cards (Go card <-> Miriam challenge join).
+    # Off until the imessage e2e passes; when on, the orchestrator mints a Go
+    # card best-effort after staging a challenge and falls back to the text
+    # flow whenever minting fails. The flag decides routing, never authority:
+    # settle always runs the existing _handle_confirm path.
+    GO_CONFIRM_CARDS_ENABLED: bool = Field(default=False)
+    # Comma-separated channels allowed to mint cards. iMessage owns the Face
+    # ID extension; web/voice/terminal never mint.
+    GO_CONFIRM_CARD_CHANNELS: str = Field(default="imessage")
 
     # Supermemory (long-term memory of the agent)
     # Leave empty to disable semantic memory (the agent degrades gracefully).
@@ -166,9 +188,10 @@ class Settings(BaseSettings):
     # LLM tuning for the onboarding conductor (warm answers, not analytic).
     ONBOARDING_TEMPERATURE: float = Field(default=0.6)
     ONBOARDING_MAX_TOKENS: int = Field(default=800)
-    # Hard cap on dimensions covered per interview, so the conversation always
-    # reaches the plan no matter how chatty the model gets.
-    ONBOARDING_MAX_QUESTIONS: int = Field(default=12)
+    # Hard cap on interview questions. Salary, pay rhythm, and what must go
+    # out are the whole interview; six is the backstop so the plan and the
+    # stock sleeve still show up when the model keeps talking.
+    ONBOARDING_MAX_QUESTIONS: int = Field(default=6)
     # How long an interview may sit idle before it resets (sliding on each
     # turn). Days.
     ONBOARDING_STATE_TTL_DAYS: int = Field(default=30)
@@ -204,6 +227,10 @@ class Settings(BaseSettings):
     # never moves money, and enrollment stays user-signed and two-stage.
     MONEY_DEFAULT_COUNTRY: str = Field(default="NG")
     MONEY_DEFAULT_CURRENCY: str = Field(default="NGN")
+    # The timezone whose midnight bounds the daily transfer cap. The old
+    # boundary was the server's local zone, so cap resets moved with whatever
+    # machine ran the process; it is now pinned to the product's home market.
+    MONEY_DAY_TIMEZONE: str = Field(default="Africa/Lagos")
     # Debt triage bands (MONEY-RULES.md §3). APR >= fire is attacked; APR in the
     # judgment band is compared against the local risk-free rate from
     # money/reference.py; below that, debt is kept.
@@ -224,7 +251,37 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
+        # Host panels often inject KEY= for every unset variable. An empty
+        # string is not a valid bool or number, and it used to crash import
+        # before the process could listen. Treat blank as unset so the field
+        # default applies. A blank secret still fails the production guard.
+        "env_ignore_empty": True,
     }
+
+    @model_validator(mode="after")
+    def _use_asyncpg_driver(self):
+        """The async engine rejects a bare postgresql:// URL.
+
+        Compose and many hosts emit the libpq form. Rewrite only that form
+        so an explicit driver is left alone.
+        """
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        if url.startswith("postgresql://"):
+            self.DATABASE_URL = "postgresql+asyncpg://" + url[len("postgresql://") :]
+        return self
+
+    @property
+    def is_production(self) -> bool:
+        """True for any production spelling.
+
+        The check used to be an exact ``== "production"``, so
+        ``ENVIRONMENT=Production`` or ``prod`` silently bypassed every
+        production guard below (weak secrets, wildcard CORS, default DB
+        password) while operators believed the guard was on.
+        """
+        return self.ENVIRONMENT.strip().lower() in {"production", "prod"}
 
     @model_validator(mode="after")
     def _guard_production_secrets(self):
@@ -236,7 +293,7 @@ class Settings(BaseSettings):
         signing secret and the app secret key must be strong, real values.
         Development is untouched so local runs and tests keep working.
         """
-        if self.ENVIRONMENT != "production":
+        if not self.is_production:
             return self
 
         weak = {"", "change-me-in-production"}
@@ -258,33 +315,37 @@ class Settings(BaseSettings):
                 "SECRET_KEY must be a strong, non-default value (>= 32 chars) "
                 "in production"
             )
-        if (
-            _is_dev_placeholder(self.ENCRYPTION_KEY)
-            or len(self.ENCRYPTION_KEY) < 32
-        ):
+        if _is_dev_placeholder(self.ENCRYPTION_KEY) or len(self.ENCRYPTION_KEY) < 32:
             problems.append(
                 "ENCRYPTION_KEY must be set to a strong value (>= 32 chars) in "
                 "production; deriving it from SECRET_KEY via single SHA-256 is not "
                 "a KDF and must not be used in production"
             )
-        if not self.JWT_AUDIENCE or len(self.JWT_AUDIENCE) < 3:
-            problems.append(
-                "JWT_AUDIENCE must be set (e.g. 'miriam-api') in production; "
-                "without it tokens can be replayed across services sharing JWT_SECRET"
-            )
         if not self.JWT_ISSUER or len(self.JWT_ISSUER) < 3:
             problems.append(
-                "JWT_ISSUER must be set (e.g. 'rail-backend') in production"
+                "JWT_ISSUER must be set to the issuer Go writes "
+                "(rail_service) in production"
             )
-        if "*" in {origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")}:
-            problems.append(
-                "ALLOWED_ORIGINS must not be '*' in production; set an explicit "
-                "allowlist of origins"
-            )
+        # ALLOWED_ORIGINS=* is accepted. api/main.py turns credentialed CORS
+        # off in that case, and Go plus the iMessage bridge do not use CORS.
+        # An explicit allowlist is still how a browser app gets credentials.
         if ":miriam_password@" in self.DATABASE_URL:
             problems.append(
                 "DATABASE_URL must not contain the default password 'miriam_password' "
                 "in production; inject via secrets"
+            )
+        if _is_dev_placeholder(self.RAIL_SERVICE_KEY) or (
+            len(self.RAIL_SERVICE_KEY) < 32
+        ):
+            problems.append(
+                "RAIL_SERVICE_KEY must be a strong value (>= 32 chars) in "
+                "production; it is the only credential allowed to mint ledger "
+                "inflows"
+            )
+        if self.ALLOW_CHAT_INFLOW_SYNTH:
+            problems.append(
+                "ALLOW_CHAT_INFLOW_SYNTH must be false in production: chat text "
+                "must never mint ledger inflows"
             )
         if problems:
             raise ValueError("; ".join(problems))
@@ -294,4 +355,19 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Cached singleton for application settings."""
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        # The traceback's last frame is validate_python, and the reason is a
+        # later log line that deploy viewers drop. Print the field messages
+        # only: error input can contain the secrets that failed the check.
+        reasons: list[str] = []
+        for err in exc.errors():
+            loc = ".".join(str(part) for part in err.get("loc", ())) or "settings"
+            reasons.append(f"{loc}: {err.get('msg', 'invalid')}")
+        print(
+            "miriam refused to start: " + "; ".join(reasons),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise

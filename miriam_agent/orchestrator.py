@@ -31,18 +31,15 @@ import hashlib
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
-
-from miriam_agent.hands.audit import AuditLog, AuditRow, Receipt
+from miriam_agent.hands.audit import AuditLog, Receipt
+from miriam_agent.hands.funding import extract_otp as _extract_funding_otp
+from miriam_agent.hands.funding import parse_funding_utterance, parse_offramp_utterance
 from miriam_agent.hands.invest import (
-    INVEST_SLEEVE,
     parse_invest_utterance,
-    prepare_allocate,
     settle_allocate,
 )
 from miriam_agent.hands.ledger import (
@@ -56,6 +53,21 @@ from miriam_agent.hands.ledger import (
     new_ledger,
 )
 from miriam_agent.hands.limits import Policy
+from miriam_agent.hands.orders import (
+    parse_order_utterance,
+    parse_rebalance_utterance,
+)
+from miriam_agent.hands.save_rule import (
+    parse_save_rule_utterance,
+    save_rule_binding,
+)
+from miriam_agent.hands.settle_cards import CardSettlementMixin
+from miriam_agent.hands.settle_funding import (
+    FundingSettlementMixin,
+    _open_paj_otp_challenge,
+)
+from miriam_agent.hands.settle_legs import LegSettlementMixin
+from miriam_agent.hands.settlement import Event, SettlementMixin, TurnResult
 from miriam_agent.hands.split import audit_row_for_split, split_inflow
 from miriam_agent.hands.state import (
     Execution,
@@ -83,61 +95,14 @@ logger = logging.getLogger(__name__)
 # How long a confirm_id stays valid.
 CHALLENGE_TTL_MINUTES = 30
 
-EventType = Literal["inflow", "utterance", "confirm", "wallet_signature"]
-
-
-class Event(BaseModel):
-    """Something that happened: money arrived, the user spoke, a tap landed,
-    or a wallet signature arrived."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    type: EventType
-    user_id: str
-    # utterance
-    text: str = ""
-    # inflow
-    inflow_id: str = ""
-    amount: Decimal | None = None
-    source_raw: str = ""
-    # confirm tap
-    confirm_id: str = ""
-    # wallet that will own the Glider portfolio (base58). Terminal tests send
-    # their ephemeral key; production sends the connected wallet address.
-    wallet_address: str = ""
-    # wallet signature settle
-    flow_id: str = ""
-    signed_tx: str = ""
-
-
-@dataclass
-class TurnResult:
-    """Everything one turn produced, for the caller and for the tests.
-
-    ``state`` is ``None`` only when the ledger could not be read, which is the one
-    turn with no STATE to show because there was nothing to read it from.
-    """
-
-    state: HandlerState | None = None
-    narration: str | None = None
-    decision: dict[str, Any] | None = None
-    receipt: Receipt | None = None
-    confirm_id: str = ""
-    audit: list[AuditRow] = field(default_factory=list)
-    # True when the turn is silent by design rather than because Voice failed.
-    quiet: bool = False
-    # Allocate card (tap time): kind/amount/strategy/flow/sign payload. The
-    # sign payload is the base64 Solana transaction the wallet must sign.
-    card: dict[str, Any] | None = None
-    # Settle result (wallet-signature time): ok/enrollment/funding/positions.
-    invest: dict[str, Any] | None = None
-
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class Orchestrator:
+class Orchestrator(
+    SettlementMixin, LegSettlementMixin, FundingSettlementMixin, CardSettlementMixin
+):
     """The only entrypoint into the three layers."""
 
     def __init__(
@@ -152,6 +117,9 @@ class Orchestrator:
         judge: Judge | None = None,
         clock: Callable[[], datetime] | None = None,
         go_token: str | None = None,
+        audit_sink: Callable[[Event, TurnResult], Any] | None = None,
+        cards_enabled: bool = False,
+        card_channels: tuple[str, ...] | list[str] = ("imessage",),
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -165,6 +133,17 @@ class Orchestrator:
         # leg (Glider stage 1/2 via /api/v1/investments/*). None means the
         # invest path fails closed.
         self.go_token = go_token
+        # Live Face ID cards (Go card <-> Miriam challenge join). Off by
+        # default: when off, turns are byte-identical to the legacy narration
+        # and zero Go card calls are made. When on, only allowlisted channels
+        # mint, best-effort, after the challenge is staged.
+        self.cards_enabled = cards_enabled
+        self.card_channels = tuple(card_channels)
+        # Durable audit sink, injected by the API layer (which owns Postgres).
+        # Called with the event and the finished TurnResult for every turn
+        # that produced a receipt. Fail-open by contract: an audit outage is
+        # logged, never allowed to break a settled money turn.
+        self.audit_sink = audit_sink
 
     # -- the door ---------------------------------------------------------
 
@@ -177,12 +156,37 @@ class Orchestrator:
         failure rather than as a chat reply the rail never sees.
         """
         try:
-            return await self._dispatch(event)
+            result = await self._dispatch(event)
         except LedgerUnavailable:
             if event.type == "inflow":
                 raise
             logger.error("ledger unavailable for %s; refusing the turn", event.user_id)
             return TurnResult(narration=UNAVAILABLE_LINE)
+        if event.type == "confirm" and event.provenance:
+            # Face ID provenance rides on the audit rows, never on the
+            # decision: the trail shows which factor settled the challenge.
+            result = self._tag_provenance(result, event.provenance)
+        await self._emit_audit(event, result)
+        return result
+
+    async def _emit_audit(self, event: Event, result: TurnResult) -> None:
+        """Persist what the turn did, via the injected sink.
+
+        Only turns with a receipt are emitted: a receipt is the fact that
+        money was attempted, moved, or refused, and it is what the durable
+        store must show later. The sink is fail-open — the receipt already
+        lives in the ledger, so an audit outage degrades the paper trail
+        without turning a settled turn into an error.
+        """
+        if self.audit_sink is None or result.receipt is None:
+            return
+        try:
+            await self.audit_sink(event, result)
+        except Exception:
+            logger.exception(
+                "audit sink failed; receipt %s kept in ledger only",
+                result.receipt.id,
+            )
 
     async def _dispatch(self, event: Event) -> TurnResult:
         ledger = await self.store.load(event.user_id)
@@ -196,14 +200,25 @@ class Orchestrator:
             return await self._handle_wallet_signature(ledger, event)
         return await self._handle_confirm(ledger, event)
 
-    async def handle_utterance(self, user_id: str, text: str) -> TurnResult:
+    async def handle_utterance(
+        self, user_id: str, text: str, *, channel: str = "", thread_id: str = ""
+    ) -> TurnResult:
         """Handle one thing the user said.
 
         The chat path calls this for a money turn, and for nothing else. A
         sentence is parsed into a structured action by code, judged by JEV, and
-        only then handed to Hands.
+        only then handed to Hands. ``channel``/``thread_id`` let an allowlisted
+        surface (iMessage) mint a Face ID card after the challenge is staged.
         """
-        return await self.handle(Event(type="utterance", user_id=user_id, text=text))
+        return await self.handle(
+            Event(
+                type="utterance",
+                user_id=user_id,
+                text=text,
+                channel=channel,
+                thread_id=thread_id,
+            )
+        )
 
     async def handle_inflow(
         self,
@@ -212,7 +227,8 @@ class Orchestrator:
         amount: Decimal,
         source_raw: str = "",
     ) -> TurnResult:
-        """Handle money arriving. Called by the rail webhook, never by chat.
+        """Handle money arriving. Called by the rail webhook; reachable from
+        chat only through the demo escape hatch (ALLOW_CHAT_INFLOW_SYNTH).
 
         ``payment_id`` is the rail's id for the payment and doubles as the
         idempotency key, so a webhook that is delivered twice splits once.
@@ -226,28 +242,6 @@ class Orchestrator:
                 source_raw=source_raw,
             )
         )
-
-    async def handle_confirm(
-        self, user_id: str, confirm_id: str, yes: bool
-    ) -> TurnResult:
-        """Settle a challenge the user tapped, by its Hands-issued id.
-
-        ``yes=False`` is a decline: the challenge is closed and nothing moves.
-        There is no other way in. A chat word never reaches this method, so
-        "yes" typed into a message is just a message.
-        """
-        if yes:
-            return await self.handle(
-                Event(type="confirm", user_id=user_id, confirm_id=confirm_id)
-            )
-        # A decline goes through the ledger too, so it needs the same typed
-        # refusal as the rest: without this a ledger outage answered a tap with a
-        # 500 (and leaked the exception text down the SSE stream).
-        try:
-            return await self._decline_challenge(user_id, confirm_id)
-        except LedgerUnavailable:
-            logger.error("ledger unavailable for %s; refusing the decline", user_id)
-            return TurnResult(narration=UNAVAILABLE_LINE)
 
     # -- inflow -----------------------------------------------------------
 
@@ -311,17 +305,57 @@ class Orchestrator:
     async def _handle_utterance(self, ledger: Ledger, event: Event) -> TurnResult:
         """Parse, decide, then act, ask, or stay quiet. Voice speaks last."""
         audit = AuditLog()
-        action = parse_transfer_utterance(event.text)
+        # NGN <-> crypto funding first: a crypto buy is an onramp, not a
+        # purchase-advice turn. The funding parser only claims sentences with
+        # a crypto/naira/top-up word, so grocery buys fall through below.
+        action = parse_funding_utterance(event.text)
         if action is not None and action.source != "user":
             # Structurally unreachable today, and it stays that way: anything not
             # built from the user's own words is not an action.
             action = None
+        if action is None:
+            # Funds-OUT is app-only: parse so it stages an envelope, never a rail.
+            action = parse_offramp_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
+            # Single-name sleeve transactions BEFORE generic transfer: the
+            # transfer parser claims any "buy ... <amount>" as purchase
+            # advice, which would shadow "buy 50 NVDAx" or "buy me some
+            # apple stock". The order parser only claims sentences with a
+            # ticker/company symbol, so grocery buys still fall through.
+            action = parse_order_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
+            action = parse_rebalance_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
+            action = parse_transfer_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
         if action is None:
             # The diversified stock sleeve. Single-name tickers parse to None
             # here (a later verb), so Judgment asks instead of investing.
             action = parse_invest_utterance(event.text)
             if action is not None and action.source != "user":
                 action = None
+        if action is None:
+            # Save-rule updates ("park 15% of this inflow"). Parsed last so
+            # the movement verbs above keep priority; the trigger words are
+            # tight enough that stash moves never land here.
+            action = parse_save_rule_utterance(event.text)
+            if action is not None and action.source != "user":
+                action = None
+        if action is None:
+            # An OTP typed as the next message settles a pending Paj challenge.
+            # The challenge (30-min TTL), not the chat word, is the authority.
+            otp = _extract_funding_otp(event.text)
+            if otp is not None:
+                pending = _open_paj_otp_challenge(ledger, self.clock())
+                if pending is not None:
+                    return await self._handle_funding_otp(ledger, event, pending, otp)
 
         state = build_state(
             ledger=ledger,
@@ -343,32 +377,70 @@ class Orchestrator:
         execution: Execution | None = None
         receipt: Receipt | None = None
         confirm_id = ""
+        card_action_id = ""
 
         if (
             decision.next_mode == "act"
             and decision.action_choice in ("allow", "allow_smaller")
-            and (action is None or action.type != "invest")
+            and (
+                action is None
+                or action.type
+                not in (
+                    "invest",
+                    "order",
+                    "rebalance",
+                    "onramp",
+                    "offramp",
+                    "set_allocation",
+                    "pause",
+                    "resume",
+                    "save_rule",
+                )
+            )
         ):
             outcome = await self._execute(ledger, state, decision, action)
             if outcome is not None:
                 receipt = outcome.receipt
-                audit.rows.extend(outcome.audit)
+                for row in outcome.audit:
+                    audit.record(row)
                 ledger = outcome.ledger
                 execution = self._execution_from(receipt)
 
         if execution is None and action is not None:
-            # Invest never executes from an utterance: the tap authorises the
-            # money and the wallet signature authorises the chain write. An
-            # "act" verdict stages the same challenge as "ask".
+            # Invest, orders, rebalance and save-rule changes never execute
+            # from an utterance: the tap authorises the money
+            # (orders/rebalance/save-rule are server-signed, so no wallet
+            # signature follows). An "act" verdict stages the same challenge
+            # as "ask".
             if decision.action_choice in (
                 "allow",
                 "allow_smaller",
             ) and (
                 decision.next_mode == "ask"
-                or (action.type == "invest" and decision.next_mode == "act")
+                or (
+                    action.type
+                    in (
+                        "invest",
+                        "order",
+                        "rebalance",
+                        "onramp",
+                        "offramp",
+                        "set_allocation",
+                        "pause",
+                        "resume",
+                        "save_rule",
+                    )
+                    and decision.next_mode == "act"
+                )
             ):
                 confirm_id = await self._create_challenge(ledger, decision, action)
                 decision = decision.model_copy(update={"confirm_id": confirm_id})
+                card_action_id = await self._maybe_mint_card(
+                    ledger,
+                    confirm_id,
+                    channel=event.channel,
+                    thread_id=event.thread_id,
+                )
             elif decision.action_choice in ("deny", "defer"):
                 # A refusal is a result. It gets a rejected receipt so the trail
                 # shows an order arrived and was turned down.
@@ -381,7 +453,8 @@ class Orchestrator:
                     at=self.clock(),
                 )
                 receipt = refusal.receipt
-                audit.rows.extend(refusal.audit)
+                for row in refusal.audit:
+                    audit.record(row)
                 ledger = refusal.ledger
 
         state = build_state(
@@ -399,6 +472,13 @@ class Orchestrator:
             )
 
         narration = await self._speak(state, utterance=event.text)
+        if card_action_id and narration:
+            # The live card is in the transcript; the chat fallback stays
+            # valid either way (the CONFIRM: line above is untouched).
+            narration = (
+                f"{narration} Approve with Face ID in Messages, "
+                f"or reply confirm {confirm_id}."
+            )
         return TurnResult(
             state=state,
             narration=narration,
@@ -406,164 +486,7 @@ class Orchestrator:
             receipt=receipt,
             confirm_id=confirm_id,
             audit=audit.rows,
-        )
-
-    # -- confirm ----------------------------------------------------------
-
-    async def _handle_confirm(self, ledger: Ledger, event: Event) -> TurnResult:
-        """Execute the exact action a confirm_id was issued for.
-
-        The challenge, not the sentence, is the authorisation: the amount, the
-        destination, the sleeve and the user come from what Hands stored when it
-        asked. Settle only if all match, one use, and a decline burns it.
-        """
-        audit = AuditLog()
-        now = self.clock()
-        challenge = ledger.challenges.get(event.confirm_id)
-
-        if challenge is None or not challenge.is_open(now):
-            reason = "NO_SUCH_CHALLENGE" if challenge is None else "CHALLENGE_EXPIRED"
-            rejected: Receipt = Receipt(
-                id=f"rcpt_rejected_{event.confirm_id or 'missing'}",
-                at=now,
-                status="rejected",
-                action="confirm",
-                currency=ledger.currency,
-                reasons=[reason],
-                detail="that confirmation does not match anything open",
-            )
-            ledger.remember_receipt(rejected)
-            await self.store.save(ledger)
-            state = build_state(
-                ledger=ledger,
-                policy=self.policy,
-                decision={
-                    "id": "",
-                    "next_mode": "ask",
-                    "action_choice": "deny",
-                    "reasons": [reason],
-                },
-                now=now,
-            )
-            return TurnResult(
-                state=state,
-                narration=await self._speak(state),
-                decision=state.decision,
-                receipt=rejected,
-                audit=audit.rows,
-            )
-
-        if (
-            challenge is not None
-            and challenge.is_open(now)
-            and challenge.user_id
-            and challenge.user_id != ledger.user_id
-        ):
-            challenge.status = "consumed"
-            ledger.challenges[challenge.id] = challenge
-
-        if challenge.action == "invest":
-            # The tap approves the money; the wallet signature (a separate
-            # event) approves the chain write. Stage 1 runs here and returns
-            # the transaction the wallet must sign.
-            return await self._handle_confirm_invest(ledger, event, challenge)
-
-        action = ProposedAction(
-            type=_action_type(challenge.action),
-            amount=challenge.amount,
-            counterparty=challenge.counterparty,
-            sleeve=challenge.sleeve,
-            source="user",
-        )
-        # The challenge already carries the user's confirmation, so the decision
-        # that authorises the movement is rebuilt from it. No second JEV call is
-        # made and no model is consulted.
-        decision = Decision(
-            id=challenge.decision_id,
-            at=now,
-            next_mode="act",
-            action_choice="allow",
-            suggested_amount=challenge.amount,
-            reasons=list(challenge.reasons),
-            confirm_id=challenge.id,
-        )
-        stored_destination = challenge.destination or challenge.counterparty or challenge.sleeve
-        action_destination = action.counterparty or action.sleeve
-        if challenge.user_id and challenge.user_id != ledger.user_id:
-            bound = False
-        else:
-            bound = (
-                money(action.amount or 0) == money(challenge.amount)
-                and action_destination == stored_destination
-                and money(action.amount or 0) > 0
-            )
-        if not bound:
-            challenge.status = "consumed"
-            ledger.challenges[challenge.id] = challenge
-            mismatched: Receipt = Receipt(
-                id=f"rcpt_rejected_{event.confirm_id or 'missing'}",
-                at=now,
-                status="rejected",
-                action="confirm",
-                currency=ledger.currency,
-                amount=challenge.amount,
-                counterparty=challenge.counterparty,
-                sleeve=challenge.sleeve,
-                reasons=["CHALLENGE_MISMATCH"],
-                detail="that confirmation does not match the stored challenge",
-            )
-            ledger.remember_receipt(mismatched)
-            await self.store.save(ledger)
-            state = build_state(
-                ledger=ledger,
-                policy=self.policy,
-                decision={
-                    "id": "",
-                    "next_mode": "ask",
-                    "action_choice": "deny",
-                    "reasons": ["CHALLENGE_MISMATCH"],
-                },
-                now=now,
-            )
-            return TurnResult(
-                state=state,
-                narration=await self._speak(state),
-                decision=state.decision,
-                receipt=mismatched,
-                audit=audit.rows,
-            )
-        challenge.status = "consumed"
-        ledger.challenges[challenge.id] = challenge
-
-        state = build_state(
-            ledger=ledger,
-            policy=self.policy,
-            proposed_action=action,
-            decision=decision.model_dump(mode="json"),
-            now=now,
-        )
-        outcome = await self._execute(ledger, state, decision, action)
-        receipt = outcome.receipt if outcome is not None else None
-        if outcome is not None:
-            audit.rows.extend(outcome.audit)
-            ledger = outcome.ledger
-
-        execution = self._execution_from(receipt)
-        state = build_state(
-            ledger=ledger,
-            policy=self.policy,
-            proposed_action=action,
-            decision=decision.model_dump(mode="json"),
-            execution=execution,
-            now=self.clock(),
-        )
-        return TurnResult(
-            state=state,
-            narration=await self._speak(state),
-            decision=state.decision,
-            receipt=receipt,
-            confirm_id=challenge.id,
-            audit=audit.rows,
+            card_action_id=card_action_id,
         )
 
     async def handle_wallet_signature(
@@ -594,7 +517,10 @@ class Orchestrator:
         client = get_go_client()
 
         async def list_strategies() -> dict[str, Any]:
-            return await client.list_investment_strategies(token, status="active")
+            loader = getattr(client, "list_investable_strategies", None)
+            if loader is None:
+                return await client.list_investment_strategies(token, status="active")
+            return await loader(token, status="active")
 
         async def get_owner() -> dict[str, Any]:
             return await client.get_investment_owner(token)
@@ -604,6 +530,18 @@ class Orchestrator:
             return await client.prepare_user_enroll(
                 token, payload, confirmation_token=tok
             )
+
+        async def read_stash() -> Decimal:
+            data = await client.get_balances(token)
+            raw = data.get("stash_balance") if isinstance(data, dict) else None
+            return Decimal(str(raw or "0"))
+
+        async def fund_call(payload: dict[str, Any]) -> dict[str, Any]:
+            tok = payload.pop("confirmation_token", None)
+            contribute = getattr(client, "contribute_to_investment", None)
+            if contribute is None:
+                raise RuntimeError("go host cannot fund an existing portfolio")
+            return await contribute(token, payload, confirmation_token=tok)
 
         async def complete_call(payload: dict[str, Any]) -> dict[str, Any]:
             tok = payload.pop("confirmation_token", None)
@@ -616,105 +554,9 @@ class Orchestrator:
             "get_owner": get_owner,
             "prepare_call": prepare_call,
             "complete_call": complete_call,
+            "fund_call": fund_call,
+            "read_stash": read_stash,
         }
-
-    async def _handle_confirm_invest(
-        self, ledger: Ledger, event: Event, challenge: Any
-    ) -> TurnResult:
-        """Settle an invest tap: run Glider stage 1 and return the sign card."""
-        from miriam_agent.hands.ledger import money as _money
-
-        audit = AuditLog()
-        now = self.clock()
-        challenge.status = "consumed"
-        ledger.challenges[challenge.id] = challenge
-
-        action = ProposedAction(
-            type="invest",
-            amount=challenge.amount,
-            counterparty=challenge.counterparty,
-            sleeve=challenge.sleeve,
-            source="user",
-        )
-        decision = Decision(
-            id=challenge.decision_id,
-            at=now,
-            next_mode="act",
-            action_choice="allow",
-            suggested_amount=challenge.amount,
-            reasons=list(challenge.reasons),
-            confirm_id=challenge.id,
-        )
-        calls = self._invest_calls()
-        if calls is None:
-            receipt = Receipt(
-                id=f"rcpt_rejected_{challenge.id}",
-                at=now,
-                status="rejected",
-                action="invest_prepare",
-                currency=ledger.currency,
-                amount=challenge.amount,
-                counterparty=challenge.counterparty,
-                sleeve=challenge.sleeve,
-                decision_id=challenge.decision_id,
-                reasons=["GLIDER_UNREACHABLE"],
-                detail="no Go host token on this path; nothing moved",
-            )
-            ledger.remember_receipt(receipt)
-            await self.store.save(ledger)
-            state = build_state(
-                ledger=ledger,
-                policy=self.policy,
-                proposed_action=action,
-                decision=decision.model_dump(mode="json"),
-                now=now,
-            )
-            return TurnResult(
-                state=state,
-                narration=await self._speak(state),
-                decision=state.decision,
-                receipt=receipt,
-                confirm_id=challenge.id,
-                audit=audit.rows,
-            )
-
-        owner_address = (event.wallet_address or "").strip() or None
-        receipt, card, ledger = await prepare_allocate(
-            store=self.store,
-            ledger=ledger,
-            user_id=event.user_id,
-            token=self.go_token or "",
-            amount=_money(challenge.amount),
-            source="savings" if challenge.sleeve == INVEST_SLEEVE else challenge.sleeve,
-            decision_id=challenge.decision_id,
-            owner_address=owner_address,
-            list_strategies=calls["list_strategies"],
-            get_owner=calls["get_owner"],
-            prepare_call=calls["prepare_call"],
-            at=now,
-        )
-        # prepare_allocate only saves on paths that change provider state, so
-        # persist here as well: the consumed challenge and the rejected receipt
-        # must survive the request even when nothing moved.
-        await self.store.save(ledger)
-        execution = self._execution_from(receipt)
-        state = build_state(
-            ledger=ledger,
-            policy=self.policy,
-            proposed_action=action,
-            decision=decision.model_dump(mode="json"),
-            execution=execution,
-            now=self.clock(),
-        )
-        return TurnResult(
-            state=state,
-            narration=await self._speak(state),
-            decision=state.decision,
-            receipt=receipt,
-            confirm_id=challenge.id,
-            card=card,
-            audit=audit.rows,
-        )
 
     async def _handle_wallet_signature(
         self, ledger: Ledger, event: Event
@@ -783,8 +625,6 @@ class Orchestrator:
             audit=audit.rows,
         )
 
-    # -- shared steps -----------------------------------------------------
-
     async def _decline_challenge(self, user_id: str, confirm_id: str) -> TurnResult:
         """Close a challenge the user said no to. Nothing moves, ever."""
         ledger = await self.store.load(user_id) or new_ledger(user_id)
@@ -810,6 +650,14 @@ class Orchestrator:
         )
         ledger.remember_receipt(receipt)
         await self.store.save(ledger)
+        if challenge is not None and (challenge.card_action_id or "").strip():
+            # The chat tap won: the live card must show the same ending.
+            challenge.card_state = "rejected"
+            await self._mark_card_state(
+                challenge.card_action_id.strip(),
+                "rejected",
+                "declined; nothing moved",
+            )
         state = build_state(
             ledger=ledger,
             policy=self.policy,
@@ -919,6 +767,36 @@ class Orchestrator:
         counterparty = action.counterparty
         sleeve = action.sleeve
         destination = counterparty or sleeve
+        meta: dict[str, str] = {}
+        if action.type == "invest":
+            meta = {"strategy": "rail-stock-sleeve"}
+        elif action.type == "order":
+            meta = {
+                "strategy": "rail-stock-sleeve",
+                "side": action.side or "buy",
+                "symbol": counterparty,
+            }
+        elif action.type in ("rebalance", "pause", "resume"):
+            meta = {"strategy": "rail-stock-sleeve"}
+        elif action.type == "onramp":
+            meta = {
+                "side": "onramp",
+                "symbol": counterparty or "USDC",
+                "provider": "paj",
+                "currency": "NGN",
+            }
+        elif action.type == "offramp":
+            meta = {
+                "side": "offramp",
+                "currency": "NGN",
+                "provider": "paj",
+            }
+        elif action.type == "save_rule":
+            # The binding is re-derived from the user's own words: a
+            # percentage ("park 15%") or a flat amount per inflow.
+            binding = save_rule_binding(action.raw)
+            if binding is not None:
+                meta = {binding[0]: binding[1]}
         challenge = Challenge(
             id=f"confirm_{decision.id[-8:]}",
             user_id=ledger.user_id,
@@ -931,7 +809,7 @@ class Orchestrator:
             reasons=list(decision.reasons),
             created_at=now,
             expires_at=now + timedelta(minutes=CHALLENGE_TTL_MINUTES),
-            meta={"strategy": "rail-stock-sleeve"} if action.type == "invest" else {},
+            meta=meta,
         )
         ledger.challenges[challenge.id] = challenge
         await self.store.save(ledger)
@@ -974,13 +852,8 @@ class Orchestrator:
         return message.text if message is not None else None
 
 
-def _action_type(value: str) -> Any:
-    """Narrow a stored challenge action back to the ProposedAction vocabulary."""
-    return (
-        value
-        if value in ("transfer", "purchase", "lock", "unlock", "invest")
-        else "none"
-    )
+# Card keys that may ride on STATE.execution.funding. A whitelist, so a card
+# can never smuggle a figure Voice did not earn from the Go result.
 
 
 # ---------------------------------------------------------------------------
@@ -1013,6 +886,37 @@ _MOVE_WORDS = frozenset(
 # never routed here for a phrase the parser would then ignore. Single-name
 # tickers are not here: they are a later verb, not the sleeve.
 _INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
+
+# Words that ask for a single-name sleeve transaction or a sleeve rebalance.
+# Deliberately the same vocabulary hands/orders.py understands, so a turn is
+# never routed here for a phrase the parser would then ignore. A bare ticker
+# alone is not enough: the parser needs a side, an amount, and a symbol.
+_ORDER_WORDS = frozenset({"buy", "sell", "long", "short", "trim", "dump"})
+_REBALANCE_WORDS = frozenset({"rebalance", "re-balance", "rebal"})
+_SLEEVE_NOUNS = frozenset({"sleeve", "stocks", "stock", "portfolio"})
+
+# NGN <-> crypto funding. "buy"/"sell" plus a crypto/naira word routes to the
+# orchestrator when an amount is present, mirroring hands/funding.py.
+_FUND_WORDS = frozenset({"buy", "sell"})
+_CRYPTO_WORDS = frozenset(
+    {
+        "bitcoin",
+        "btc",
+        "usdt",
+        "usdc",
+        "crypto",
+        "naira",
+        "ngn",
+        "top up",
+        "top-up",
+        "fund",
+        "add money",
+        "onramp",
+        "offramp",
+        "cash out",
+        "cashout",
+    }
+)
 
 # Frames that ask whether something is affordable. A judgement question, not a
 # statement of fact, so it goes to Judgment rather than to the answer path.
@@ -1109,7 +1013,24 @@ def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
         return "orchestrator"
     if has_amount and words & _INVEST_WORDS:
         return "orchestrator"
+    # A buy/sell of a ticker, or a sleeve rebalance, is a money turn. Both need
+    # an amount (or the sleeve word) to be parseable; a bare ticker with no verb
+    # is a question and goes to the agent.
+    if has_amount and ((words & _ORDER_WORDS) and words & _SLEEVE_NOUNS):
+        return "orchestrator"
+    if words & _REBALANCE_WORDS and words & _SLEEVE_NOUNS:
+        return "orchestrator"
     if "rent" in words and has_amount and words & {"reserve", "protect", "cover"}:
+        return "orchestrator"
+    # NGN <-> crypto funding: buy/sell + crypto/naira word + amount.
+    if (
+        has_amount
+        and words & _FUND_WORDS
+        and (words & _CRYPTO_WORDS or "top up" in lowered or "add money" in lowered)
+    ):
+        return "orchestrator"
+    # A bare OTP (4-8 digits) answers a pending Paj challenge.
+    if re.fullmatch(r"\s*\d{4,8}\s*", text or ""):
         return "orchestrator"
     return "agent"
 

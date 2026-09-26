@@ -333,9 +333,7 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
         judgment.costly.noul >= POLICY.tool_costly_confirm
         or judgment.irreversible.noul >= POLICY.tool_risk_confirm
     )
-    confirmed = (
-        judgment.user_confirmed_this_action.noul >= POLICY.user_confirmed_allow
-    )
+    confirmed = judgment.user_confirmed_this_action.noul >= POLICY.user_confirmed_allow
 
     # Relevance first. A tool the user never asked for is *rejected*, not
     # blocked: the model raises `exceeds_user_authority` for plainly
@@ -618,9 +616,7 @@ def build_ingress_state(
 # ---------------------------------------------------------------------------
 
 
-def _log_ingress_decision(
-    judgment: IngressJudgment, decision: RoutingDecision
-) -> None:
+def _log_ingress_decision(judgment: IngressJudgment, decision: RoutingDecision) -> None:
     logger.info(
         "typesafe ingress decision",
         extra={
@@ -665,9 +661,7 @@ def _log_tool_decision(
     )
 
 
-def _log_egress_decision(
-    judgment: EgressJudgment, decision: EgressDecision
-) -> None:
+def _log_egress_decision(judgment: EgressJudgment, decision: EgressDecision) -> None:
     logger.info(
         "typesafe egress decision",
         extra={

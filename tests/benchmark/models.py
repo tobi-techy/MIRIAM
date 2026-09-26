@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class ScenarioCategory(str, Enum):
+class ScenarioCategory(StrEnum):
     """Categories of benchmark scenarios per RAI-115."""
-    
+
     MONEY_AUDIT_COACHING = "money_audit_coaching"
     CASH_FLOW_ANALYSIS = "cash_flow_analysis"
     INCOME_VOLATILITY = "income_volatility"
@@ -31,17 +31,17 @@ class ScenarioCategory(str, Enum):
     MULTI_TURN_WORKFLOWS = "multi_turn_workflows"
 
 
-class ConfirmationRequired(str, Enum):
+class ConfirmationRequired(StrEnum):
     """Whether user confirmation is required for the expected outcome."""
-    
+
     REQUIRED = "required"
     NOT_REQUIRED = "not_required"
     CONDITIONAL = "conditional"
 
 
-class ToolType(str, Enum):
+class ToolType(StrEnum):
     """Types of tools that can be used."""
-    
+
     READ_ONLY = "read_only"
     MUTATION = "mutation"
     ANALYSIS = "analysis"
@@ -52,7 +52,7 @@ class ToolType(str, Enum):
 @dataclass
 class UserProfile:
     """User profile/context for the scenario."""
-    
+
     user_id: str = "benchmark_user"
     name: str = "Test User"
     location: str = "US"
@@ -65,12 +65,17 @@ class UserProfile:
 @dataclass
 class FinancialState:
     """Current financial state or explicit missing data."""
-    
-    balances: dict[str, float] = field(default_factory=dict)  # wallet_name -> amount
-    income: dict[str, Any] = field(default_factory=dict)  # source -> {amount, frequency, volatility}
-    expenses: dict[str, float] = field(default_factory=dict)  # category -> amount
-    debts: list[dict[str, Any]] = field(default_factory=list)  # [{name, amount, rate, min_payment}]
-    investments: list[dict[str, Any]] = field(default_factory=list)  # [{symbol, amount, type}]
+
+    # wallet_name -> amount
+    balances: dict[str, float] = field(default_factory=dict)
+    # source -> {amount, frequency, volatility}
+    income: dict[str, Any] = field(default_factory=dict)
+    # category -> amount
+    expenses: dict[str, float] = field(default_factory=dict)
+    # [{name, amount, rate, min_payment}]
+    debts: list[dict[str, Any]] = field(default_factory=list)
+    # [{symbol, amount, type}]
+    investments: list[dict[str, Any]] = field(default_factory=list)
     obligations: list[dict[str, Any]] = field(default_factory=list)  # recurring bills
     missing_data: list[str] = field(default_factory=list)  # explicitly missing fields
     last_statement_date: str | None = None
@@ -79,7 +84,7 @@ class FinancialState:
 @dataclass
 class ConversationTurn:
     """A single turn in conversation history."""
-    
+
     role: str  # "user" or "assistant"
     content: str
     intent: str | None = None
@@ -90,7 +95,7 @@ class ConversationTurn:
 @dataclass
 class ExpectedToolCall:
     """An expected tool call with its arguments."""
-    
+
     tool_name: str
     arguments: dict[str, Any]
     tool_type: ToolType = ToolType.READ_ONLY
@@ -101,7 +106,7 @@ class ExpectedToolCall:
 @dataclass
 class EvaluationRubric:
     """Scoring rubric for the scenario."""
-    
+
     # Core dimensions (each scored 0-100)
     intent_accuracy: int = 20  # Correct intent classification
     reasoning_quality: int = 20  # Logical reasoning path
@@ -110,18 +115,21 @@ class EvaluationRubric:
     safety_compliance: int = 10  # Follows safety policies
     outcome_correctness: int = 10  # Final outcome matches expectation
     communication_quality: int = 10  # Clear, helpful response
-    
+
     # Critical failure tags
     critical_failures: list[str] = field(default_factory=list)
-    
+
     def total_weight(self) -> int:
         return (
-            self.intent_accuracy + self.reasoning_quality + 
-            self.tool_selection + self.tool_arguments + 
-            self.safety_compliance + self.outcome_correctness + 
-            self.communication_quality
+            self.intent_accuracy
+            + self.reasoning_quality
+            + self.tool_selection
+            + self.tool_arguments
+            + self.safety_compliance
+            + self.outcome_correctness
+            + self.communication_quality
         )
-    
+
     def calculate_score(self, dimension_scores: dict[str, float]) -> float:
         """Calculate weighted score from dimension scores (0-100 each)."""
         weights = {
@@ -137,8 +145,7 @@ class EvaluationRubric:
         if total == 0:
             return 0.0
         weighted_sum = sum(
-            dimension_scores.get(dim, 0) * weight 
-            for dim, weight in weights.items()
+            dimension_scores.get(dim, 0) * weight for dim, weight in weights.items()
         )
         return weighted_sum / total
 
@@ -146,7 +153,7 @@ class EvaluationRubric:
 @dataclass
 class ForbiddenBehavior:
     """Behavior that must NOT occur in the response."""
-    
+
     description: str
     detection_pattern: str  # regex or keyword to detect
     severity: str = "critical"  # "critical" or "warning"
@@ -155,34 +162,35 @@ class ForbiddenBehavior:
 @dataclass
 class BenchmarkScenario:
     """Complete benchmark scenario definition."""
-    
+
     id: str
     name: str
     category: ScenarioCategory
     description: str
-    
+
     # Scenario setup
     user_profile: UserProfile
     financial_state: FinancialState
     conversation_history: list[ConversationTurn] = field(default_factory=list)
-    
+
     # Test input
     user_request: str = ""
-    
+
     # Expected outputs
     expected_intent: str = ""
-    expected_reasoning_path: list[str] = field(default_factory=list)  # Step-by-step reasoning
+    # Step-by-step reasoning
+    expected_reasoning_path: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
     required_tool_calls: list[ExpectedToolCall] = field(default_factory=list)
     confirmation_required: ConfirmationRequired = ConfirmationRequired.NOT_REQUIRED
     expected_final_outcome: str = ""
-    
+
     # Constraints
     forbidden_behaviors: list[ForbiddenBehavior] = field(default_factory=list)
-    
+
     # Evaluation
     rubric: EvaluationRubric = field(default_factory=EvaluationRubric)
-    
+
     # Metadata
     tags: list[str] = field(default_factory=list)
     difficulty: str = "medium"  # easy, medium, hard
@@ -194,12 +202,12 @@ class BenchmarkScenario:
 @dataclass
 class ScenarioResult:
     """Result of running a single scenario."""
-    
+
     scenario_id: str
     scenario_name: str
     category: ScenarioCategory
     timestamp: str
-    
+
     # Actual outputs
     actual_response: str = ""
     actual_intent: str = ""
@@ -208,7 +216,7 @@ class ScenarioResult:
     execution_result: dict[str, Any] = field(default_factory=dict)
     safety_decision: str = ""
     memory_retrieval: list[dict[str, Any]] = field(default_factory=list)
-    
+
     # Scoring
     dimension_scores: dict[str, float] = field(default_factory=dict)
     total_score: float = 0.0
@@ -216,7 +224,7 @@ class ScenarioResult:
     failure_reason: str = ""
     critical_failures: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    
+
     # Performance
     execution_time_ms: int = 0
     tool_rounds: int = 0
@@ -225,7 +233,7 @@ class ScenarioResult:
 @dataclass
 class BenchmarkRun:
     """Complete benchmark run metadata."""
-    
+
     run_id: str
     timestamp: str
     agent_version: str

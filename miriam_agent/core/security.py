@@ -55,7 +55,6 @@ def create_fernet() -> Fernet:
 
 def create_key_from_bytes(raw: bytes) -> str:
     """Produce a urlsafe-base64 key for Fernet from raw bytes."""
-    import base64
 
     return base64.urlsafe_b64encode(raw).decode()
 

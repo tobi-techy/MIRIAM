@@ -358,3 +358,34 @@ def test_percent_does_not_clash_with_plain_integer():
     # never matches a 0.6 ground: only an explicit % or 0.6 form does.
     assert "R10" in _lint("60 of the buffer", present=True, grounded="0.6")
     assert _lint("60% of the buffer", present=True, grounded="0.6") == []
+
+
+# -----------------------------------------------------------------------
+# Naija voice: slang is welcome, empty praise is banned in every register
+# -----------------------------------------------------------------------
+
+
+def test_naija_slang_passes_lint():
+    assert _lint("No wahala - we go sort am together. What hits your account in a normal month?") == []
+    assert _lint("E don set - your buffer is locked and the month is covered.") == []
+    assert _lint("How far - salary don land?") == []
+    assert _lint("Ah, that one pain me. Rent is covered, so the pressure is the small-small spending. Wetin dey chop am pass?") == []
+
+
+def test_pidgin_generic_praise_still_flagged():
+    # R3 holds across registers: "nice one" / "well done" are the pidgin
+    # versions of "great question" - seasoning is fine, empty praise is not.
+    assert "R3" in _lint("Nice one! What happens first when it runs out?")
+    assert "R3" in _lint("Well done o. So the month runs out before the money does?")
+
+
+def test_prompts_carry_naija_voice_guidance():
+    from miriam_agent.agents.system_prompt import BASE_PROMPT
+    from miriam_agent.onboarding.driver import CONDUCTOR_SYSTEM_PROMPT
+    from miriam_agent.voice.prompt import VOICE_LAYER_PROMPT
+
+    assert "no wahala" in CONDUCTOR_SYSTEM_PROMPT
+    assert "mirror their register" in CONDUCTOR_SYSTEM_PROMPT.lower()
+    assert "no wahala" in BASE_PROMPT
+    assert "naija" in BASE_PROMPT.lower()
+    assert "no wahala" in VOICE_LAYER_PROMPT
