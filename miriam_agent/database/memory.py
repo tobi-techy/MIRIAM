@@ -24,6 +24,24 @@ from miriam_agent.database.models import (
 
 logger = logging.getLogger(__name__)
 
+# Go's agent token often has no username. Every such user used to be stored as
+# "unknown", so the second signup hit users_username_key and the chat 500'd.
+_SHARED_USERNAMES = frozenset({"", "unknown", "user", "none", "null"})
+
+
+def mirror_username(user_id: str, username: str | None) -> str:
+    raw = (username or "").strip()
+    if raw.casefold() in _SHARED_USERNAMES:
+        return f"u-{user_id}"[:80]
+    return raw[:80]
+
+
+def mirror_email(user_id: str, email: str | None) -> str:
+    raw = (email or "").strip()
+    if raw:
+        return raw[:254]
+    return f"{user_id}@users.miriam.invalid"
+
 
 class MemoryStore:
     """Memory store for handling conversations, memories, and user interactions."""
@@ -88,11 +106,14 @@ class MemoryStore:
             existing = await session.get(User, user_id)
             if existing is not None:
                 return
+            username = mirror_username(user_id, getattr(user, "username", None))
+            email = mirror_email(user_id, getattr(user, "email", None))
+            full_name = getattr(user, "full_name", None) or user_id
             row = User(
                 id=user_id,
-                username=getattr(user, "username", "unknown") or "unknown",
-                email=getattr(user, "email", "") or "",
-                full_name=getattr(user, "full_name", user_id) or user_id,
+                username=username,
+                email=email,
+                full_name=full_name,
             )
             session.add(row)
             try:
@@ -101,11 +122,30 @@ class MemoryStore:
                 # Lost a race with another request creating the same user,
                 # or a conflicting unique username/email row. Roll back and
                 # re-check: if our id row now exists the account is usable.
+                # A shared username like "unknown" is retried once as u-<id>.
                 await session.rollback()
                 existing = await session.get(User, user_id)
                 if existing is not None:
                     return
-                raise
+                unique_name = f"u-{user_id}"[:80]
+                if username == unique_name:
+                    raise
+                session.add(
+                    User(
+                        id=user_id,
+                        username=unique_name,
+                        email=email,
+                        full_name=full_name,
+                    )
+                )
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    existing = await session.get(User, user_id)
+                    if existing is not None:
+                        return
+                    raise
 
     async def store_interaction(
         self,
