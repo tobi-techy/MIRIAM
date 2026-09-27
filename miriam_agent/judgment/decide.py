@@ -2,8 +2,9 @@
 
 The flow for one turn:
 
-1. ask JEV the seven questions about STATE (:mod:`~miriam_agent.judgment.jev_client`),
-2. run the hard overrides in code (:mod:`~miriam_agent.judgment.rules`),
+1. ask JEV the two semantic questions about STATE
+   (:mod:`~miriam_agent.judgment.jev_client`),
+2. run the deterministic money rules in code (:mod:`~miriam_agent.judgment.rules`),
 3. return a :class:`~miriam_agent.judgment.schema.Decision`.
 
 Nothing here writes a balance, calls a rail, or produces user-facing prose. The
@@ -123,9 +124,9 @@ async def decide(
         inflow_conf=round(judgment.inflow_class.confidence, 3) if judgment else 0.0,
         intent_type=_intent_type(judgment.intent_type.choice if judgment else ""),
         intent_conf=round(judgment.intent_type.confidence, 3) if judgment else 0.0,
-        affordability=round(judgment.affordability.score, 3) if judgment else 0.0,
-        policy_violation=bool(judgment and judgment.policy_violation.noul >= 0.6),
-        reversibility=bool(judgment and judgment.reversibility.noul >= 0.6),
+        affordability=outcome.affordability,
+        policy_violation=outcome.policy_violation,
+        reversibility=outcome.reversibility,
         next_mode=outcome.next_mode,
         action_choice=outcome.action_choice,
         suggested_amount=outcome.suggested_amount,

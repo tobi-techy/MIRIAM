@@ -3,7 +3,8 @@
 The four tests the design names for Judgment are here by name:
 
 * "send 200k to Femi" over the limit is an ask, never an act,
-* "can I buy this phone" is advice with an affordability score and no transfer,
+* "can I buy this phone" is advice with a deterministic affordability read and
+  no transfer,
 * an inflow with no utterance is classified and the split path stays quiet,
 * a flaky JEV fails closed, which is an ask or a no-op and never an act.
 
@@ -69,7 +70,8 @@ async def test_the_95k_phone_is_advice_with_an_affordability_score():
     )
 
     assert decision.intent_type == "advice"
-    assert decision.affordability == 0.21
+    # 64,000 free after rent / 95,000 requested, rounded to three places.
+    assert decision.affordability == 0.674
     assert decision.action_choice == "none"
     assert "ADVICE_ONLY" in decision.reasons
 
@@ -236,22 +238,24 @@ async def test_an_incomplete_state_is_an_ask():
     assert Reason.INSUFFICIENT_STATE.value in decision.reasons
 
 
-async def test_a_rule_never_loosens_what_jev_refused():
-    ledger = ledger_with(spendable=500000)
-    state, _action = _state_for(ledger, "send 1.5k to Ada")
+async def test_a_model_answer_cannot_loosen_a_deterministic_policy_denial():
+    ledger = ledger_with(spendable=184000, rent_required=120000, due_in_days=9)
+    state, _action = _state_for(ledger, "send 95k to Ada")
 
     decision = await decide(
         state=state,
         ledger=ledger,
         policy=POLICY,
-        utterance="send 1.5k to Ada",
-        judge=judge_of(jev(intent="order", mode="ask", action="deny")),
+        utterance="send 95k to Ada",
+        judge=judge_of(jev(intent="order", mode="act", action="allow")),
     )
+
+    assert decision.next_mode == "ask"
     assert decision.action_choice == "deny"
-    assert decision.next_mode == "ask"
+    assert Reason.RENT_SHORT.value in decision.reasons
 
 
-async def test_a_concrete_instruction_is_never_dropped_in_silence():
+async def test_a_non_order_turn_with_a_parsed_action_asks_instead_of_executing():
     ledger = ledger_with(spendable=500000)
     state, _action = _state_for(ledger, "send 1.5k to Ada")
 
@@ -260,9 +264,11 @@ async def test_a_concrete_instruction_is_never_dropped_in_silence():
         ledger=ledger,
         policy=POLICY,
         utterance="send 1.5k to Ada",
-        judge=judge_of(jev(intent="order", mode="stay_quiet", action="none")),
+        judge=judge_of(jev(intent="status")),
     )
+
     assert decision.next_mode == "ask"
+    assert decision.action_choice == "none"
     assert Reason.NEEDS_AN_ANSWER.value in decision.reasons
 
 

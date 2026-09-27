@@ -62,7 +62,7 @@ from miriam_agent.integrations.supermemory_client import (
     display_name_for,
     person_entity_context,
 )
-from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
+from miriam_agent.judgment.gates import safe_ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
 from miriam_agent.orchestrator import (
@@ -500,34 +500,9 @@ async def _agent_inputs(
     }
 
 
-async def _ingress_decision(
-    *,
-    user_id: str,
-    message: str,
-    registry: Any,
-    history: list,
-    user_context: Any,
-    **_: Any,
-) -> Any:
-    """TypeSafe ingress gate, failing open.
-
-    A judgment-layer bug must never 500 a chat turn; network errors are
-    already handled (fail-closed) inside ingress_gate, so this only catches
-    unexpected code paths.
-    """
-    try:
-        return await ingress_gate(
-            build_ingress_state(
-                user_id=user_id,
-                message=message,
-                history=history,
-                user_context=user_context,
-                registry=registry,
-            )
-        )
-    except Exception:
-        logger.exception("ingress gate failed; failing open to generator")
-        return None
+async def _ingress_decision(**kwargs: Any) -> Any:
+    """Compatibility seam for the API tests and both chat entry points."""
+    return await safe_ingress_gate(**kwargs)
 
 
 @router.post("/chat")

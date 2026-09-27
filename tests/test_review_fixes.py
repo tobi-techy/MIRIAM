@@ -113,7 +113,7 @@ def test_top_up_unknown_coin_rejected():
 # -- blocker 6: judgment fails closed on unknown labels ----------------------
 
 
-def test_unknown_jev_action_defers_on_funding():
+def test_funding_is_staged_for_a_tap_not_capped_by_spendable():
     from miriam_agent.hands.limits import Policy
     from miriam_agent.hands.state import ProposedAction, build_state
     from miriam_agent.judgment.rules import apply_rules
@@ -136,8 +136,8 @@ def test_unknown_jev_action_defers_on_funding():
         policy=Policy(),
         cap=Decimal("2000"),
     )
-    assert outcome.action_choice == "defer"
-    assert outcome.action_choice != "allow"
+    assert outcome.action_choice == "allow"
+    assert outcome.next_mode == "ask"
 
 
 # -- plain-English amounts ----------------------------------------------------

@@ -41,12 +41,17 @@ async def evaluate(
     client: AsyncTypeSafeClient | None = None,
 ) -> SystemOneResponse:
     """Evaluate ``state`` against ``catalog`` and return the typed response."""
-    client = client or get_async_client()
-    payload = (
-        state.model_dump(exclude_none=True) if isinstance(state, BaseModel) else state
-    )
     start = time.perf_counter()
     try:
+        # Client construction is part of the request boundary: an invalid or
+        # unconfigured client must become the same typed unavailability the
+        # gates already know how to handle, not an uncaught SDK error.
+        client = client or get_async_client()
+        payload = (
+            state.model_dump(exclude_none=True)
+            if isinstance(state, BaseModel)
+            else state
+        )
         response = await client.system_one(
             state=payload,
             questions=catalog.questions,

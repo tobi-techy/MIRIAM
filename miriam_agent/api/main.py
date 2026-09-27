@@ -44,6 +44,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    try:
+        from miriam_agent.judgment.client import close_async_client
+
+        await close_async_client()
+    except Exception:
+        logger.exception("TypeSafe client shutdown failed")
     logger.info("Miriam Financial Agent API shutting down")
 
 

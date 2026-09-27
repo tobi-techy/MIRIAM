@@ -48,11 +48,11 @@ from miriam_agent.judgment.gates import (
     EgressDecision,
     ToolBranch,
     ToolDecision,
-    build_state,
     egress_gate,
     tool_gate,
 )
 from miriam_agent.judgment.schemas import ProposedTool
+from miriam_agent.judgment.state import build_state
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
 from miriam_agent.safety.policy import SafetyPolicy
@@ -178,6 +178,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     draft=response.content,
                     llm_messages=llm_messages,
                     tool_results=self._collect_tool_results(llm_extra),
@@ -300,6 +302,10 @@ class Agent:
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
         llm_extra: list[ChatMessage] = []
+        # Egress is semantic and must see the completed reply. When TypeSafe is
+        # enabled, hold the final text until the gate passes instead of
+        # emitting tokens the gate can no longer retract.
+        buffer_egress = typesafe_enabled()
 
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages) + llm_extra
@@ -314,14 +320,31 @@ class Agent:
             ):
                 if event["type"] == "token":
                     collected.append(event["content"])
-                    yield {"type": "token", "content": event["content"]}
+                    if not buffer_egress:
+                        yield {"type": "token", "content": event["content"]}
                 elif event["type"] == "tool_call":
                     tc = event["tool_call"]
                     yield {"type": "tool_call", "tool_call": tc}
                     stream_tool_calls.append(tc)
 
             if not stream_tool_calls:
-                yield {"type": "done", "content": "".join(collected)}
+                draft = "".join(collected)
+                if buffer_egress:
+                    reply = await self._apply_egress(
+                        user_id=user_id,
+                        message=message,
+                        history=history,
+                        user_context=user_context,
+                        memory_facts=memory_facts,
+                        financial_plan=financial_plan,
+                        draft=draft,
+                        llm_messages=llm_messages,
+                        tool_results=self._collect_tool_results(llm_extra),
+                    )
+                    yield {"type": "token", "content": reply}
+                    yield {"type": "done", "content": reply}
+                else:
+                    yield {"type": "done", "content": draft}
                 return
 
             # Record the assistant's tool_calls so the next round is a clean
@@ -456,6 +479,8 @@ class Agent:
         """Judge one proposed tool call before anything runs."""
         if not typesafe_enabled():
             return ToolDecision(branch=ToolBranch.ALLOW, degraded=True)
+        tool = self.registry.get(name)
+        args_schema = getattr(tool, "args_schema", {}) if tool is not None else {}
         return await tool_gate(
             build_state(
                 user_id=user_id,
@@ -463,7 +488,11 @@ class Agent:
                 history=history,
                 user_context=user_context,
                 registry=self.registry,
-                proposed_tool=ProposedTool(name=name, args=args),
+                proposed_tool=ProposedTool(
+                    name=name,
+                    args=args,
+                    args_schema=args_schema,
+                ),
             )
         )
 
@@ -477,6 +506,8 @@ class Agent:
         draft: str,
         llm_messages: list[ChatMessage],
         tool_results: list[dict[str, Any]],
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
     ) -> str:
         """Run the egress gate on a draft and return the reply to send."""
         if not typesafe_enabled():
@@ -492,6 +523,8 @@ class Agent:
                     registry=self.registry,
                     draft_reply=text,
                     tool_results=tool_results,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                 )
             )
 
@@ -520,11 +553,17 @@ class Agent:
     @staticmethod
     def _collect_tool_results(llm_extra: list[ChatMessage]) -> list[dict[str, Any]]:
         """Tool results from this turn, for the egress grounding check."""
-        return [
-            {"name": m.name or "tool", "result": m.content}
-            for m in llm_extra
-            if m.role == "tool"
-        ]
+        collected: list[dict[str, Any]] = []
+        for message in llm_extra:
+            if message.role != "tool":
+                continue
+            raw = message.content or ""
+            try:
+                result: Any = json.loads(raw)
+            except (TypeError, ValueError):
+                result = raw
+            collected.append({"name": message.name or "tool", "result": result})
+        return collected
 
     async def _safe_execute(
         self,
