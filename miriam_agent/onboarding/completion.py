@@ -3,43 +3,29 @@ from __future__ import annotations
 from typing import Any
 
 def automated_completion_text(state: Any) -> str:
-    """Receipt after consent_yes: real amounts first, vibe labels never."""
+    """Receipt after consent_yes: plain sentences, and no line for a fact she never asked."""
     money_plan = getattr(state, "money_plan", None) or {}
     if money_plan:
-        from miriam_agent.money.formatting import format_amount as _fmt
-        cur = str(money_plan.get("currency") or "NGN")
+        from miriam_agent.onboarding.money_bridge import plain_month_lines
+
         cashflow = money_plan.get("cashflow") or {}
-        def _amt(v: Any) -> str:
-            try:
-                return str(_fmt(v, cur))
-            except Exception:
-                return f"{cur} {v}"
-        body = "Locked in - e don set. Your month now runs like this:\n"
-        for label, key in (("Fixed costs", "fixed"), ("Savings (buffer)", "savings"), ("Debt attack", "debt"), ("Guilt-free", "guilt_free")):
-            body += f"\u2022 {label}: {_amt(cashflow.get(key, 0))}\n"
-        try:
-            invest_amount = float(cashflow.get("investments") or 0)
-        except (TypeError, ValueError):
-            invest_amount = 0
         learned = getattr(state, "learned", None) or {}
         costs_known = bool(str(learned.get("fixed") or "").strip())
-        if not costs_known and float(cashflow.get("fixed") or 0) == 0:
-            body += (
-                "\nI still don't have what must go out each month, so this split "
-                "is a placeholder and nothing is invested.\n"
+        try:
+            fixed_amount = float(cashflow.get("fixed") or 0)
+        except (TypeError, ValueError):
+            fixed_amount = 0
+        lines = ["Locked in.", ""]
+        lines.extend(plain_month_lines(money_plan))
+        if not costs_known and fixed_amount == 0:
+            lines.append(
+                "I still do not know what has to go out each month, so this is a "
+                "placeholder and nothing is invested."
             )
-        elif invest_amount > 0:
-            body += (
-                "\nThe invest slice buys the Rail Stock Sleeve: "
-                "tokenized Apple, Nvidia, and Tesla.\n"
-            )
-        else:
-            body += (
-                "\nNothing goes to stocks yet. The Rail Stock Sleeve waits until "
-                "the month leaves an invest slice.\n"
-            )
-        body += "\nWhen pay lands, the buffer comes out first. You stay the one who decides."
-        return body
+        lines.append(
+            "When pay arrives, the bills come out first, then the buffer. You still decide."
+        )
+        return "\n".join(lines).strip()
     plank = getattr(state, "plan", None) or {}
     bullets = [s["title"].lower() for s in plank.get("steps", [])][:4]
     body = "E don set - this is now how I work for you:\n"
@@ -49,7 +35,10 @@ def automated_completion_text(state: Any) -> str:
     return body
 
 def draft_completion_text() -> str:
-    return ("No wahala. I've saved the plan - ask me to put it into action anytime and there's no need to go through this again.")
+    return (
+        "I have saved the plan. Ask me when you want to put it into action. "
+        "You do not need to do this again."
+    )
 
 def resume_payload(state: Any) -> dict[str, Any]:
     """Resume payload: where the user stands, what's missing, next step."""

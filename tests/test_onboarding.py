@@ -1084,8 +1084,11 @@ def test_cap_reads_the_salary_answer_instead_of_repeating_the_poll(monkeypatch):
         _run(service.handle_turn(user, message="1"))
         assert states.data["u-1"]["learned"].get("pay_rhythm") == "weekly"
         turn = _run(service.handle_turn(user, message="rent is $20"))
+        heard = " ".join([turn.response, *turn.messages]).lower()
+        assert "is that right?" in heard
+        locked = _run(service.handle_turn(user, message="Okay"))
         assert states.data["u-1"].get("stage") == "plan_consent"
-        assert turn.poll is None or "Build my savings plan" not in (turn.poll or {}).get("options", [])
+        assert locked.poll is None or "Build my savings plan" not in (locked.poll or {}).get("options", [])
     finally:
         monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", original)
 
@@ -1840,3 +1843,49 @@ def test_data_question_mid_interview_does_not_take_over(monkeypatch):
     assert (
         narrative.took_over is True
     ), "a narrative answer is interview material and must stay in the flow"
+
+
+def test_small_month_is_read_back_before_it_locks(monkeypatch):
+    """The $50 month: scripted questions, a read-back, then a plan in plain English."""
+    user = _user()
+    provider = FakeProvider()
+    service, states, _, _ = _service(monkeypatch, provider)
+
+    greeting = _run(service.handle_turn(user, message="Hey"))
+    assert "first name" in greeting.response.lower()
+    assert "no long thing" not in greeting.response.lower()
+
+    _run(service.handle_turn(user, message="Tobiloba"))
+
+    frequency = _run(service.handle_turn(user, message="$50 or less"))
+    assert frequency.response == "How often does that money arrive?"
+    assert frequency.poll["options"] == ["Weekly", "Biweekly", "Monthly", "Irregular"]
+    assert provider.calls  # the name was welcomed; the money question was not rewritten
+
+    calls_after_name = len(provider.calls)
+    fixed = _run(service.handle_turn(user, message="Irregular"))
+    assert fixed.response == "About how much has to go out every month?"
+    assert len(provider.calls) == calls_after_name
+
+    readback = _run(service.handle_turn(user, message="$30"))
+    heard = " ".join([readback.response, *readback.messages])
+    assert "or less" in heard
+    assert "uneven" in heard
+    assert "Is that right?" in heard
+    assert states.data["u-1"]["stage"] == "interview"
+    assert len(provider.calls) == calls_after_name
+
+    plan = _run(service.handle_turn(user, message="Okay"))
+    shown = " ".join([plan.response, *plan.messages])
+    assert "does not fill it" in shown
+    assert "Want me to lock this in, or change a number?" in shown
+    assert "Debt attack" not in shown
+    assert "e don set" not in shown.lower()
+    assert states.data["u-1"]["stage"] == "plan_consent"
+    assert len(provider.calls) == calls_after_name
+
+    receipt = _run(service.handle_turn(user, message="Okay"))
+    assert receipt.completed is True
+    assert "Locked in" in receipt.response
+    assert "e don set" not in receipt.response.lower()
+    assert "Debt attack" not in receipt.response

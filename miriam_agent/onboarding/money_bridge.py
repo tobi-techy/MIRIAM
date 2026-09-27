@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 # The interview is three facts. Anything else waits until the plan exists.
 # Questions stay short enough to be a poll title without cutting mid-word.
 GAP_QUESTIONS: tuple[tuple[str, str], ...] = (
-    ("income_amount", "No wahala, what hits your account in a normal month?"),
-    ("income_frequency", "Does that pay land weekly, biweekly, monthly, or irregular?"),
-    ("fixed_costs", "Roughly what must go out every month?"),
+    ("income_amount", "About how much do you take home in a normal month?"),
+    ("income_frequency", "How often does that money arrive?"),
+    ("fixed_costs", "About how much has to go out every month?"),
 )
 # Pay rhythm is the only multiple-choice. A number question gets no taps:
 # "Build my savings plan" does not answer "what hits your account".
@@ -241,56 +241,182 @@ def absorb_reply(state: Any, text: str, *, poll_title: str = "") -> None:
     if not goal and _GOAL_REPLY.search(spoken) and amount_in(spoken) is None and not cadence:
         state.goal = spoken.strip()[:120]
 
-def render_money_plan_text(money_plan: dict[str, Any]) -> str:
+_RHYTHM_SENTENCE = {
+    "weekly": "It arrives every week.",
+    "biweekly": "It arrives every two weeks.",
+    "monthly": "It arrives once a month.",
+    "irregular": "It arrives at uneven times.",
+}
+
+
+def reply_has_money_fact(text: str) -> bool:
+    """True when this message itself is an amount or a pay-rhythm answer."""
+    return _explicit_amount_reply(text) or bool(_cadence_in(text))
+
+
+def pay_rhythm_known(state: Any) -> bool:
+    learned = getattr(state, "learned", None) or {}
+    if not isinstance(learned, dict):
+        return False
+    return bool(str(learned.get("pay_rhythm") or learned.get("income_frequency") or "").strip())
+
+
+def _dec(value: Any) -> Any:
+    from decimal import Decimal
+
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _months_phrase(value: Any) -> str:
+    from decimal import Decimal
+
+    number = _dec(value)
+    if number is None:
+        return ""
+    whole = number.to_integral_value()
+    if number == whole:
+        count = int(whole)
+        unit = "month" if count == 1 else "months"
+        return f"{count} {unit}"
+    return f"{number.quantize(Decimal('0.1'))} months"
+
+
+def _amt(value: Any, currency: str) -> str:
     try:
         from miriam_agent.money.formatting import format_amount as _fmt
+
+        return str(_fmt(value, currency))
     except Exception:
-        _fmt = None  # type: ignore
-    def _amt(value: Any, currency: str) -> str:
-        try:
-            if _fmt is not None:
-                return str(_fmt(value, currency))
-        except Exception:
-            pass
         return f"{currency} {value}"
-    currency = str(money_plan.get("currency") or "NGN")
-    lines: list[str] = []
-    diagnosis = str(money_plan.get("diagnosis") or "").strip()
-    if diagnosis:
-        lines += [diagnosis, ""]
-    lines.append("Here's your savings split for the month:")
-    cashflow = money_plan.get("cashflow") or {}
-    for label, key in (("Fixed costs", "fixed"), ("Debt attack", "debt"), ("Savings (buffer)", "savings"), ("Investments", "investments"), ("Guilt-free", "guilt_free")):
-        lines.append(f"- {label}: {_amt(cashflow.get(key, 0), currency)}")
-    actions = [a for a in (money_plan.get("actions_90d") or []) if isinstance(a, dict)][:3]
-    if actions:
-        lines += ["", "Your next moves:"]
-        for action in actions:
-            when = str(action.get("when") or "").strip()
-            what = str(action.get("what") or "").strip()
-            if what:
-                lines.append(f"- {(when + ': ' if when else '')}{what}".strip())
-    rules = money_plan.get("automation_rules") or []
-    if rules and str(rules[0]).strip():
-        lines += ["", f"Automation: {str(rules[0]).strip()}."]
-    invest = cashflow.get("investments")
+
+
+def _intake(state: Any) -> Any:
+    from miriam_agent.financial.profile import profile_from_onboarding_state
+    from miriam_agent.money.intake import from_financial_profile
+
+    return from_financial_profile(profile_from_onboarding_state(state))
+
+
+def fact_readback(state: Any) -> str:
+    """Say the three facts back in plain English before any plan is written."""
+    learned = getattr(state, "learned", None) or {}
+    if not isinstance(learned, dict):
+        learned = {}
+    name = str(getattr(state, "name", "") or "").strip()
     try:
-        invest_amount = float(invest or 0)
-    except (TypeError, ValueError):
-        invest_amount = 0
-    if invest_amount > 0:
+        intake = _intake(state)
+    except Exception:
+        intake = None
+    if intake is None or intake.monthly_income is None:
+        return "Let me check I heard you right before I write the plan. Is that right?"
+    currency = str(intake.currency or "NGN")
+    income = _amt(intake.monthly_income, currency)
+    raw_income = str(learned.get("income") or "").casefold()
+    if "or less" in raw_income or "under " in raw_income:
+        income_sentence = (
+            f"You said {income} or less. I will use {income} unless you tell me it is lower."
+        )
+    elif any(word in raw_income for word in ("about", "around", "roughly", "maybe")):
+        income_sentence = f"I will use about {income} a month."
+    else:
+        income_sentence = f"I will use {income} a month."
+    rhythm = str(learned.get("pay_rhythm") or "").strip().casefold()
+    rhythm_sentence = _RHYTHM_SENTENCE.get(
+        rhythm, "I do not know yet how often it arrives."
+    )
+    if intake.monthly_fixed is None:
+        fixed_sentence = "I still need the amount that has to go out."
+    else:
+        fixed_sentence = f"About {_amt(intake.monthly_fixed, currency)} has to go out."
+    if name:
+        income_sentence = income_sentence[0].lower() + income_sentence[1:]
+        return f"{name}, {income_sentence} {rhythm_sentence} {fixed_sentence} Is that right?"
+    return f"{income_sentence} {rhythm_sentence} {fixed_sentence} Is that right?"
+
+
+def plain_month_lines(money_plan: dict[str, Any]) -> list[str]:
+    """The month as short sentences. Unknown lines are left out, not printed as zero."""
+    currency = str(money_plan.get("currency") or "NGN")
+    cash = money_plan.get("cashflow") or {}
+    buffer = money_plan.get("buffer") or {}
+    income = _dec(money_plan.get("monthly_take_home"))
+    fixed = _dec(cash.get("fixed"))
+    from decimal import Decimal
+
+    zero = Decimal("0")
+    savings = _dec(cash.get("savings")) or zero
+    debt = _dec(cash.get("debt")) or zero
+    invest = _dec(cash.get("investments")) or zero
+    guilt = _dec(cash.get("guilt_free")) or zero
+    target = _dec(buffer.get("target_amount"))
+    lines: list[str] = []
+
+    if fixed is None or fixed <= 0:
+        if income is not None and income > 0:
+            lines.append(
+                f"You take home {_amt(income, currency)}. "
+                "I do not know what has to go out yet, so this is not a finished plan."
+            )
+        lines.append("Nothing goes to stocks yet.")
+        return lines
+
+    if income is not None:
+        left = income - fixed
+        if left < 0:
+            left = Decimal("0")
         lines.append(
-            "That invest slice buys the Rail Stock Sleeve: tokenized Apple, Nvidia, and Tesla."
+            f"You take home {_amt(income, currency)}. "
+            f"About {_amt(fixed, currency)} has to go out. "
+            f"That leaves {_amt(left, currency)}."
         )
     else:
+        lines.append(f"About {_amt(fixed, currency)} has to go out.")
+
+    if target is not None and target > 0 and savings > 0:
+        cover = _months_phrase(buffer.get("target_months"))
+        cover_bit = f"cover {cover} of bills" if cover else "cover the bills"
+        fill = "That does not fill it." if savings < target else "That fills it."
         lines.append(
-            "Nothing goes to stocks yet. The Rail Stock Sleeve waits until the month leaves an invest slice."
+            f"The buffer should {cover_bit}, which is {_amt(target, currency)}. "
+            f"This month {_amt(savings, currency)} goes there. {fill}"
         )
-    lines += ["", "Want me to lock this in sharp sharp, or adjust anything?"]
-    assumptions = money_plan.get("assumptions") or []
-    if assumptions:
-        lines.append(f"Note: {str(assumptions[0]).strip()}")
-    if str(money_plan.get("confidence") or "") == "low":
-        lines.append("Confidence is low until I have your exact fixed costs.")
-    lines.append(str(money_plan.get("disclaimer") or "").strip())
-    return "\n".join(lines).strip()
+    elif savings > 0:
+        lines.append(f"This month {_amt(savings, currency)} goes to savings.")
+
+    if debt > 0:
+        lines.append(f"{_amt(debt, currency)} goes to a debt payment.")
+
+    tail: list[str] = []
+    if guilt > 0:
+        tail.append(f"You can spend {_amt(guilt, currency)} on anything you want.")
+    elif income is not None:
+        tail.append("Nothing is left to spend freely this month.")
+    if invest > 0:
+        tail.append(
+            "The stock money buys the Rail Stock Sleeve: tokenized Apple, Nvidia, and Tesla."
+        )
+    else:
+        tail.append("Nothing goes to stocks yet.")
+    lines.append(" ".join(tail))
+    return lines
+
+
+def plan_bubbles(money_plan: dict[str, Any]) -> list[str]:
+    """At most three short texts. The last one always asks to lock or change a number."""
+    lines = plain_month_lines(money_plan)
+    question = "Want me to lock this in, or change a number?"
+    if not lines:
+        return [question]
+    lines[-1] = f"{lines[-1]} {question}"
+    if len(lines) > 3:
+        lines = lines[:2] + [" ".join(lines[2:])]
+    return lines
+
+
+def render_money_plan_text(money_plan: dict[str, Any]) -> str:
+    return "\n\n".join(plan_bubbles(money_plan)).strip()

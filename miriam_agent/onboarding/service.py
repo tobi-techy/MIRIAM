@@ -60,11 +60,15 @@ from miriam_agent.onboarding.money_bridge import (
     absorb_reply,
     build_money_plan_dict,
     cap_should_present,
+    fact_readback,
     gap_question,
     gap_taps,
     mark_gap_asked,
     money_readiness,
     next_unasked_gap,
+    pay_rhythm_known,
+    plan_bubbles,
+    reply_has_money_fact,
     remember_poll,
     render_money_plan_text,
 )
@@ -241,6 +245,27 @@ _SHORT_YES = re.compile(
 
 def _is_short_yes(text: str) -> bool:
     return bool(_SHORT_YES.match((text or "").strip()))
+
+
+_READBACK_YES = re.compile(
+    r"^(?:yes|yeah|yep|yup|ok|okay|sure|correct|right)\b",
+    re.IGNORECASE,
+)
+_READBACK_AMOUNT = re.compile(r"(?:\$|₦|£|€|\d)")
+
+
+def _confirms_readback(text: str) -> bool:
+    """A yes to the fact read-back. A new amount or a change request is not a yes."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if any(hint in raw.casefold() for hint in _ADJUST_HINTS):
+        return False
+    if _READBACK_AMOUNT.search(raw):
+        return False
+    if _is_short_yes(raw):
+        return True
+    return bool(_READBACK_YES.match(raw))
 
 # Phrases that restart an already-finished/abandoned interview. Deliberately
 # narrow: post-completion casual chit-chat ("let's go", "try again") must never
@@ -631,9 +656,40 @@ class OnboardingService:
         # Salary, pay rhythm, and fixed costs are read off the message itself.
         # The model is not required to notice "$50", "1", or "biweekly".
         if state.stage == STAGE_INTERVIEW and text:
-            absorb_reply(state, text, poll_title=poll_title)
-            _ready_now, _ = money_readiness(state)
-            if _ready_now:
+            if state.awaiting_fact_confirm and not _confirms_readback(text):
+                title = gap_question(["fixed_costs"])
+                lowered = text.casefold()
+                if any(
+                    word in lowered
+                    for word in ("earn", "income", "salary", "take home", "take-home", "comes in")
+                ):
+                    title = gap_question(["income_amount"])
+                absorb_reply(state, text, poll_title=title)
+            else:
+                absorb_reply(state, text, poll_title=poll_title)
+            ready_now, missing_now = money_readiness(state)
+            if ready_now and state.awaiting_fact_confirm and _confirms_readback(text):
+                state.awaiting_fact_confirm = False
+                state.facts_confirmed = True
+                await self._state_store.save_state(user.id, state)
+                self._emit(user.id, "interview_finished")
+                return await self._present_plan(user.id, state, conversation_id)
+            if (
+                ready_now
+                and not state.facts_confirmed
+                and not pay_rhythm_known(state)
+                and "income_frequency" not in set(state.asked_gaps)
+            ):
+                return await self._ask_gap(user.id, state, "income_frequency")
+            if ready_now and not state.facts_confirmed:
+                state.awaiting_fact_confirm = True
+                await self._state_store.save_state(user.id, state)
+                return self._turn(fact_readback(state), stage=state.stage)
+            if not ready_now and "income_amount" not in missing_now and reply_has_money_fact(text):
+                gap_key = next_unasked_gap(state, missing_now)
+                if gap_key:
+                    return await self._ask_gap(user.id, state, gap_key)
+            if ready_now and state.facts_confirmed:
                 self._emit(user.id, "interview_finished")
                 return await self._present_plan(user.id, state, conversation_id)
 
@@ -830,8 +886,8 @@ class OnboardingService:
         return OnboardingTurn(
             took_over=True,
             response=(
-                "Hey! I'm Miriam - your money person, no long thing. "
-                "What should I call you? Just your first name works."
+                "Hey, I'm Miriam. I help with your money. "
+                "What should I call you? Your first name is enough."
             ),
             stage=STAGE_GREETING,
         )
@@ -842,7 +898,7 @@ class OnboardingService:
         name = self._extract_name(text)
         if not name:
             return self._turn(
-                "No stress - just tell me your first name and we'll get going.",
+                "Just tell me your first name, and we can start.",
                 stage=STAGE_GREETING,
             )
         state.name = name
@@ -1483,6 +1539,23 @@ class OnboardingService:
                 )
             except Exception:
                 pass
+        share = self._plan_share(user_id)
+        take_home = None
+        if state.money_plan:
+            from miriam_agent.onboarding.money_bridge import _dec
+
+            take_home = _dec(state.money_plan.get("monthly_take_home"))
+        if state.money_plan and take_home is not None and take_home > 0:
+            parts = [clean_text(part).strip() for part in plan_bubbles(state.money_plan)]
+            parts = [part for part in parts if part]
+            return OnboardingTurn(
+                took_over=True,
+                response=parts[0] if parts else "Want me to lock this in, or change a number?",
+                conversation_id=conversation_id,
+                stage=state.stage,
+                messages=parts[1:3],
+                share=share,
+            )
         history = await self._history(conversation_id)
         try:
             outcome = await driver.present_plan_turn(
@@ -1764,6 +1837,23 @@ class OnboardingService:
             conversation_id=conversation_id,
             stage=state.stage,
         )
+
+    async def _ask_gap(
+        self, user_id: str, state: OnboardingState, gap_key: str
+    ) -> OnboardingTurn:
+        """Ask one scripted question. The model does not get to rephrase it."""
+        question = gap_question([gap_key])
+        taps = list(gap_taps([gap_key]))
+        mark_gap_asked(state, gap_key)
+        state.interview_turns += 1
+        # Remember the question even when it has no taps, so the next number
+        # is stored against this question and not the previous poll.
+        remember_poll(state, question, taps)
+        await self._state_store.save_state(user_id, state)
+        gap_turn = self._turn(question, stage=state.stage)
+        if taps:
+            gap_turn.poll = {"title": question, "options": taps}
+        return gap_turn
 
     def _plan_turn(
         self,

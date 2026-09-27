@@ -44,7 +44,8 @@ def test_money_plan_text_carries_amounts():
 def test_state_migration_v2_to_v3():
     from miriam_agent.onboarding.state import OnboardingState, _migrate
     migrated = _migrate({"schema_version": 2, "stage": "interview"})
-    assert migrated["schema_version"] == 4
+    assert migrated["schema_version"] == 5
+    assert migrated["facts_confirmed"] is False and migrated["awaiting_fact_confirm"] is False
     assert migrated["money_plan"] is None and migrated["money_gap"] == [] and migrated["money_ready"] is False
     assert migrated["asked_gaps"] == [] and migrated["last_poll_options"] == []
     assert OnboardingState(migrated).money_plan is None
@@ -180,13 +181,41 @@ def test_same_gap_is_not_a_reason_to_keep_polling():
     assert cap_should_present(state, "Investment") is True
 
 
-def test_naija_flavor_in_deterministic_copy():
+def test_plan_copy_is_plain_english():
     from miriam_agent.onboarding.completion import automated_completion_text, draft_completion_text
     from miriam_agent.onboarding.money_bridge import build_money_plan_dict, gap_question, render_money_plan_text
     from miriam_agent.onboarding.state import OnboardingState
     state = OnboardingState({"learned": {"income": "I earn 500k every month", "fixed": "rent and food take 350k"}, "goal": "build buffer", "interview_turns": 4})
     state.money_plan = build_money_plan_dict(state)
-    assert "e don set" in automated_completion_text(state).lower()
-    assert "no wahala" in draft_completion_text().lower()
-    assert "no wahala" in gap_question(["income_amount"]).lower()
-    assert "sharp sharp" in render_money_plan_text(state.money_plan).lower()
+    receipt = automated_completion_text(state).lower()
+    plan = render_money_plan_text(state.money_plan).lower()
+    assert "locked in" in receipt
+    assert "e don set" not in receipt
+    assert "debt attack" not in receipt
+    assert "no wahala" not in draft_completion_text().lower()
+    assert "no wahala" not in gap_question(["income_amount"]).lower()
+    assert gap_question(["income_frequency"]) == "How often does that money arrive?"
+    assert "sharp sharp" not in plan
+    assert "lock this in" in plan
+    assert "debt attack" not in plan
+
+
+def test_small_irregular_month_is_explained():
+    from miriam_agent.onboarding.money_bridge import build_money_plan_dict, fact_readback, render_money_plan_text
+    from miriam_agent.onboarding.state import OnboardingState
+    state = OnboardingState({
+        "name": "Tobiloba",
+        "learned": {"income": "$50 or less", "fixed": "$30", "pay_rhythm": "irregular"},
+        "interview_turns": 3,
+    })
+    readback = fact_readback(state)
+    assert "Tobiloba" in readback
+    assert "or less" in readback
+    assert "uneven" in readback
+    assert "$30" in readback or "30" in readback
+    assert readback.endswith("Is that right?")
+    plan = render_money_plan_text(build_money_plan_dict(state))
+    assert "does not fill it" in plan
+    assert "Nothing goes to stocks yet" in plan
+    assert "Debt attack" not in plan
+    assert "Want me to lock this in, or change a number?" in plan

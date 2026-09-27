@@ -397,10 +397,12 @@ def test_present_plan_clamps_invented_number(monkeypatch):
     state, turn = _drive(
         monkeypatch, responses, ["hey", "Tola", "income is lumpy", "wrap it"]
     )
+    shown = " ".join([turn.response, *turn.messages])
     assert state["stage"] == STAGE_PLAN_CONSENT
-    assert "8%" not in turn.response
-    assert "APY" not in turn.response
-    assert "Here's your picture" in turn.response
+    assert "8%" not in shown
+    assert "APY" not in shown
+    assert "4,000" in shown
+    assert "not a finished plan" in shown
 
 
 def test_present_plan_keeps_grounded_reply(monkeypatch):
@@ -417,7 +419,10 @@ def test_present_plan_keeps_grounded_reply(monkeypatch):
     _, turn = _drive(
         monkeypatch, responses, ["hey", "Tola", "income is lumpy", "wrap it"]
     )
-    assert turn.response == grounded_reply
+    shown = " ".join([turn.response, *turn.messages])
+    assert "4,000" in shown
+    assert "not a finished plan" in shown
+    assert "lock this in" in shown.lower()
 
 
 def test_run_replay_flags_ungrounded_numbers():

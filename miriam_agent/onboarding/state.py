@@ -44,7 +44,7 @@ ALL_STAGES = (
 # Schema version stamped on every persisted record. Bump it when the state
 # shape changes and add a migrator below so old on-disk records are brought
 # forward on load instead of being lost.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _migrate_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
@@ -94,10 +94,24 @@ def _migrate_v3_to_v4(data: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _migrate_v4_to_v5(data: dict[str, Any]) -> dict[str, Any]:
+    """v4 -> v5: confirm the three facts before a yes can lock the plan.
+
+    A short "okay" used to lock whatever the model had just said, including a
+    plan the user had not seen as numbers. The confirm flag is the pause.
+    """
+    cleaned = dict(data)
+    cleaned.setdefault("facts_confirmed", False)
+    cleaned.setdefault("awaiting_fact_confirm", False)
+    cleaned["schema_version"] = 5
+    return cleaned
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
 }
 
 
@@ -183,6 +197,10 @@ class OnboardingState:
         self.last_poll_options: list[str] = [
             str(item) for item in list(data.get("last_poll_options") or []) if item
         ]
+        # The three facts have been read back and the user said they are right.
+        # A plan is not shown, and a short yes cannot lock it, until then.
+        self.facts_confirmed: bool = bool(data.get("facts_confirmed"))
+        self.awaiting_fact_confirm: bool = bool(data.get("awaiting_fact_confirm"))
         # Whether the consent poll is on screen (vs. the plan-text turn).
         self.plan_presented: bool = bool(data.get("plan_presented"))
         # adjustment notes typed during plan review.
@@ -230,6 +248,8 @@ class OnboardingState:
             "asked_gaps": self.asked_gaps,
             "last_poll_title": self.last_poll_title,
             "last_poll_options": self.last_poll_options,
+            "facts_confirmed": self.facts_confirmed,
+            "awaiting_fact_confirm": self.awaiting_fact_confirm,
             "plan_presented": self.plan_presented,
             "adjustments": self.adjustments,
             "interview_turns": self.interview_turns,
