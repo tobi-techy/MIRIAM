@@ -36,6 +36,7 @@ class PolicyThresholds:
     tool_costly_confirm: float = 0.55
     tool_relevance_reject_below: float = 0.5
     args_match_reject_below: float = 0.5
+    args_complete_reject_below: float = 0.5
     exceeds_authority_block: float = 0.7
     # A user who explicitly confirmed this exact proposed action (name +
     # critical args) may pass a *confirm-band* action without a second prompt.

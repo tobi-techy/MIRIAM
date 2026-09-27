@@ -331,8 +331,12 @@ EGRESS_QUESTIONS: dict[str, Any] = {
     ),
     "invents_facts": Noul(
         instructions=(
-            "Does `draft_reply` assert facts not supported by `history` or the "
-            "tool results in state?"
+            "Does `draft_reply` assert facts not supported by `history`, the "
+            "tool results in state, `user_profile`, `memory_context`, or "
+            "`plan_context`? Those three grounding fields carry exactly what "
+            "the generator saw (profile numbers, remembered facts, current "
+            "plan): a number or claim present in any of them is grounded, "
+            "even when no tool ran this turn."
         ),
     ),
     "leaks_system": Noul(
