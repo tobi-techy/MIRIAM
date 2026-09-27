@@ -507,13 +507,16 @@ async def _ingress_decision(
     registry: Any,
     history: list,
     user_context: Any,
+    memory_facts: list | None = None,
+    financial_plan: dict | None = None,
     **_: Any,
 ) -> Any:
     """TypeSafe ingress gate, failing open.
 
     A judgment-layer bug must never 500 a chat turn; network errors are
     already handled (fail-closed) inside ingress_gate, so this only catches
-    unexpected code paths.
+    unexpected code paths. Local PII refusal lives inside ingress_gate and
+    runs even when TypeSafe is disabled, so secrets never reach the generator.
     """
     try:
         return await ingress_gate(
@@ -523,6 +526,8 @@ async def _ingress_decision(
                 history=history,
                 user_context=user_context,
                 registry=registry,
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
             )
         )
     except Exception:
@@ -770,6 +775,7 @@ async def chat_stream(
 
             collected: list[str] = []
             done_content: str | None = None
+            gated_correction: str | None = None
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
@@ -794,6 +800,15 @@ async def chat_stream(
                             "result": event["result"],
                         }
                     )
+                elif evt == "egress_correction":
+                    # The egress gate rewrote the streamed draft (grounding or
+                    # policy). Forward it so the client replaces the raw
+                    # tokens, and persist the gated text below -- never the
+                    # raw draft.
+                    correction = event.get("content", "")
+                    if isinstance(correction, str) and correction:
+                        gated_correction = correction
+                    yield _sse({"type": "egress_correction", "content": correction})
                 elif evt == "done":
                     raw = event.get("content", "")
                     if isinstance(raw, str) and raw:
@@ -814,7 +829,12 @@ async def chat_stream(
             # connection, or a reinstall still finds the exchange on resume.
             # Without this the streamed reply lived only in the client's
             # memory and server history diverged from what the user saw.
-            reply = done_content if done_content is not None else "".join(collected)
+            # The egress-gated text wins over the raw tokens whenever the
+            # gate rewrote the reply.
+            if gated_correction is not None:
+                reply = gated_correction
+            else:
+                reply = done_content if done_content is not None else "".join(collected)
             if reply.strip():
                 try:
                     payload = await _finalize_turn(

@@ -101,6 +101,10 @@ class EgressDecision:
     reply: str | None = None
     judgment: EgressJudgment | None = None
     degraded: bool = False
+    # Soft signal from the tone question: never blocks a send on its own,
+    # but the caller appends it to the regenerate instruction so a retry
+    # fixes tone as well as facts. "cold" | "sloppy" | None.
+    tone_note: str | None = None
 
 
 # Fixed templates. Deliberately short and policy-safe: the refuse/clarify ones
@@ -182,16 +186,19 @@ async def ingress_gate(
     client=None,
 ) -> RoutingDecision:
     """Run the ingress gate for one user turn, before the generator."""
-    if not enabled():
-        logger.info("typesafe disabled; skipping ingress gate")
-        return RoutingDecision(branch=Branch.GENERATOR, degraded=True)
-
-    # Obvious PII is refused locally so the secret never reaches TypeSafe.
+    # Obvious PII is refused locally so the secret never reaches TypeSafe --
+    # and this runs before the enabled() check on purpose, so a missing key
+    # or a disabled flag never turns the secret paste back into a generator
+    # turn.
     if state.pii_detected:
         logger.info("typesafe ingress local PII refuse")
         return RoutingDecision(
             branch=Branch.REFUSE, reply=_REFUSE_PII, refusal_reason="pii"
         )
+
+    if not enabled():
+        logger.info("typesafe disabled; skipping ingress gate")
+        return RoutingDecision(branch=Branch.GENERATOR, degraded=True)
 
     try:
         judgment = cast(IngressJudgment, await evaluate(state, INGRESS, client=client))
@@ -314,16 +321,20 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
     not entitled to the action at all, and for a genuinely destructive action
     that always needs a human. Evidence is evaluated in this order:
 
-    1. relevant + args match? no -> reject
+    1. relevant + args match + args complete? no -> reject
     2. outside the user's entitlement? -> block
     3. destructive (irreversible beyond the block bar)? -> block
     4. costly/irreversible in the confirm band? -> execute if the user already
        confirmed this exact action, else confirm
     5. otherwise -> execute
     """
+    incomplete = (
+        judgment.args_look_complete.noul < POLICY.args_complete_reject_below
+    )
     irrelevant = (
         judgment.tool_is_relevant.noul < POLICY.tool_relevance_reject_below
         or judgment.args_match_request.noul < POLICY.args_match_reject_below
+        or incomplete
     )
     unauthorized = (
         judgment.exceeds_user_authority.noul >= POLICY.exceeds_authority_block
@@ -343,6 +354,8 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
     # reject never hides an authority block.
     if irrelevant:
         reasons = ["irrelevant_or_mismatched"]
+        if incomplete:
+            reasons.append("args_incomplete")
         if unauthorized:
             reasons.append("authority_also_exceeded")
         if destructive:
@@ -395,6 +408,11 @@ async def egress_gate(
     client=None,
 ) -> EgressDecision:
     """Run the egress gate on a draft reply, before it is sent."""
+    # Deterministic: an empty draft answers nothing, so regenerate without
+    # spending a JEV round-trip. Mirrors the tool gate's empty-proposal block.
+    if not (state.draft_reply or "").strip():
+        logger.info("typesafe egress empty draft regenerate")
+        return EgressDecision(branch=EgressBranch.REGENERATE)
     if not enabled():
         return EgressDecision(branch=EgressBranch.SEND, degraded=True)
 
@@ -411,6 +429,15 @@ async def egress_gate(
     return decision
 
 
+def _tone_note(score: float) -> str | None:
+    """Map the 0..2 tone score to a soft hint. None means tone is fine."""
+    if score <= 0.6:
+        return "cold"
+    if score >= 1.6:
+        return "sloppy"
+    return None
+
+
 def decide_egress(judgment: EgressJudgment) -> EgressDecision:
     """Compose the egress answers into a send/discard/regenerate branch.
 
@@ -418,7 +445,10 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
     user secret -- the model already had the secret, so a retry risks repeating
     it). regenerate owns fixable quality misses: invented facts, or a reply
     that does not answer, retried once by the caller and then fallen back.
+    Tone is a soft signal only: it rides as ``tone_note`` on any branch and
+    never flips a send by itself.
     """
+    tone = _tone_note(judgment.tone_fit.score)
     if (
         judgment.policy_violation.noul >= POLICY.policy_violation_discard
         or judgment.leaks_system.noul >= POLICY.leaks_system_discard
@@ -429,13 +459,18 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
             branch=EgressBranch.DISCARD,
             reply=EGRESS_SAFE_FALLBACK,
             judgment=judgment,
+            tone_note=tone,
         )
     if (
         judgment.invents_facts.noul >= POLICY.invents_facts_regenerate
         or judgment.answers_the_ask.noul < POLICY.egress_grounded_min
     ):
-        return EgressDecision(branch=EgressBranch.REGENERATE, judgment=judgment)
-    return EgressDecision(branch=EgressBranch.SEND, judgment=judgment)
+        return EgressDecision(
+            branch=EgressBranch.REGENERATE, judgment=judgment, tone_note=tone
+        )
+    return EgressDecision(
+        branch=EgressBranch.SEND, judgment=judgment, tone_note=tone
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +548,56 @@ def _redact_user_text() -> bool:
         return False
 
 
+_GROUNDING_MAX = 2000
+
+
+def _compact_profile(user_context: dict[str, Any]) -> str:
+    """Compact user profile numbers for judgment grounding.
+
+    Mirrors what the generator sees in CURRENT SITUATION, bounded so the
+    judgment payload stays small. Never raises: malformed context degrades
+    to an empty string.
+    """
+    try:
+        parts: list[str] = []
+        for key in ("name", "currency", "risk_tolerance", "monthly_income", "goals", "balances"):
+            value = user_context.get(key)
+            if value not in (None, "", [], {}):
+                parts.append(f"{key}: {str(value)[:300]}")
+        roles = user_context.get("roles")
+        if roles:
+            parts.append(f"roles: {str(roles)[:200]}")
+        return "\n".join(parts)[:_GROUNDING_MAX]
+    except Exception:  # noqa: BLE001 - grounding must never break the turn
+        return ""
+
+
+def _compact_memory(memory_facts: list[dict[str, Any]] | None) -> str:
+    """Compact remembered facts (max 8) for judgment grounding."""
+    try:
+        lines: list[str] = []
+        for fact in (memory_facts or [])[:8]:
+            if not isinstance(fact, dict):
+                continue
+            kind = str(fact.get("type", "fact"))[:40]
+            content = str(fact.get("content", ""))[:300]
+            if content.strip():
+                lines.append(f"- [{kind}] {content}")
+        return "\n".join(lines)[:_GROUNDING_MAX]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _compact_plan(financial_plan: dict[str, Any] | None) -> str:
+    """Compact current plan for judgment grounding."""
+    try:
+        if not isinstance(financial_plan, dict) or not financial_plan:
+            return ""
+        return json.dumps(financial_plan, default=str)[:_GROUNDING_MAX]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_state(
     *,
     user_id: str,
@@ -524,6 +609,8 @@ def build_state(
     proposed_tool: ProposedTool | dict | None = None,
     draft_reply: str | None = None,
     tool_results: list[dict[str, Any]] | None = None,
+    memory_facts: list[dict[str, Any]] | None = None,
+    financial_plan: dict[str, Any] | None = None,
 ) -> JudgmentState:
     """Build the trimmed judgment state from the pieces the request path has.
 
@@ -531,6 +618,11 @@ def build_state(
     tool loop, and a malformed piece (a non-dict history turn, a None message,
     a registry entry without attributes) must degrade to a smaller state, never
     crash the turn.
+
+    ``user_context`` / ``memory_facts`` / ``financial_plan`` are the same
+    evidence the generator sees in its system prompt. They ride as compacted
+    grounding strings so the egress ``invents_facts`` question judges the
+    draft against what the generator actually wrote it from.
     """
     message = "" if message is None else str(message)
     tools = _tools_for(registry) if registry is not None else []
@@ -576,7 +668,7 @@ def build_state(
         user=UserContext(
             id=str(user_id),
             locale=str(ctx.get("locale") or "en"),
-            plan="",
+            plan=_compact_plan(financial_plan)[:500],
             known_flags=roles,
         ),
         turn=TurnInput(
@@ -587,6 +679,9 @@ def build_state(
         proposed_tool=proposed_tool,
         draft_reply=draft_reply,
         policies=PolicySlice(allowed=_POLICY_ALLOWED, forbidden=_POLICY_FORBIDDEN),
+        user_profile=_compact_profile(ctx),
+        memory_context=_compact_memory(memory_facts),
+        plan_context=_compact_plan(financial_plan),
         pii_detected=pii_detected,
     )
 
@@ -599,6 +694,8 @@ def build_ingress_state(
     user_context: dict[str, Any] | None = None,
     registry=None,
     channel: str = "api",
+    memory_facts: list[dict[str, Any]] | None = None,
+    financial_plan: dict[str, Any] | None = None,
 ) -> JudgmentState:
     """Build the ingress state (no proposed tool or draft yet)."""
     return build_state(
@@ -608,6 +705,8 @@ def build_ingress_state(
         user_context=user_context,
         registry=registry,
         channel=channel,
+        memory_facts=memory_facts,
+        financial_plan=financial_plan,
     )
 
 
@@ -667,6 +766,7 @@ def _log_egress_decision(judgment: EgressJudgment, decision: EgressDecision) -> 
         extra={
             "branch": decision.branch.value,
             "degraded": decision.degraded,
+            "tone_note": decision.tone_note,
             "answers_the_ask": round(judgment.answers_the_ask.noul, 3),
             "invents_facts": round(judgment.invents_facts.noul, 3),
             "leaks_system": round(judgment.leaks_system.noul, 3),
