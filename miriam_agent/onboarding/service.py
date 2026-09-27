@@ -850,9 +850,7 @@ class OnboardingService:
         await self._remember(user_id, "name", "identity", name, is_a_vote=False)
         await self._state_store.save_state(user_id, state)
         self._emit(user_id, "interview_started")
-        # The conductor takes it from here: Miriam welcomes them by name and
-        # opens with the Money Moment question in her own words.
-        return await self._conductor_turn(
+        turn = await self._conductor_turn(
             user_id,
             state,
             conversation_id,
@@ -860,6 +858,8 @@ class OnboardingService:
             event=f"the user told Miriam their name is {name}; welcome them and "
             "open the conversation",
         )
+        turn.name = turn.name or name
+        return turn
 
     @classmethod
     def _extract_name(cls, text: str) -> str:
@@ -1701,7 +1701,7 @@ class OnboardingService:
             conversation_id=conversation_id,
             stage=STAGE_COMPLETE,
             completed=True,
-            automated=True,
+            automated=True, name=state.name,
         )
 
     async def _complete_draft(
