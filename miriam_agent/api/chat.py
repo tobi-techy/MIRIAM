@@ -412,11 +412,9 @@ async def _prepare_turn(
 
     # Ensure a local user row exists (Go backend is the identity authority).
     await memory_store.ensure_user(user)
-
-    # A conversation id supplied by the client is untrusted: it must belong to
-    # the authenticated user. Previously any id was accepted, so presenting
-    # another user's conversation returned their messages (and appended this
-    # user's turns into their conversation).
+    # Move a finished guest interview onto this account before ownership checks.
+    from miriam_agent.onboarding.handoff import adopt_guest_interview
+    await adopt_guest_interview(memory_store, user, body.conversation_id)
     conversation_id = await _require_owned_conversation(
         memory_store, user, body.conversation_id
     )
@@ -1297,11 +1295,9 @@ async def merge_users(
 ) -> dict[str, Any]:
     """Move portable history onto the caller's stable id after verification.
 
-    Number-change recovery: the user reinstalls, Go issues a fresh ``sub``,
-    verifies they own the old account (OTP to the old number / email /
-    wallet), then calls this with the old id. Conversations, memories and
-    handles move; audit rows stay for compliance. The bearer JWT names the
-    *target*; the rail key proves Go verified the claim.
+    Number-change recovery and the guest-signup handoff. Go verifies the
+    claim, then calls this with the old id. Conversations, memories, handles,
+    and onboarding state move. Audit rows stay. The bearer names the target.
     """
     from_user = (body.from_user_id or "").strip()
     if not from_user:
@@ -1315,6 +1311,8 @@ async def merge_users(
             detail="from_user_id must differ from the authenticated user",
         )
     await memory_store.ensure_user(user)
+    from miriam_agent.onboarding.handoff import transfer_onboarding_state
+    await transfer_onboarding_state(from_user, user.id)
     counts = await memory_store.merge_user_data(from_user, user.id)
     # Supermemory is keyed by containerTag(user_id), so the graph under the
     # old tag does not follow the DB move on its own. Best-effort: re-ground
