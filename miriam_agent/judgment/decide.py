@@ -117,7 +117,7 @@ async def decide(
         cap=cap,
     )
 
-    return Decision(
+    decision = Decision(
         id=f"dec_{uuid.uuid4().hex[:12]}",
         at=timestamp,
         inflow_class=_inflow_class(judgment.inflow_class.choice if judgment else ""),
@@ -133,6 +133,28 @@ async def decide(
         reasons=outcome.reasons,
         degraded=outcome.degraded,
     )
+    # Structured observability parity with the chat gates: one log line per
+    # money judgment carrying the JEV scores and the rules outcome, so
+    # thresholds can be tuned against real logs instead of guesses.
+    logger.info(
+        "money judgment decision",
+        extra={
+            "decision_id": decision.id,
+            "degraded": decision.degraded,
+            "inflow_class": decision.inflow_class,
+            "inflow_conf": decision.inflow_conf,
+            "intent_type": decision.intent_type,
+            "intent_conf": decision.intent_conf,
+            "affordability": decision.affordability,
+            "policy_violation": decision.policy_violation,
+            "reversibility": decision.reversibility,
+            "next_mode": decision.next_mode,
+            "action_choice": decision.action_choice,
+            "reasons": list(decision.reasons),
+            "judge_unavailable": judgment is None,
+        },
+    )
+    return decision
 
 
 __all__ = ["Judge", "cap_for", "decide"]

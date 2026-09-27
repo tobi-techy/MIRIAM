@@ -295,9 +295,11 @@ EGRESS_QUESTIONS: dict[str, Any] = {
     "invents_facts": Noul(
         instructions=(
             "Does `draft_reply` assert a material fact that is not supported by "
-            "`supporting_context`, `history`, or `turn.user_text`? Do not treat "
-            "the assistant's own earlier messages in `history` as evidence for a "
-            "money fact; they are not a source."
+            "`supporting_context`, `user_profile`, `memory_context`, "
+            "`plan_context`, `history`, or `turn.user_text`? Those grounding "
+            "fields carry exactly what the generator saw. Do not treat the "
+            "assistant's own earlier messages as evidence for a money fact; "
+            "they are not a source."
         ),
         criteria={
             "true": (

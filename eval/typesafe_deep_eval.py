@@ -33,6 +33,7 @@ from miriam_agent.judgment.gates import (  # noqa: E402
     decide_ingress,
     decide_tool,
 )
+from miriam_agent.judgment.jev_client import money_state_payload  # noqa: E402
 from miriam_agent.judgment.questions import EGRESS, INGRESS, TOOL  # noqa: E402
 from miriam_agent.judgment.rules import apply_rules  # noqa: E402
 from miriam_agent.judgment.schema import MONEY  # noqa: E402
@@ -251,7 +252,10 @@ async def run_money_case(case):
     )
     start = time.perf_counter()
     try:
-        judgment = await evaluate(state, MONEY)
+        judgment = await evaluate(
+            money_state_payload(state, case.get("message", "")),
+            MONEY,
+        )
     except Exception as exc:  # noqa: BLE001 - record and continue, don't crash
         return {
             "id": case["id"],

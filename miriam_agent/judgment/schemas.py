@@ -80,6 +80,12 @@ class JudgmentState(BaseModel):
 
     Only the relevant slice is included: no embeddings, no raw tool dumps, no
     full documents, and history is bounded before it reaches this model.
+
+    ``user_profile`` / ``memory_context`` / ``plan_context`` carry the same
+    grounding the generator sees in its system prompt (profile numbers,
+    remembered facts, current plan), compacted and bounded. They exist so the
+    egress ``invents_facts`` question judges a draft against the same evidence
+    the generator wrote it from, instead of history + tool results alone.
     """
 
     user: UserContext = Field(default_factory=UserContext)
@@ -92,6 +98,9 @@ class JudgmentState(BaseModel):
     proposed_tool: ProposedTool | None = None
     draft_reply: str | None = None
     policies: PolicySlice = Field(default_factory=PolicySlice)
+    user_profile: str = ""
+    memory_context: str = ""
+    plan_context: str = ""
     # Code-internal: set when a deterministic scan found obvious PII in the
     # user's message or history. Excluded from the payload sent to TypeSafe.
     pii_detected: bool = Field(default=False, exclude=True)

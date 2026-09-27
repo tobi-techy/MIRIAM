@@ -51,8 +51,6 @@ class PolicyThresholds:
     repeats_pii_discard: float = 0.6
     invents_facts_regenerate: float = 0.7
     claim_unsupported_regenerate: float = 0.6
-    tone_fit_regenerate_below: float = 0.35
-    tone_fit_regenerate_above: float = 1.65
     # A draft that literally echoes a secret the user typed is discarded
     # outright (no regenerate -- the model already had the secret in context,
     # so a retry risks repeating it). Owns the literal-echo case explicitly so

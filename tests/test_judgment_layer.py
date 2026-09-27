@@ -432,3 +432,30 @@ def test_the_approval_ceiling_defaults_to_the_hold():
     settings = Settings(_env_file=None)
     assert settings.APPROVAL_REQUIRED_ABOVE == 0.0
     assert Policy.from_settings().max_auto == money(0)
+
+
+async def test_low_confidence_inflow_with_no_action_stays_quiet_and_classifies():
+    from typesafe_sdk import ChoiceAnswer
+
+    from miriam_agent.judgment.schema import MoneyJudgment
+
+    ledger = ledger_with(spendable=0)
+    ledger.pending_inflow = PendingInflow(
+        id="pay_uncertain", amount=money(5000), source_raw="CREDIT 5000"
+    )
+    state = build_state(ledger=ledger, policy=POLICY)
+    judgment = MoneyJudgment.model_construct(
+        inflow_class=ChoiceAnswer.model_construct(choice="salary", confidence=0.95),
+        intent_type=ChoiceAnswer.model_construct(choice="status", confidence=0.4),
+    )
+
+    decision = await decide(
+        state=state,
+        ledger=ledger,
+        policy=POLICY,
+        judge=judge_of(judgment),
+    )
+
+    assert decision.next_mode == "stay_quiet"
+    assert decision.action_choice == "classify_only"
+    assert Reason.LOW_CONFIDENCE.value not in decision.reasons

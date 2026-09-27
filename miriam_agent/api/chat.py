@@ -414,6 +414,7 @@ async def _prepare_turn(
     await memory_store.ensure_user(user)
     # Move a finished guest interview onto this account before ownership checks.
     from miriam_agent.onboarding.handoff import adopt_guest_interview
+
     await adopt_guest_interview(memory_store, user, body.conversation_id)
     conversation_id = await _require_owned_conversation(
         memory_store, user, body.conversation_id
@@ -745,6 +746,7 @@ async def chat_stream(
 
             collected: list[str] = []
             done_content: str | None = None
+            gated_correction: str | None = None
             async for event in agent.stream_run(
                 user_id=user.id,
                 token=token,
@@ -769,6 +771,15 @@ async def chat_stream(
                             "result": event["result"],
                         }
                     )
+                elif evt == "egress_correction":
+                    # The egress gate rewrote the streamed draft (grounding or
+                    # policy). Forward it so the client replaces the raw
+                    # tokens, and persist the gated text below -- never the
+                    # raw draft.
+                    correction = event.get("content", "")
+                    if isinstance(correction, str) and correction:
+                        gated_correction = correction
+                    yield _sse({"type": "egress_correction", "content": correction})
                 elif evt == "done":
                     raw = event.get("content", "")
                     if isinstance(raw, str) and raw:
@@ -789,7 +800,12 @@ async def chat_stream(
             # connection, or a reinstall still finds the exchange on resume.
             # Without this the streamed reply lived only in the client's
             # memory and server history diverged from what the user saw.
-            reply = done_content if done_content is not None else "".join(collected)
+            # The egress-gated text wins over the raw tokens whenever the
+            # gate rewrote the reply.
+            if gated_correction is not None:
+                reply = gated_correction
+            else:
+                reply = done_content if done_content is not None else "".join(collected)
             if reply.strip():
                 try:
                     payload = await _finalize_turn(
@@ -1287,6 +1303,7 @@ async def merge_users(
         )
     await memory_store.ensure_user(user)
     from miriam_agent.onboarding.handoff import transfer_onboarding_state
+
     await transfer_onboarding_state(from_user, user.id)
     counts = await memory_store.merge_user_data(from_user, user.id)
     # Supermemory is keyed by containerTag(user_id), so the graph under the

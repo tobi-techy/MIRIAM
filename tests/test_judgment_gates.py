@@ -135,7 +135,7 @@ def test_incomplete_tool_args_are_rejected():
     )
 
     assert decision.branch is ToolBranch.REJECT
-    assert decision.reason == "incomplete_args"
+    assert decision.reason == "args_incomplete"
 
 
 def test_irreversible_tool_is_blocked_above_threshold():
@@ -320,7 +320,7 @@ def test_invented_facts_regenerate():
     assert decision.branch is EgressBranch.REGENERATE
 
 
-def test_extreme_tone_regenerates():
+def test_extreme_tone_rides_as_a_note_without_blocking_send():
     decision = decide_egress(
         _egress_judgment(
             {
@@ -335,7 +335,8 @@ def test_extreme_tone_regenerates():
         )
     )
 
-    assert decision.branch is EgressBranch.REGENERATE
+    assert decision.branch is EgressBranch.SEND
+    assert decision.tone_note == "cold"
 
 
 def test_good_reply_sends():
@@ -449,7 +450,7 @@ def test_ingress_state_does_not_carry_egress_grounding():
     assert state.supporting_context == []
 
 
-async def test_streaming_holds_tokens_until_egress_passes(monkeypatch):
+async def test_streaming_emits_egress_correction_when_reply_is_rewritten(monkeypatch):
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.tools import build_tool_registry
 
@@ -486,8 +487,12 @@ async def test_streaming_holds_tokens_until_egress_passes(monkeypatch):
     ]
 
     assert [e for e in events if e["type"] == "token"] == [
-        {"type": "token", "content": "safe reply"}
+        {"type": "token", "content": "unsafe "},
+        {"type": "token", "content": "draft"},
     ]
+    assert {e["content"] for e in events if e["type"] == "egress_correction"} == {
+        "safe reply"
+    }
     assert events[-1] == {"type": "done", "content": "safe reply"}
 
 

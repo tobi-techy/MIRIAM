@@ -233,6 +233,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     name=name,
                     args=args,
                 )
@@ -291,7 +293,30 @@ class Agent:
         Money turns do not reach here; ``api/chat.py`` routes them to the
         orchestrator. A model that still asks for a money tool is refused, and
         the refusal is streamed as a tool result so it can answer the user.
+
+        Tokens stream live for responsiveness, but the final text is always
+        egress-gated before ``done``: when the gate rewrites the reply, an
+        ``egress_correction`` event carries the text to send and ``done``
+        carries the same gated text, so no ungrounded prose leaves this path.
         """
+
+        async def _gate_streamed_reply(
+            draft: str, llm_messages: list[ChatMessage]
+        ) -> tuple[str, bool]:
+            """Gate a streamed draft; returns (text_to_send, corrected)."""
+            gated = await self._apply_egress(
+                user_id=user_id,
+                message=message,
+                history=history,
+                user_context=user_context,
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
+                draft=draft,
+                llm_messages=llm_messages,
+                tool_results=self._collect_tool_results(llm_extra),
+            )
+            return gated, gated != draft
+
         messages = self._build_messages(
             message=message,
             history=history,
@@ -302,11 +327,6 @@ class Agent:
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
         llm_extra: list[ChatMessage] = []
-        # Egress is semantic and must see the completed reply. When TypeSafe is
-        # enabled, hold the final text until the gate passes instead of
-        # emitting tokens the gate can no longer retract.
-        buffer_egress = typesafe_enabled()
-
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages) + llm_extra
 
@@ -320,8 +340,7 @@ class Agent:
             ):
                 if event["type"] == "token":
                     collected.append(event["content"])
-                    if not buffer_egress:
-                        yield {"type": "token", "content": event["content"]}
+                    yield {"type": "token", "content": event["content"]}
                 elif event["type"] == "tool_call":
                     tc = event["tool_call"]
                     yield {"type": "tool_call", "tool_call": tc}
@@ -329,22 +348,10 @@ class Agent:
 
             if not stream_tool_calls:
                 draft = "".join(collected)
-                if buffer_egress:
-                    reply = await self._apply_egress(
-                        user_id=user_id,
-                        message=message,
-                        history=history,
-                        user_context=user_context,
-                        memory_facts=memory_facts,
-                        financial_plan=financial_plan,
-                        draft=draft,
-                        llm_messages=llm_messages,
-                        tool_results=self._collect_tool_results(llm_extra),
-                    )
-                    yield {"type": "token", "content": reply}
-                    yield {"type": "done", "content": reply}
-                else:
-                    yield {"type": "done", "content": draft}
+                gated, corrected = await _gate_streamed_reply(draft, llm_messages)
+                if corrected:
+                    yield {"type": "egress_correction", "content": gated}
+                yield {"type": "done", "content": gated}
                 return
 
             # Record the assistant's tool_calls so the next round is a clean
@@ -384,6 +391,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     name=name,
                     args=args,
                 )
@@ -425,6 +434,12 @@ class Agent:
                         "result": {"error": str(e)},
                     }
 
+        fallback = "I've gathered what you need. Ask me to go further and I will."
+        gated, corrected = await _gate_streamed_reply(
+            fallback, list(messages) + llm_extra
+        )
+        if corrected:
+            yield {"type": "egress_correction", "content": gated}
         yield {"type": "error", "message": "Too many tool rounds; stopping safely."}
 
     # ------------------------------------------------------------------
@@ -475,6 +490,8 @@ class Agent:
         user_context: dict[str, Any] | None,
         name: str,
         args: dict[str, Any],
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
     ) -> ToolDecision:
         """Judge one proposed tool call before anything runs."""
         if not typesafe_enabled():
@@ -493,6 +510,8 @@ class Agent:
                     args=args,
                     args_schema=args_schema,
                 ),
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
             )
         )
 
@@ -532,10 +551,15 @@ class Agent:
         if decision.branch is EgressBranch.DISCARD:
             return decision.reply or EGRESS_DONT_KNOW
         if decision.branch is EgressBranch.REGENERATE:
+            instruction = EGRESS_REGENERATE_INSTRUCTION
+            if decision.tone_note == "cold":
+                instruction += " Keep the tone warm and human, not robotic."
+            elif decision.tone_note == "sloppy":
+                instruction += " Keep the tone professional and concise."
             try:
                 corrected = await self.provider.complete(
                     messages=llm_messages
-                    + [ChatMessage(role="user", content=EGRESS_REGENERATE_INSTRUCTION)],
+                    + [ChatMessage(role="user", content=instruction)],
                     tools=None,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,

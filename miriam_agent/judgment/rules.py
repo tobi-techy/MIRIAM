@@ -260,6 +260,12 @@ def apply_rules(
         intent_conf < THRESHOLDS.intent_min_confidence
         or choice_margin(judgment.intent_type) < THRESHOLDS.intent_min_margin
     ):
+        if proposed is None and state.pending_inflow is not None:
+            # The inflow split already ran. An uncertain wording answer must
+            # not turn a completed receipt into an ask/defer turn.
+            outcome.next_mode = "stay_quiet"
+            outcome.action_choice = "classify_only"
+            return outcome
         outcome.add(Reason.LOW_CONFIDENCE)
         outcome.next_mode = "ask"
         outcome.action_choice = "defer"

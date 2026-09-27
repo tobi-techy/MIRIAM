@@ -39,7 +39,11 @@ from miriam_agent.judgment.schemas import (
     ToolJudgment,
 )
 from miriam_agent.judgment.service import JudgmentUnavailableError, evaluate
-from miriam_agent.judgment.state import build_ingress_state, detect_pii
+from miriam_agent.judgment.state import (  # noqa: F401
+    build_ingress_state,
+    build_state,
+    detect_pii,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,9 @@ class EgressDecision:
     reply: str | None = None
     judgment: EgressJudgment | None = None
     degraded: bool = False
+    # Soft signal from the tone question: never flips a send, but the caller
+    # appends it to the regenerate instruction so a retry fixes tone as well.
+    tone_note: str | None = None
 
 
 # Fixed templates. Deliberately short and policy-safe: the refuse/clarify ones
@@ -204,6 +211,8 @@ async def safe_ingress_gate(
     registry=None,
     history: list[dict] | None = None,
     user_context: dict | None = None,
+    memory_facts: list[dict] | None = None,
+    financial_plan: dict | None = None,
     **_: object,
 ) -> RoutingDecision | None:
     """Build and run ingress without letting an unexpected bug 500 chat.
@@ -220,6 +229,8 @@ async def safe_ingress_gate(
                 history=history,
                 user_context=user_context,
                 registry=registry,
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
             )
         )
     except Exception:
@@ -427,7 +438,7 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
     if irrelevant or incomplete:
         reasons = ["irrelevant_or_mismatched"] if irrelevant else []
         if incomplete:
-            reasons.append("incomplete_args")
+            reasons.append("args_incomplete")
         if unauthorized:
             reasons.append("authority_also_exceeded")
         if destructive:
@@ -480,6 +491,8 @@ async def egress_gate(
     client=None,
 ) -> EgressDecision:
     """Run the egress gate on a draft reply, before it is sent."""
+    if not (state.draft_reply or "").strip():
+        return EgressDecision(branch=EgressBranch.REGENERATE)
     if not enabled():
         return EgressDecision(branch=EgressBranch.SEND, degraded=True)
 
@@ -546,6 +559,15 @@ async def _claim_check_decision(
     return None
 
 
+def _tone_note(score: float) -> str | None:
+    """Map the 0..2 tone score to a soft hint. None means tone is fine."""
+    if score <= 0.6:
+        return "cold"
+    if score >= 1.6:
+        return "sloppy"
+    return None
+
+
 def decide_egress(judgment: EgressJudgment) -> EgressDecision:
     """Compose the egress answers into a send/discard/regenerate branch.
 
@@ -554,6 +576,7 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
     it). regenerate owns fixable quality misses: invented facts, or a reply
     that does not answer, retried once by the caller and then fallen back.
     """
+    tone = _tone_note(judgment.tone_fit.score)
     if (
         judgment.policy_violation.noul >= POLICY.policy_violation_discard
         or judgment.leaks_system.noul >= POLICY.leaks_system_discard
@@ -564,15 +587,22 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
             branch=EgressBranch.DISCARD,
             reply=EGRESS_SAFE_FALLBACK,
             judgment=judgment,
+            tone_note=tone,
         )
     if (
         judgment.invents_facts.noul >= POLICY.invents_facts_regenerate
         or judgment.answers_the_ask.noul < POLICY.egress_grounded_min
-        or judgment.tone_fit.score <= POLICY.tone_fit_regenerate_below
-        or judgment.tone_fit.score >= POLICY.tone_fit_regenerate_above
     ):
-        return EgressDecision(branch=EgressBranch.REGENERATE, judgment=judgment)
-    return EgressDecision(branch=EgressBranch.SEND, judgment=judgment)
+        return EgressDecision(
+            branch=EgressBranch.REGENERATE,
+            judgment=judgment,
+            tone_note=tone,
+        )
+    return EgressDecision(
+        branch=EgressBranch.SEND,
+        judgment=judgment,
+        tone_note=tone,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +660,7 @@ def _log_egress_decision(judgment: EgressJudgment, decision: EgressDecision) -> 
         extra={
             "branch": decision.branch.value,
             "degraded": decision.degraded,
+            "tone_note": decision.tone_note,
             "answers_the_ask": round(judgment.answers_the_ask.noul, 3),
             "invents_facts": round(judgment.invents_facts.noul, 3),
             "leaks_system": round(judgment.leaks_system.noul, 3),

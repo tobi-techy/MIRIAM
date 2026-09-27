@@ -471,3 +471,23 @@ async def test_ambiguous_ingress_hazard_gets_a_second_opinion(monkeypatch):
     assert client.calls == 2
     assert decision.branch is Branch.REFUSE
     assert decision.refusal_reason == "jailbreak_or_disallowed"
+
+
+def test_nine_digit_amount_is_not_treated_as_pii():
+    state = build_ingress_state(user_id="u-1", message="send 123456789 to Ada")
+
+    assert state.pii_detected is False
+
+
+def test_luhn_invalid_card_candidate_is_not_a_local_pii_refusal():
+    state = build_ingress_state(
+        user_id="u-1", message="reference 4111111111111112 is on file"
+    )
+
+    assert state.pii_detected is False
+
+
+def test_luhn_valid_card_candidate_is_local_pii():
+    state = build_ingress_state(user_id="u-1", message="my card is 4111111111111111")
+
+    assert state.pii_detected is True

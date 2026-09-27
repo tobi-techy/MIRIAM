@@ -40,19 +40,52 @@ _POLICY_FORBIDDEN = (
 # state reaches TypeSafe so the judgment API never sees a card number, a
 # password, or a government id. The ingress gate short-circuits on detection.
 _CARD_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+# This is a redaction-only catch-all. It must not drive refusal: a nine-digit
+# amount or account reference is not automatically a secret.
 _LONG_DIGITS_RE = re.compile(r"\b\d{9,}\b")
+_ELEVEN_DIGIT_ID_RE = re.compile(r"\b\d{11}\b")
 _CRED_KV_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|passcode|cvv|pin|otp)\b(\s*(?:is|:|=)\s*)(\S+)"
 )
 
 
+def _luhn_valid(digits: str) -> bool:
+    """Whether a digit string passes the Luhn checksum."""
+    if not digits or not digits.isdigit():
+        return False
+    total = 0
+    parity = len(digits) % 2
+    for index, char in enumerate(digits):
+        value = int(char)
+        if index % 2 == parity:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
+def _has_luhn_card(text: str) -> bool:
+    for match in _CARD_RE.finditer(text):
+        digits = re.sub(r"\D", "", match.group(0))
+        if 13 <= len(digits) <= 19 and _luhn_valid(digits):
+            return True
+    return False
+
+
 def detect_pii(text: str | None) -> bool:
-    """Whether ``text`` contains an obvious secret that should never ship."""
+    """Whether ``text`` contains a clear secret that should never ship.
+
+    The broad ``9+ digit`` rule is intentionally not part of refusal; it is
+    used only to redact during state construction. Refusal requires a labelled
+    credential, an 11-digit NIN/BVN-shaped value, or a card candidate that
+    passes the Luhn checksum.
+    """
     if not text:
         return False
     return bool(
-        _CARD_RE.search(text)
-        or _LONG_DIGITS_RE.search(text)
+        _ELEVEN_DIGIT_ID_RE.search(text)
+        or _has_luhn_card(text)
         or _CRED_KV_RE.search(text)
     )
 
@@ -147,6 +180,55 @@ def _redact_user_text() -> bool:
         return bool(get_settings().TYPESAFE_REDACT_USER_TEXT)
     except Exception:  # noqa: BLE001 - never let config block state building
         return False
+
+
+def _compact_profile(user_context: dict[str, Any]) -> str:
+    """Compact the profile fields the generator sees in CURRENT SITUATION."""
+    try:
+        parts: list[str] = []
+        for key in (
+            "name",
+            "currency",
+            "risk_tolerance",
+            "monthly_income",
+            "goals",
+            "balances",
+        ):
+            value = user_context.get(key)
+            if value not in (None, "", [], {}):
+                parts.append(f"{key}: {str(value)[:300]}")
+        roles = user_context.get("roles")
+        if roles:
+            parts.append(f"roles: {str(roles)[:200]}")
+        return "\n".join(parts)[:_GROUNDING_TEXT_MAX]
+    except Exception:  # noqa: BLE001 - grounding must never break the turn
+        return ""
+
+
+def _compact_memory(memory_facts: list[dict[str, Any]] | None) -> str:
+    """Compact remembered facts (max 8) for judgment grounding."""
+    try:
+        lines: list[str] = []
+        for fact in (memory_facts or [])[:8]:
+            if not isinstance(fact, dict):
+                continue
+            kind = str(fact.get("type", "fact"))[:40]
+            content = str(fact.get("content", ""))[:300]
+            if content.strip():
+                lines.append(f"- [{kind}] {content}")
+        return "\n".join(lines)[:_GROUNDING_TEXT_MAX]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _compact_plan(financial_plan: dict[str, Any] | None) -> str:
+    """Compact the current plan for judgment grounding."""
+    try:
+        if not isinstance(financial_plan, dict) or not financial_plan:
+            return ""
+        return json.dumps(financial_plan, default=str)[:_GROUNDING_TEXT_MAX]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _grounding_items(
@@ -295,6 +377,9 @@ def build_state(
         if draft_reply is not None
         else []
     )
+    user_profile = _compact_profile(ctx)
+    memory_context = _compact_memory(memory_facts)
+    plan_context = _compact_plan(financial_plan)
 
     if proposed_tool is not None and not isinstance(proposed_tool, ProposedTool):
         if isinstance(proposed_tool, dict):
@@ -321,6 +406,9 @@ def build_state(
         proposed_tool=proposed_tool,
         draft_reply=draft_reply,
         policies=PolicySlice(allowed=_POLICY_ALLOWED, forbidden=_POLICY_FORBIDDEN),
+        user_profile=user_profile,
+        memory_context=memory_context,
+        plan_context=plan_context,
         pii_detected=pii_detected,
     )
 
@@ -333,6 +421,8 @@ def build_ingress_state(
     user_context: dict[str, Any] | None = None,
     registry=None,
     channel: str = "api",
+    memory_facts: list[dict[str, Any]] | None = None,
+    financial_plan: dict[str, Any] | None = None,
 ) -> JudgmentState:
     """Build the ingress state (no proposed tool or draft yet)."""
     return build_state(
@@ -342,4 +432,6 @@ def build_ingress_state(
         user_context=user_context,
         registry=registry,
         channel=channel,
+        memory_facts=memory_facts,
+        financial_plan=financial_plan,
     )
