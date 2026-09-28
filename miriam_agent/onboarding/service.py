@@ -322,6 +322,29 @@ _GOAL_META_KEYS = {
 _SENTIMENT_KEYS = frozenset({"sentiment", "user_sentiment"})
 _MONEY_SCRIPT_KEYS = frozenset({"money_script", "script"})
 
+# Fact keys that hold a quantity of money (or runway), and are therefore held
+# to the grounded-number rule. Reserved meta keys are deliberately absent: a
+# confidence score or a goal target date is the model's own read, not a claim
+# about what the user said.
+_MONEY_AMOUNT_FACT_KEYS = frozenset(
+    {
+        "cashflow",
+        "income",
+        "income_amount",
+        "fixed_costs",
+        "rent",
+        "obligations",
+        "savings",
+        "debt",
+        "expenses",
+        "spend",
+        "spending",
+        "budget",
+        "salary",
+        "runway",
+    }
+)
+
 # Structured values are short labels, never long prose.
 _META_VALUE_MAX = 64
 
@@ -1017,6 +1040,7 @@ class OnboardingService:
         violations = self._spec_violations(
             state, outcome, grounded_extra=text, present=False
         )
+        violations.extend(self._fact_violations(state, outcome, grounded_extra=text))
         if hard_violations(violations):
             retry = await self._reground(
                 state=state,
@@ -1030,6 +1054,9 @@ class OnboardingService:
                 outcome = retry
                 violations = self._spec_violations(
                     state, outcome, grounded_extra=text, present=False
+                )
+                violations.extend(
+                    self._fact_violations(state, outcome, grounded_extra=text)
                 )
         if hard_violations(violations):
             # The retry drifted too, or there was no retry to be had. A
@@ -1471,6 +1498,37 @@ class OnboardingService:
                 prev_user=grounded_extra,
             ),
         )
+
+    def _fact_violations(
+        self,
+        state: OnboardingState,
+        outcome: driver.DriverOutcome,
+        *,
+        grounded_extra: str,
+    ) -> list[str]:
+        """R10 for a money-amount fact whose value reports a figure nobody said.
+
+        The reply is linted, but the *facts* are persisted to state and memory
+        and later read back as what the user told her. A figure the model parks
+        in a fact beside a clean reply would otherwise resurface as ground
+        truth on the next turn, so facts get the same grounded-number rule.
+
+        Only amount facts are checked. The reserved meta fields (confidence,
+        sentiment, target dates, estimated goals, the money script) are the
+        model's own structured reads, and they legitimately carry numbers the
+        user never spoke -- "confidence 0.72", "target 2027". Treating those as
+        invented figures would refuse almost every interview turn.
+        """
+        ground = self._grounding_text(state, extra=grounded_extra)
+        violations: list[str] = []
+        for key, value in (outcome.facts or {}).items():
+            if key.casefold() not in _MONEY_AMOUNT_FACT_KEYS:
+                continue
+            if not isinstance(value, str) or not value:
+                continue
+            if "R10" in evaluate_reply(value, EvalMeta(grounded=ground)):
+                violations.append("R10")
+        return violations
 
     async def _trace_turn(
         self,

@@ -979,7 +979,7 @@ def novel_entities(reply: str, grounded: str) -> list[str]:
                     break
             if previous not in _ENTITY_CUES:
                 continue
-        if surface.lower() in corpus:
+        if re.search(rf"\b{re.escape(surface.lower())}\b", corpus):
             continue
         found.append(surface)
     return found

@@ -48,11 +48,11 @@ from miriam_agent.judgment.gates import (
     EgressDecision,
     ToolBranch,
     ToolDecision,
-    build_state,
     egress_gate,
     tool_gate,
 )
 from miriam_agent.judgment.schemas import ProposedTool
+from miriam_agent.judgment.state import build_state
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.observability.metrics import record_reply_guard
 from miriam_agent.safety import grounding
@@ -62,7 +62,6 @@ from miriam_agent.utils.text import (
     bubble_sets,
     clean_text,
     lift_reaction,
-    split_ready_sentences,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,6 +212,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     draft=response.content,
                     llm_messages=llm_messages,
                     tool_results=raw_tool_results,
@@ -274,6 +275,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     name=name,
                     args=args,
                 )
@@ -334,7 +337,13 @@ class Agent:
         Money turns do not reach here; ``api/chat.py`` routes them to the
         orchestrator. A model that still asks for a money tool is refused, and
         the refusal is streamed as a tool result so it can answer the user.
+
+        Tokens stream live for responsiveness, but the final text is always
+        egress-gated before ``done``: when the gate rewrites the reply, an
+        ``egress_correction`` event carries the text to send and ``done``
+        carries the same gated text, so no ungrounded prose leaves this path.
         """
+
         messages = self._build_messages(
             message=message,
             history=history,
@@ -349,26 +358,34 @@ class Agent:
         # guard and the judge both need the whole evidence.
         raw_tool_results: list[dict[str, Any]] = []
 
-        for _round in range(MAX_TOOL_ROUNDS):
-            llm_messages = list(messages) + llm_extra
-            grounded = self._grounding_corpus(
+        async def _gate(draft: str, llm_messages: list[ChatMessage]) -> str:
+            """The full egress gate -- deterministic figure guard, then the
+            judge -- applied to a finished draft."""
+            return await self._apply_egress(
+                user_id=user_id,
                 message=message,
                 history=history,
                 user_context=user_context,
                 memory_facts=memory_facts,
                 financial_plan=financial_plan,
+                draft=draft,
+                llm_messages=llm_messages,
                 tool_results=raw_tool_results,
+                grounded=self._grounding_corpus(
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
+                    tool_results=raw_tool_results,
+                ),
             )
+
+        for _round in range(MAX_TOOL_ROUNDS):
+            llm_messages = list(messages) + llm_extra
 
             collected: list[str] = []
             stream_tool_calls: list[dict[str, Any]] = []
-            # Hold each sentence back until it has been checked. A number
-            # becomes a claim when its sentence completes, so emitting whole
-            # sentences is the finest grain that can be guaranteed honest --
-            # and the stream still types.
-            emitted = ""
-            holdback = ""
-            refused = False
             async for event in self.provider.stream(
                 messages=llm_messages,
                 tools=schemas,
@@ -377,67 +394,18 @@ class Agent:
             ):
                 if event["type"] == "token":
                     collected.append(event["content"])
-                    if refused:
-                        continue  # nothing more of this reply is shown
-                    holdback += event["content"]
-                    ready, holdback = split_ready_sentences(holdback)
-                    problems = (
-                        self._reply_problems(emitted + ready, grounded) if ready else []
-                    )
-                    if problems:
-                        refused = True
-                        for problem in problems:
-                            record_reply_guard(_rule_of(problem), "blocked")
-                        logger.warning(
-                            "streamed reply refused mid-flight: %s",
-                            "; ".join(problems[:5]),
-                        )
-                        correction = "\n" + EGRESS_DONT_KNOW
-                        emitted += correction
-                        yield {"type": "token", "content": correction}
-                        continue
-                    if ready:
-                        emitted += ready
-                        yield {"type": "token", "content": ready}
+                    yield {"type": "token", "content": event["content"]}
                 elif event["type"] == "tool_call":
                     tc = event["tool_call"]
                     yield {"type": "tool_call", "tool_call": tc}
                     stream_tool_calls.append(tc)
 
             if not stream_tool_calls:
-                if not refused and holdback:
-                    problems = self._reply_problems(emitted + holdback, grounded)
-                    if problems:
-                        refused = True
-                        for problem in problems:
-                            record_reply_guard(_rule_of(problem), "blocked")
-                        logger.warning(
-                            "streamed reply refused at the tail: %s",
-                            "; ".join(problems[:5]),
-                        )
-                        correction = "\n" + EGRESS_DONT_KNOW
-                        emitted += correction
-                        yield {"type": "token", "content": correction}
-                    else:
-                        emitted += holdback
-                        yield {"type": "token", "content": holdback}
-                if not refused:
-                    # Streaming shows words as they are produced, so the judge
-                    # cannot prevent -- it can only correct. Run it on the whole
-                    # reply once it exists and append the standard line when it
-                    # refuses what the user has already seen.
-                    correction = await self._judge_streamed(
-                        text=emitted,
-                        user_id=user_id,
-                        message=message,
-                        history=history,
-                        user_context=user_context,
-                        tool_results=raw_tool_results,
-                    )
-                    if correction:
-                        emitted += "\n" + correction
-                        yield {"type": "token", "content": "\n" + correction}
-                yield {"type": "done", "content": emitted}
+                draft = "".join(collected)
+                gated = await _gate(draft, llm_messages)
+                if gated != draft:
+                    yield {"type": "egress_correction", "content": gated}
+                yield {"type": "done", "content": gated}
                 return
 
             # Record the assistant's tool_calls so the next round is a clean
@@ -477,6 +445,8 @@ class Agent:
                     message=message,
                     history=history,
                     user_context=user_context,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                     name=name,
                     args=args,
                 )
@@ -520,6 +490,10 @@ class Agent:
                         "result": {"error": str(e)},
                     }
 
+        fallback = "I've gathered what you need. Ask me to go further and I will."
+        gated = await _gate(fallback, list(messages) + llm_extra)
+        if gated != fallback:
+            yield {"type": "egress_correction", "content": gated}
         yield {"type": "error", "message": "Too many tool rounds; stopping safely."}
 
     # ------------------------------------------------------------------
@@ -564,54 +538,6 @@ class Agent:
             return {"error": _MONEY_TOOL_REFUSAL.format(name=name), "_blocked": True}
         return {"error": f"unknown tool {name}"}
 
-    async def _judge_streamed(
-        self,
-        *,
-        text: str,
-        user_id: str,
-        message: str,
-        history: list[dict[str, Any]] | None,
-        user_context: dict[str, Any] | None,
-        tool_results: list[dict[str, Any]],
-    ) -> str | None:
-        """The egress judge, applied to a stream that has already been sent.
-
-        Returns the correction to append, or ``None`` when the reply stands.
-        Best effort by construction: the words are on the user's screen before
-        this runs, which is the price of typing. The figure guard does not have
-        that limitation -- it holds each sentence back -- so the split is
-        deliberate: correctness is prevented, policy and tone are corrected.
-        """
-        if not text or not typesafe_enabled():
-            if not typesafe_enabled() and self.config.fail_closed_without_judge:
-                record_reply_guard("judge", "fell_back")
-                return EGRESS_DONT_KNOW
-            return None
-        try:
-            decision = await egress_gate(
-                build_state(
-                    user_id=user_id,
-                    message=message,
-                    history=history,
-                    user_context=user_context,
-                    registry=self.registry,
-                    draft_reply=text,
-                    tool_results=tool_results,
-                )
-            )
-        except Exception:
-            logger.warning("streamed egress judge failed", exc_info=True)
-            if self.config.fail_closed_without_judge:
-                record_reply_guard("judge", "fell_back")
-                return EGRESS_DONT_KNOW
-            return None
-        if decision.branch is EgressBranch.SEND and not (
-            decision.degraded and self.config.fail_closed_without_judge
-        ):
-            return None
-        record_reply_guard("judge", "fell_back")
-        return decision.reply or EGRESS_DONT_KNOW
-
     async def _tool_gate_decision(
         self,
         *,
@@ -621,10 +547,14 @@ class Agent:
         user_context: dict[str, Any] | None,
         name: str,
         args: dict[str, Any],
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
     ) -> ToolDecision:
         """Judge one proposed tool call before anything runs."""
         if not typesafe_enabled():
             return ToolDecision(branch=ToolBranch.ALLOW, degraded=True)
+        tool = self.registry.get(name)
+        args_schema = getattr(tool, "args_schema", {}) if tool is not None else {}
         return await tool_gate(
             build_state(
                 user_id=user_id,
@@ -632,7 +562,13 @@ class Agent:
                 history=history,
                 user_context=user_context,
                 registry=self.registry,
-                proposed_tool=ProposedTool(name=name, args=args),
+                proposed_tool=ProposedTool(
+                    name=name,
+                    args=args,
+                    args_schema=args_schema,
+                ),
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
             )
         )
 
@@ -647,6 +583,8 @@ class Agent:
         llm_messages: list[ChatMessage],
         tool_results: list[dict[str, Any]],
         grounded: str = "",
+        memory_facts: list[dict[str, Any]] | None = None,
+        financial_plan: dict[str, Any] | None = None,
     ) -> str:
         """Gate a draft, then return the reply to send.
 
@@ -684,6 +622,8 @@ class Agent:
                     registry=self.registry,
                     draft_reply=text,
                     tool_results=tool_results,
+                    memory_facts=memory_facts,
+                    financial_plan=financial_plan,
                 )
             )
 
@@ -697,10 +637,15 @@ class Agent:
         if decision.branch is EgressBranch.DISCARD:
             return decision.reply or EGRESS_DONT_KNOW
         if decision.branch is EgressBranch.REGENERATE:
+            instruction = EGRESS_REGENERATE_INSTRUCTION
+            if decision.tone_note == "cold":
+                instruction += " Keep the tone warm and human, not robotic."
+            elif decision.tone_note == "sloppy":
+                instruction += " Keep the tone professional and concise."
             try:
                 corrected = await self.provider.complete(
                     messages=llm_messages
-                    + [ChatMessage(role="user", content=EGRESS_REGENERATE_INSTRUCTION)],
+                    + [ChatMessage(role="user", content=instruction)],
                     tools=None,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,

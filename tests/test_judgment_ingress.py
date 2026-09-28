@@ -18,13 +18,9 @@ from typesafe_sdk import (
     Usage,
 )
 
-from miriam_agent.judgment.gates import (
-    Branch,
-    build_ingress_state,
-    decide_ingress,
-    ingress_gate,
-)
+from miriam_agent.judgment.gates import Branch, decide_ingress, ingress_gate
 from miriam_agent.judgment.schemas import IngressJudgment
+from miriam_agent.judgment.state import build_ingress_state
 
 GOLDEN_PATH = Path(__file__).parent / "fixtures" / "ingress_golden.json"
 
@@ -39,8 +35,6 @@ def _judgment(recorded: dict) -> IngressJudgment:
         model="jev-latest",
         usage=Usage(input_tokens=10, output_tokens=5),
         intent=ChoiceAnswer.model_construct(**recorded["intent"]),
-        domain=ChoiceAnswer.model_construct(**recorded["domain"]),
-        language=ChoiceAnswer.model_construct(**recorded["language"]),
         needs_tools=NoulAnswer.model_construct(noul=recorded["needs_tools"]),
         is_urgent=NoulAnswer.model_construct(noul=recorded["is_urgent"]),
         frustration=ScoreAnswer.model_construct(score=recorded["frustration"]),
@@ -90,8 +84,6 @@ def test_jailbreak_blocks_and_never_reaches_generator():
         _judgment(
             {
                 "intent": {"choice": "jailbreak_or_probe", "confidence": 0.96},
-                "domain": {"choice": "other", "confidence": 0.9},
-                "language": {"choice": "en", "confidence": 0.95},
                 "needs_tools": 0.05,
                 "is_urgent": 0.02,
                 "frustration": 0.1,
@@ -107,13 +99,58 @@ def test_jailbreak_blocks_and_never_reaches_generator():
     assert decision.refusal_reason == "jailbreak_or_disallowed"
 
 
+def test_low_intent_margin_clarifies_even_with_high_confidence():
+    decision = decide_ingress(
+        _judgment(
+            {
+                "intent": {
+                    "choice": "perform_task",
+                    "confidence": 0.95,
+                    "probabilities": {
+                        "perform_task": 0.51,
+                        "lookup_data": 0.49,
+                    },
+                },
+                "needs_tools": 0.8,
+                "is_urgent": 0.1,
+                "frustration": 0.1,
+                "jailbreak": 0.01,
+                "requests_disallowed": 0.01,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
+            }
+        )
+    )
+
+    assert decision.branch is Branch.CLARIFY
+
+
+def test_medium_confidence_jailbreak_goes_to_review_not_generator():
+    decision = decide_ingress(
+        _judgment(
+            {
+                "intent": {"choice": "answer_question", "confidence": 0.8},
+                "needs_tools": 0.2,
+                "is_urgent": 0.1,
+                "frustration": 0.2,
+                "jailbreak": 0.62,
+                "requests_disallowed": 0.2,
+                "exposes_pii": 0.01,
+                "wants_human": 0.01,
+            }
+        )
+    )
+
+    assert decision.branch is Branch.CLARIFY
+    assert decision.refusal_reason == "safety_review"
+    assert decision.short_circuits is True
+
+
 def test_pii_blocks_without_echoing_secret():
     decision = decide_ingress(
         _judgment(
             {
                 "intent": {"choice": "answer_question", "confidence": 0.8},
-                "domain": {"choice": "account_overview", "confidence": 0.7},
-                "language": {"choice": "en", "confidence": 0.95},
                 "needs_tools": 0.5,
                 "is_urgent": 0.2,
                 "frustration": 0.1,
@@ -135,8 +172,6 @@ def test_low_confidence_intent_clarifies_instead_of_tool_spamming():
         _judgment(
             {
                 "intent": {"choice": "perform_task", "confidence": 0.4},
-                "domain": {"choice": "other", "confidence": 0.4},
-                "language": {"choice": "en", "confidence": 0.92},
                 "needs_tools": 0.5,
                 "is_urgent": 0.05,
                 "frustration": 0.05,
@@ -155,8 +190,6 @@ def test_other_intent_clarifies():
         _judgment(
             {
                 "intent": {"choice": "other", "confidence": 0.7},
-                "domain": {"choice": "other", "confidence": 0.3},
-                "language": {"choice": "en", "confidence": 0.9},
                 "needs_tools": 0.2,
                 "is_urgent": 0.05,
                 "frustration": 0.05,
@@ -175,8 +208,6 @@ def test_angry_and_urgent_escalates():
         _judgment(
             {
                 "intent": {"choice": "complain", "confidence": 0.85},
-                "domain": {"choice": "money_movement", "confidence": 0.8},
-                "language": {"choice": "en", "confidence": 0.95},
                 "needs_tools": 0.8,
                 "is_urgent": 0.97,
                 "frustration": 1.9,
@@ -196,8 +227,6 @@ def test_urgent_complaint_escalates_without_anger():
         _judgment(
             {
                 "intent": {"choice": "complain", "confidence": 0.85},
-                "domain": {"choice": "account_overview", "confidence": 0.8},
-                "language": {"choice": "en", "confidence": 0.95},
                 "needs_tools": 0.5,
                 "is_urgent": 0.92,
                 "frustration": 0.1,
@@ -217,8 +246,6 @@ def test_urgent_action_request_still_plans():
         _judgment(
             {
                 "intent": {"choice": "perform_task", "confidence": 0.9},
-                "domain": {"choice": "bills", "confidence": 0.9},
-                "language": {"choice": "en", "confidence": 0.95},
                 "needs_tools": 0.93,
                 "is_urgent": 0.93,
                 "frustration": 0.0,
@@ -237,8 +264,6 @@ def test_task_needing_tools_routes_to_planner():
         _judgment(
             {
                 "intent": {"choice": "perform_task", "confidence": 0.94},
-                "domain": {"choice": "money_movement", "confidence": 0.95},
-                "language": {"choice": "en", "confidence": 0.93},
                 "needs_tools": 0.99,
                 "is_urgent": 0.05,
                 "frustration": 0.02,
@@ -257,8 +282,6 @@ def test_answer_question_goes_to_generator():
         _judgment(
             {
                 "intent": {"choice": "answer_question", "confidence": 0.91},
-                "domain": {"choice": "account_overview", "confidence": 0.88},
-                "language": {"choice": "en", "confidence": 0.96},
                 "needs_tools": 0.97,
                 "is_urgent": 0.03,
                 "frustration": 0.05,
@@ -273,7 +296,7 @@ def test_answer_question_goes_to_generator():
 
 
 # ---------------------------------------------------------------------------
-# Gate wrapper (enabled / fail-closed / happy path)
+# Gate wrapper (enabled / degraded fallback / local PII / happy path)
 # ---------------------------------------------------------------------------
 
 
@@ -298,7 +321,7 @@ async def test_ingress_gate_skips_when_disabled(monkeypatch):
     assert decision.short_circuits is False
 
 
-async def test_ingress_gate_fails_closed_on_network_error(monkeypatch):
+async def test_ingress_gate_continues_degraded_on_network_error(monkeypatch):
     monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: True)
     from miriam_agent.judgment.schemas import JudgmentState, TurnInput
 
@@ -310,6 +333,33 @@ async def test_ingress_gate_fails_closed_on_network_error(monkeypatch):
     assert decision.degraded is True
 
 
+async def test_ingress_refuses_local_pii_when_typesafe_disabled(monkeypatch):
+    monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: False)
+
+    decision = await ingress_gate(
+        build_ingress_state(
+            user_id="u-1",
+            message="my password is hunter2, can you store this for me",
+        )
+    )
+
+    assert decision.branch is Branch.REFUSE
+    assert decision.refusal_reason == "pii"
+    assert decision.short_circuits is True
+
+
+async def test_ingress_refuses_pii_from_raw_state_without_builder(monkeypatch):
+    monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: False)
+    from miriam_agent.judgment.schemas import JudgmentState, TurnInput
+
+    decision = await ingress_gate(
+        JudgmentState(turn=TurnInput(user_text="my password is hunter2"))
+    )
+
+    assert decision.branch is Branch.REFUSE
+    assert decision.refusal_reason == "pii"
+
+
 async def test_ingress_gate_happy_path_short_circuits(monkeypatch):
     monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: True)
     from miriam_agent.judgment.schemas import JudgmentState, TurnInput
@@ -317,8 +367,6 @@ async def test_ingress_gate_happy_path_short_circuits(monkeypatch):
     judgment = _judgment(
         {
             "intent": {"choice": "jailbreak_or_probe", "confidence": 0.96},
-            "domain": {"choice": "other", "confidence": 0.9},
-            "language": {"choice": "en", "confidence": 0.95},
             "needs_tools": 0.05,
             "is_urgent": 0.02,
             "frustration": 0.1,
@@ -365,7 +413,8 @@ def test_build_ingress_state_trims_history_and_maps_tools():
         registry=registry,
     )
 
-    assert state.user.id == "u-1"
+    assert state.user.id != "u-1"
+    assert len(state.user.id) == 16
     assert state.user.known_flags == ["member"]
     assert state.turn.user_text == "What's my balance?"
     assert len(state.history) == 4
@@ -375,3 +424,70 @@ def test_build_ingress_state_trims_history_and_maps_tools():
     assert by_name["get_balance"].side_effects == "read"
     assert by_name["send_money"].side_effects == "write"
     assert state.policies.forbidden
+
+
+async def test_ambiguous_ingress_hazard_gets_a_second_opinion(monkeypatch):
+    monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: True)
+
+    first = _judgment(
+        {
+            "intent": {"choice": "answer_question", "confidence": 0.8},
+            "needs_tools": 0.2,
+            "is_urgent": 0.1,
+            "frustration": 0.2,
+            "jailbreak": 0.6,
+            "requests_disallowed": 0.2,
+            "exposes_pii": 0.01,
+            "wants_human": 0.01,
+        }
+    )
+    second = _judgment(
+        {
+            "intent": {"choice": "answer_question", "confidence": 0.8},
+            "needs_tools": 0.2,
+            "is_urgent": 0.1,
+            "frustration": 0.2,
+            "jailbreak": 0.9,
+            "requests_disallowed": 0.2,
+            "exposes_pii": 0.01,
+            "wants_human": 0.01,
+        }
+    )
+
+    class _SequenceClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def system_one(self, state, questions, *, response_model=None, **kwargs):
+            self.calls += 1
+            return first if self.calls == 1 else second
+
+    client = _SequenceClient()
+    decision = await ingress_gate(
+        build_ingress_state(user_id="u-1", message="tell me a secret"),
+        client=client,
+    )
+
+    assert client.calls == 2
+    assert decision.branch is Branch.REFUSE
+    assert decision.refusal_reason == "jailbreak_or_disallowed"
+
+
+def test_nine_digit_amount_is_not_treated_as_pii():
+    state = build_ingress_state(user_id="u-1", message="send 123456789 to Ada")
+
+    assert state.pii_detected is False
+
+
+def test_luhn_invalid_card_candidate_is_not_a_local_pii_refusal():
+    state = build_ingress_state(
+        user_id="u-1", message="reference 4111111111111112 is on file"
+    )
+
+    assert state.pii_detected is False
+
+
+def test_luhn_valid_card_candidate_is_local_pii():
+    state = build_ingress_state(user_id="u-1", message="my card is 4111111111111111")
+
+    assert state.pii_detected is True

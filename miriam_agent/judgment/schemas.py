@@ -38,6 +38,19 @@ class HistoryTurn(BaseModel):
     text: str
 
 
+class GroundingItem(BaseModel):
+    """One source the egress judge may use to verify a draft's claims.
+
+    ``source`` and ``observed_at`` stay separate from ``text`` so the judge can
+    distinguish a tool result from a memory, and a stale memory from a current
+    one. This is intentionally evidence metadata, not a second prompt.
+    """
+
+    source: str
+    text: str
+    observed_at: str = ""
+
+
 class ToolDescriptor(BaseModel):
     """A compact capability hint, never a raw tool dump."""
 
@@ -56,6 +69,9 @@ class ProposedTool(BaseModel):
 
     name: str
     args: dict = Field(default_factory=dict)
+    # The exact JSON Schema the executor validates against. Without it the
+    # model cannot judge whether required arguments are actually complete.
+    args_schema: dict = Field(default_factory=dict)
     why: str = ""
 
 
@@ -64,15 +80,27 @@ class JudgmentState(BaseModel):
 
     Only the relevant slice is included: no embeddings, no raw tool dumps, no
     full documents, and history is bounded before it reaches this model.
+
+    ``user_profile`` / ``memory_context`` / ``plan_context`` carry the same
+    grounding the generator sees in its system prompt (profile numbers,
+    remembered facts, current plan), compacted and bounded. They exist so the
+    egress ``invents_facts`` question judges a draft against the same evidence
+    the generator wrote it from, instead of history + tool results alone.
     """
 
     user: UserContext = Field(default_factory=UserContext)
     turn: TurnInput = Field(default_factory=TurnInput)
     history: list[HistoryTurn] = Field(default_factory=list)
+    # Egress-only: the profile/memory/plan/tool facts the generator saw. The
+    # ingress and tool gates ignore this field.
+    supporting_context: list[GroundingItem] = Field(default_factory=list)
     tools: list[ToolDescriptor] = Field(default_factory=list)
     proposed_tool: ProposedTool | None = None
     draft_reply: str | None = None
     policies: PolicySlice = Field(default_factory=PolicySlice)
+    user_profile: str = ""
+    memory_context: str = ""
+    plan_context: str = ""
     # Code-internal: set when a deterministic scan found obvious PII in the
     # user's message or history. Excluded from the payload sent to TypeSafe.
     pii_detected: bool = Field(default=False, exclude=True)
@@ -82,8 +110,6 @@ class IngressJudgment(SystemOneResponse):
     """Typed answers for the ingress catalog (one request per user turn)."""
 
     intent: ChoiceAnswer
-    domain: ChoiceAnswer
-    language: ChoiceAnswer
     needs_tools: NoulAnswer
     is_urgent: NoulAnswer
     frustration: ScoreAnswer

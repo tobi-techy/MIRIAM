@@ -149,30 +149,3 @@ def bubble_sets(text: str) -> tuple[str, list[str]]:
         return (text or "").strip(), []
     return bubbles[0], bubbles[1:MAX_EXTRA_MESSAGES]
 
-
-def split_ready_sentences(text: str) -> tuple[str, str]:
-    """Split ``text`` into (complete sentences, unfinished tail).
-
-    The streaming path holds each sentence back until it has been checked: a
-    figure becomes a claim once its sentence completes, so whole sentences are
-    the finest grain that can be guaranteed honest.
-
-    A period that directly follows a digit is only a boundary when a digit does
-    not follow it: "1,500.00" and "1.5m" must not split mid-number, because the
-    fragment would then be checked as a claim of its own -- "1." is a number
-    nobody gave, and the reply would be refused for a figure it never made. A
-    period after anything else is a plain sentence end.
-    """
-    t = text or ""
-    cut = -1
-    for match in re.finditer(r"[.!?\n]", t):
-        index = match.start()
-        if match.group(0) == ".":
-            after = t[index + 1 : index + 2]
-            before = t[index - 1 : index]
-            if before.isdigit() and (not after or after.isdigit()):
-                continue
-        cut = index
-    if cut < 0:
-        return "", t
-    return t[: cut + 1], t[cut + 1 :]

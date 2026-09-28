@@ -20,7 +20,6 @@ from miriam_agent.agents.llm import LLMResponse
 from miriam_agent.judgment.gates import EGRESS_DONT_KNOW
 from miriam_agent.safety import grounding
 from miriam_agent.tools import build_tool_registry
-from miriam_agent.utils.text import split_ready_sentences
 
 
 def _run(coro):
@@ -191,30 +190,6 @@ def test_offers_and_questions_are_not_claims():
 
 
 # ---------------------------------------------------------------------------
-# Sentence splitting for the streaming path
-# ---------------------------------------------------------------------------
-
-
-def test_splitting_never_cuts_a_decimal_in_half():
-    ready, rest = split_ready_sentences("You have 1,500.00 in spend.")
-    assert ready == "You have 1,500.00 in spend."
-    assert rest == ""
-
-
-def test_splitting_never_cuts_a_compressed_figure():
-    ready, rest = split_ready_sentences("Your balance is 1")
-    assert ready == "" and rest == "Your balance is 1"
-    ready, rest = split_ready_sentences("Your balance is 1.")
-    assert ready == "" and rest == "Your balance is 1."
-
-
-def test_splitting_returns_the_last_complete_sentence_only():
-    ready, rest = split_ready_sentences("One idea. Then a question")
-    assert ready == "One idea."
-    assert rest == " Then a question"
-
-
-# ---------------------------------------------------------------------------
 # End to end: the answer path
 # ---------------------------------------------------------------------------
 
@@ -301,24 +276,27 @@ def test_a_fresh_source_still_grounds():
 # ---------------------------------------------------------------------------
 
 
-def test_streaming_never_shows_an_invented_figure():
+def test_streaming_corrects_an_invented_figure():
+    """Tokens stream live (main's contract), but the delivered reply is gated:
+    ``done`` carries the gated text and ``egress_correction`` carries the
+    replacement."""
     provider = _ScriptedProvider(
-        chunks=["Your balance is 8,421. ", "Want me to plan around it?"]
+        chunks=["Your balance is 8,421. ", "Want me to plan around it?"],
+        replies=["I don't have that reliably yet."],
     )
     agent = Agent(registry=build_tool_registry(), provider=provider)
 
-    streamed, done, _events = _run(
+    streamed, done, events = _run(
         _collect_stream(agent, user_id="u1", token="tok", message="what's my balance?")
     )
 
-    assert "8,421" not in streamed
-    assert EGRESS_DONT_KNOW.split(".")[0] in streamed
-    # Whatever the UI shows last must match what was streamed.
+    assert "8,421" in streamed
     assert "8,421" not in done
-    assert EGRESS_DONT_KNOW.split(".")[0] in done
+    corrections = [e["content"] for e in events if e["type"] == "egress_correction"]
+    assert corrections == [done]
 
 
-def test_streaming_sends_a_clean_reply_in_sentences():
+def test_streaming_sends_a_clean_reply():
     provider = _ScriptedProvider(
         chunks=["You have 12,500 in spend. ", "Want the breakdown?"]
     )
@@ -336,20 +314,22 @@ def test_streaming_sends_a_clean_reply_in_sentences():
 
     assert streamed == "You have 12,500 in spend. Want the breakdown?"
     assert done == streamed
-    # Held back by sentence, not by whole reply: more than one token event.
-    assert len([e for e in events if e["type"] == "token"]) > 1
+    assert not [e for e in events if e["type"] == "egress_correction"]
 
 
 def test_streaming_refuses_a_completion_claim():
-    provider = _ScriptedProvider(chunks=["I've sent it. ", "Anything else?"])
+    provider = _ScriptedProvider(
+        chunks=["I've sent it. ", "Anything else?"],
+        replies=["I can only send that once you confirm."],
+    )
     agent = Agent(registry=build_tool_registry(), provider=provider)
 
-    streamed, _done, _events = _run(
+    _streamed, done, _events = _run(
         _collect_stream(agent, user_id="u1", token="tok", message="send 5k to Tola")
     )
 
-    assert "sent it" not in streamed
-    assert EGRESS_DONT_KNOW.split(".")[0] in streamed
+    assert "sent it" not in done
+    assert "once you confirm" in done
 
 
 # ---------------------------------------------------------------------------
@@ -437,3 +417,10 @@ def test_guard_decisions_are_counted():
     _run(agent.run(user_id="u1", token="tok", message="what's my balance?"))
 
     assert blocked() > before
+
+
+def test_an_entity_that_is_only_a_substring_is_still_novel():
+    """Word boundaries, not substrings: "Bank" inside "banking" is not the
+    entity "Bank", so it must not read as a match."""
+    assert "Bank" in grounding.novel_entities("A charge from Bank.", "your banking app")
+    assert grounding.novel_entities("A charge from Bank.", "A charge from Bank.") == []

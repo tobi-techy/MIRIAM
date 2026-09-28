@@ -2,8 +2,9 @@
 
 The flow for one turn:
 
-1. ask JEV the seven questions about STATE (:mod:`~miriam_agent.judgment.jev_client`),
-2. run the hard overrides in code (:mod:`~miriam_agent.judgment.rules`),
+1. ask JEV the two semantic questions about STATE
+   (:mod:`~miriam_agent.judgment.jev_client`),
+2. run the deterministic money rules in code (:mod:`~miriam_agent.judgment.rules`),
 3. return a :class:`~miriam_agent.judgment.schema.Decision`.
 
 Nothing here writes a balance, calls a rail, or produces user-facing prose. The
@@ -116,22 +117,44 @@ async def decide(
         cap=cap,
     )
 
-    return Decision(
+    decision = Decision(
         id=f"dec_{uuid.uuid4().hex[:12]}",
         at=timestamp,
         inflow_class=_inflow_class(judgment.inflow_class.choice if judgment else ""),
         inflow_conf=round(judgment.inflow_class.confidence, 3) if judgment else 0.0,
         intent_type=_intent_type(judgment.intent_type.choice if judgment else ""),
         intent_conf=round(judgment.intent_type.confidence, 3) if judgment else 0.0,
-        affordability=round(judgment.affordability.score, 3) if judgment else 0.0,
-        policy_violation=bool(judgment and judgment.policy_violation.noul >= 0.6),
-        reversibility=bool(judgment and judgment.reversibility.noul >= 0.6),
+        affordability=outcome.affordability,
+        policy_violation=outcome.policy_violation,
+        reversibility=outcome.reversibility,
         next_mode=outcome.next_mode,
         action_choice=outcome.action_choice,
         suggested_amount=outcome.suggested_amount,
         reasons=outcome.reasons,
         degraded=outcome.degraded,
     )
+    # Structured observability parity with the chat gates: one log line per
+    # money judgment carrying the JEV scores and the rules outcome, so
+    # thresholds can be tuned against real logs instead of guesses.
+    logger.info(
+        "money judgment decision",
+        extra={
+            "decision_id": decision.id,
+            "degraded": decision.degraded,
+            "inflow_class": decision.inflow_class,
+            "inflow_conf": decision.inflow_conf,
+            "intent_type": decision.intent_type,
+            "intent_conf": decision.intent_conf,
+            "affordability": decision.affordability,
+            "policy_violation": decision.policy_violation,
+            "reversibility": decision.reversibility,
+            "next_mode": decision.next_mode,
+            "action_choice": decision.action_choice,
+            "reasons": list(decision.reasons),
+            "judge_unavailable": judgment is None,
+        },
+    )
+    return decision
 
 
 __all__ = ["Judge", "cap_for", "decide"]

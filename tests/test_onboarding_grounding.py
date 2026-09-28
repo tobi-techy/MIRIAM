@@ -281,3 +281,26 @@ def test_a_number_the_user_gave_still_ships_first_try(monkeypatch):
 
     assert reply in _full_text(turn)
     assert len(provider.calls) == calls_before + 1
+
+
+def test_a_fact_with_an_invented_figure_is_refused(monkeypatch):
+    """A figure parked in ``facts`` beside a clean reply becomes memory, so it
+    is refused by the same hard R10 rule as a figure in the reply itself."""
+    clean = "Got it. What's coming in each month, roughly?"
+    provider = ScriptedProvider(
+        [
+            _reply(OPENER),
+            _reply(clean, facts={"cashflow": "30000 a month"}),
+            _reply(clean, facts={"cashflow": "steady"}),
+        ]
+    )
+    service, states = _service(monkeypatch, provider)
+    user = _user()
+    _into_interview(service, user)
+
+    turn = _run(service.handle_turn(user, message="I earn a decent amount"))
+
+    assert "30000" not in turn.response
+    # The invented figure never reaches persisted state or memory.
+    assert "30000" not in json.dumps(states.data["u-grounding"])
+    assert "steady" in json.dumps(states.data["u-grounding"])

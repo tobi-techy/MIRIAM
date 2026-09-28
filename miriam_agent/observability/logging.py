@@ -1,6 +1,7 @@
 """Structured logging setup for Miriam Financial Agent."""
 
 import logging
+import os
 import sys
 
 import structlog
@@ -28,3 +29,7 @@ def setup_logging(level: str = "INFO") -> None:
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
+    # The TypeSafe SDK logs full request/response bodies at DEBUG. Keep that
+    # off unless an operator explicitly asks for TYPESAFE_LOG_LEVEL=debug.
+    if not os.getenv("TYPESAFE_LOG_LEVEL"):
+        logging.getLogger("typesafe_sdk").setLevel(logging.INFO)
