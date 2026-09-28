@@ -12,6 +12,8 @@ The registry serves three consumers:
   3. The audit system - every execution is logged.
 """
 
+import hashlib
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -26,6 +28,18 @@ from miriam_agent.core.exceptions import (
 )
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.observability.metrics import record_tool_execution
+
+
+def idempotency_key(tool_name: str, args: dict[str, Any], user_id: str = "") -> str:
+    """Deterministic key per (user, tool, args) so retries never double-apply.
+
+    Sorted JSON + sha256, truncated. Used for dedupe cache and audit join.
+    """
+    try:
+        payload = json.dumps({"t": tool_name, "a": args or {}, "u": user_id or ""}, sort_keys=True, default=str)
+    except Exception:
+        payload = f"{tool_name}:{user_id}"
+    return "idem_" + hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 class RiskLevel(StrEnum):
@@ -190,6 +204,10 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._observers: list[Callable[[str, dict[str, Any]], None]] = []
+        # Idempotency dedupe: key -> (expires_at, result). Retries within TTL
+        # return the same result instead of re-running the handler.
+        self._idem_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._idem_ttl_s: float = 300.0
 
     def register(self, tool: Tool | None = None, **fields: Any) -> Tool:
         """Register a tool. Duplicate names raise ValueError.
@@ -197,14 +215,45 @@ class ToolRegistry:
         Accepts a ``Tool`` instance positionally, a dict of Tool fields, or
         the fields as keyword arguments.
         """
+        import logging as _logging
+
         if tool is None:
+            allow_money = fields.pop("_allow_money", False)
             tool = Tool(**fields)
         elif not isinstance(tool, Tool):
             tool = Tool(**tool)
+            allow_money = False
+        else:
+            allow_money = fields.pop("_allow_money", False) if isinstance(fields, dict) else False
         if tool.name in self._tools:
             raise ValueError(f"Tool '{tool.name}' is already registered")
+        # Fail-closed at the live boundary, not at definition time:
+        # money-family tools are allowed to register (legacy definitions.py
+        # registers then strips via build_tool_registry), but they must never
+        # survive into the live registry the agent loop reads from. Warn here,
+        # enforce in build_tool_registry + llm_schemas + _safe_execute.
+        try:
+            from miriam_agent.safety.money_tools import is_money_tool
+
+            if is_money_tool(tool.name) and not allow_money:
+                _logging.getLogger(__name__).warning(
+                    "money tool registered (must be stripped by build_tool_registry)",
+                    extra={"tool": tool.name},
+                )
+        except Exception:
+            pass
         self._tools[tool.name] = tool
         return tool
+
+    def assert_no_money_tools(self) -> None:
+        """Fail-closed check for the live registry: zero money tools."""
+        try:
+            from miriam_agent.safety.money_tools import is_money_tool
+        except Exception:
+            return
+        bad = [n for n in self._tools if is_money_tool(n)]
+        if bad:
+            raise ValueError(f"live registry contains money tools: {bad}")
 
     def unregister(self, name: str) -> bool:
         """Remove a tool. Returns whether one was there.
@@ -289,7 +338,8 @@ class ToolRegistry:
         """Validate and execute a tool with telemetry.
 
         ``context`` carries per-request state such as user_id so handlers
-        do not need it inside their own args.
+        do not need it inside their own args. Idempotent: same (user, tool,
+        args) within TTL returns the cached result.
         """
         tool = self._tools.get(name)
         if tool is None:
@@ -298,6 +348,20 @@ class ToolRegistry:
         # One id for the whole request, so the trace, the audit row, and the
         # message the user gets can be joined up (observability.correlation).
         trace_id = current_trace_id()
+        user_id = (context or {}).get("user_id", "")
+        key = idempotency_key(name, args or {}, user_id)
+        now = time.monotonic()
+        cached = self._idem_cache.get(key)
+        if cached is not None:
+            expires_at, prior = cached
+            if expires_at > now:
+                hit = dict(prior)
+                hit["_idempotent_hit"] = True
+                hit["_idempotency_key"] = key
+                if trace_id:
+                    hit.setdefault("_trace_id", trace_id)
+                return hit
+            self._idem_cache.pop(key, None)
         start = time.perf_counter()
         try:
             validated = validate_args(tool, args or {})
@@ -331,10 +395,20 @@ class ToolRegistry:
         result.setdefault("_tool_name", name)
         result.setdefault("_risk_level", tool.risk_level.value)
         result.setdefault("_is_mutation", tool.is_mutation)
+        result["_idempotency_key"] = key
         # Correlation id for this request, so a tool result can be tied back to
         # the message that caused it (see observability.correlation).
         if trace_id:
             result.setdefault("_trace_id", trace_id)
+        try:
+            self._idem_cache[key] = (time.monotonic() + self._idem_ttl_s, dict(result))
+            # Bound cache growth: drop expired entries opportunistically.
+            if len(self._idem_cache) > 1000:
+                expired = [k for k, (e, _) in self._idem_cache.items() if e <= time.monotonic()]
+                for k in expired:
+                    self._idem_cache.pop(k, None)
+        except Exception:
+            pass
         self._notify(
             name,
             {

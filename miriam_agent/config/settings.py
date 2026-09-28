@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     TYPESAFE_MODEL: str = Field(default="jev-latest")
     TYPESAFE_TIMEOUT: float = Field(default=10.0)
     TYPESAFE_MAX_RETRIES: int = Field(default=3)
+    # Per-task agent budgets: the single most common "runaway agent" root
+    # cause in production is no caps on steps/tokens/cost/wall-clock.
+    AGENT_MAX_TOOL_ROUNDS: int = Field(default=5)
+    AGENT_MAX_TOKENS_PER_TURN: int = Field(default=12000)
+    AGENT_MAX_COST_USD_PER_TURN: float = Field(default=0.05)
+    AGENT_WALL_CLOCK_S: float = Field(default=30.0)
     # G3: the ingress `exposes_pii` question can only work if TypeSafe sees the
     # user's actual text, so the raw turn text is sent by default. Set this to
     # true to run the deterministic card/NIN/credential redactor before the

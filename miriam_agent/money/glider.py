@@ -25,8 +25,10 @@ Two absolute rules are encoded here rather than left to convention:
 
   - **Emergency funds never go onchain.** Only ``investable_surplus`` is ever
     sized for Glider, and ``BufferPlan`` cannot represent a Glider-held buffer.
-  - **Never auto-enroll.** A draft is a draft. ``submitted`` is pinned false by
-    the schema, and stage-2 enrollment is not implemented in the client at all.
+  - **Never auto-enroll from the planner.** A draft is a draft. ``submitted``
+    is pinned false by the schema. This module never enrolls; stage-2
+    enrollment lives in ``hands/invest.py`` (settle_allocate) via the Go host
+    (``complete_user_enroll``), after wallet signature.
 """
 
 from __future__ import annotations

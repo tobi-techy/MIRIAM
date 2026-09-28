@@ -31,6 +31,7 @@ of a balance, and this was the wrong one.
 
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -62,6 +63,41 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 5
 
+
+def _budgets() -> tuple[int, int, float, float]:
+    """Per-task budgets from settings with safe defaults."""
+    try:
+        from miriam_agent.config.settings import get_settings
+
+        s = get_settings()
+        return (
+            int(getattr(s, "AGENT_MAX_TOOL_ROUNDS", MAX_TOOL_ROUNDS)),
+            int(getattr(s, "AGENT_MAX_TOKENS_PER_TURN", 12000)),
+            float(getattr(s, "AGENT_MAX_COST_USD_PER_TURN", 0.05)),
+            float(getattr(s, "AGENT_WALL_CLOCK_S", 30.0)),
+        )
+    except Exception:
+        return (MAX_TOOL_ROUNDS, 12000, 0.05, 30.0)
+
+
+def _abort_result(conv_id: str, budget: str) -> "AgentRunResult":
+    try:
+        from miriam_agent.observability.metrics import AGENT_BUDGET_EXCEEDED
+
+        AGENT_BUDGET_EXCEEDED.labels(budget=budget).inc()
+    except Exception:
+        pass
+    logger.warning("agent budget exceeded", extra={"budget": budget})
+    # Imported lazily to avoid forward-ref at module load; AgentRunResult is
+    # defined below in this same file.
+    from miriam_agent.agents.agent_loop import AgentRunResult as _R
+
+    return _R(
+        response="I've gathered what I can for now. Ask me to continue and I will.",
+        conversation_id=conv_id,
+        tool_calls=[],
+    )
+
 # The refusal a model gets when it proposes a tool it cannot have. It is a tool
 # result rather than an error so the model can answer the user normally.
 _MONEY_TOOL_REFUSAL = (
@@ -76,7 +112,18 @@ def _tool_call_record(name: str, args: dict[str, Any]) -> dict[str, Any]:
     The record is what a caller (and the audit trail) uses to reconstruct
     "what did this message actually do", so the id travels with it.
     """
-    return {"name": name, "arguments": args, "trace_id": current_trace_id()}
+    try:
+        from miriam_agent.agents.tools import idempotency_key
+
+        idem = idempotency_key(name, args or {}, "")
+    except Exception:
+        idem = ""
+    return {
+        "name": name,
+        "arguments": args,
+        "trace_id": current_trace_id(),
+        "idempotency_key": idem,
+    }
 
 
 @dataclass
@@ -159,8 +206,14 @@ class Agent:
         # (OpenAI and Concentrate both reject tool results without the
         # preceding assistant tool_calls message).
         llm_extra: list[ChatMessage] = []
+        max_rounds, max_tokens, max_cost, wall_s = _budgets()
+        started = time.monotonic()
+        used_tokens = 0
+        used_cost = 0.0
 
-        for _round in range(MAX_TOOL_ROUNDS):
+        for _round in range(max_rounds):
+            if time.monotonic() - started > wall_s:
+                return self._decorate(_abort_result(conv_id, "wall_clock"))
             llm_messages = list(messages) + llm_extra
 
             schemas = self.registry.llm_schemas()
@@ -170,6 +223,27 @@ class Agent:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
+            try:
+                usage = response.usage or {}
+                used_tokens += int(usage.get("total_tokens", 0))
+                try:
+                    from miriam_agent.agents.llm import LLMUsage
+
+                    used_cost += self.provider.cost_estimate(
+                        LLMUsage(
+                            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                            completion_tokens=int(usage.get("completion_tokens", 0)),
+                            total_tokens=int(usage.get("total_tokens", 0)),
+                        )
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            if used_tokens > max_tokens:
+                return self._decorate(_abort_result(conv_id, "tokens"))
+            if used_cost > max_cost:
+                return self._decorate(_abort_result(conv_id, "cost"))
 
             # No tools wanted -> final answer, gated before send.
             if not response.tool_calls:
@@ -455,6 +529,15 @@ class Agent:
     ) -> ToolDecision:
         """Judge one proposed tool call before anything runs."""
         if not typesafe_enabled():
+            # Fail-closed for writes, fail-open for reads: degraded ALLOW used
+            # to permit everything. A mutation must never run unchecked.
+            tool = self.registry.get(name)
+            if tool is not None and (tool.is_mutation or tool.requires_approval):
+                return ToolDecision(
+                    branch=ToolBranch.BLOCK,
+                    reason="mutating tool blocked while judgment layer degraded",
+                    degraded=True,
+                )
             return ToolDecision(branch=ToolBranch.ALLOW, degraded=True)
         return await tool_gate(
             build_state(

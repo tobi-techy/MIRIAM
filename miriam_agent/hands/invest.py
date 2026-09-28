@@ -507,7 +507,9 @@ async def prepare_allocate(
         return _reject(
             ["OVER_BALANCE"],
             f"the stash holds {ledger.balance(INVEST_SLEEVE)}, "
-            f"which is less than {amount}",
+            f"which is less than {amount}. If you just paid naira for an "
+            f"onramp, wait for the Go stash credit then retry — this step "
+            f"re-reads the live stash and auto-syncs before refusing.",
         )
 
     try:
