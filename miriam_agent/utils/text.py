@@ -148,3 +148,4 @@ def bubble_sets(text: str) -> tuple[str, list[str]]:
     if not bubbles:
         return (text or "").strip(), []
     return bubbles[0], bubbles[1:MAX_EXTRA_MESSAGES]
+

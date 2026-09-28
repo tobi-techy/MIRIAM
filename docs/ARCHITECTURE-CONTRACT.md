@@ -234,6 +234,22 @@ The module `miriam_agent.observability.correlation.py` owns the contract, exposi
 
 See Linear sub‑issues under RAI‑114 (linked later). Current data per file (LOC) and issue ids for each refactor.
 
+### Resolved duplication: "what is this number worth"
+
+Three modules carried their own copy of the figure normaliser:
+`onboarding/quality.py` (lint rule R10), `voice/generate.py`, and
+`money/agent.py`. All three now delegate to
+`miriam_agent/safety/grounding.normalise_figure`, which the answer path
+(`agent_loop.py`) also uses — one rule, one implementation, so the chat agent,
+onboarding, the money narration clamp, and Voice cannot disagree about what a
+figure is worth.
+
+The delegation was safe because those call sites capture figures with
+`(\d[\d,]*(?:\.\d+)?)(\s*%)?` — a token that always starts with a digit, so
+there is no currency mark or percent sign for the shared rule to treat
+differently. The money and Voice suites (52 tests) are the evidence that
+behaviour did not move.
+
 ## 7. Enforcement
 
 - CI: `ruff check . && black --check . && isort --check-only . && mypy miriam_agent && importlinter check`. Any failure fails the build.
