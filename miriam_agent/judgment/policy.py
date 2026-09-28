@@ -14,11 +14,14 @@ from dataclasses import dataclass
 class PolicyThresholds:
     # Ingress (PR1, active).
     intent_min_confidence: float = 0.62
+    intent_min_margin: float = 0.15
     jailbreak_block: float = 0.80
     jailbreak_review: float = 0.55
     pii_block_reply: float = 0.75
+    pii_review_reply: float = 0.55
     requests_disallowed_block: float = 0.75
     wants_human_escalate: float = 0.8
+    needs_tools_review: float = 0.4
     needs_tools_planner: float = 0.6
     low_confidence_clarify: bool = True
     # Escalation is composed from two independent numbers: high frustration AND
@@ -27,7 +30,6 @@ class PolicyThresholds:
     frustration_escalate: float = 1.6
     escalation_urgency_min: float = 0.7
     urgency_escalate: float = 0.85
-    frustration_soften_tone: float = 1.4
     # Tool gate. "Costly" (spends money) and "irreversible" (deletes data /
     # destroys / messages a third party) are separate questions because a single
     # blended question pushed ordinary transfers past the block bar.
@@ -48,6 +50,7 @@ class PolicyThresholds:
     leaks_system_discard: float = 0.6
     repeats_pii_discard: float = 0.6
     invents_facts_regenerate: float = 0.7
+    claim_unsupported_regenerate: float = 0.6
     # A draft that literally echoes a secret the user typed is discarded
     # outright (no regenerate -- the model already had the secret in context,
     # so a retry risks repeating it). Owns the literal-echo case explicitly so

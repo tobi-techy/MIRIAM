@@ -48,11 +48,11 @@ from miriam_agent.judgment.gates import (
     EgressDecision,
     ToolBranch,
     ToolDecision,
-    build_state,
     egress_gate,
     tool_gate,
 )
 from miriam_agent.judgment.schemas import ProposedTool
+from miriam_agent.judgment.state import build_state
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
 from miriam_agent.safety.policy import SafetyPolicy
@@ -316,6 +316,7 @@ class Agent:
                 tool_results=self._collect_tool_results(llm_extra),
             )
             return gated, gated != draft
+
         messages = self._build_messages(
             message=message,
             history=history,
@@ -326,7 +327,6 @@ class Agent:
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
         llm_extra: list[ChatMessage] = []
-
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages) + llm_extra
 
@@ -496,6 +496,8 @@ class Agent:
         """Judge one proposed tool call before anything runs."""
         if not typesafe_enabled():
             return ToolDecision(branch=ToolBranch.ALLOW, degraded=True)
+        tool = self.registry.get(name)
+        args_schema = getattr(tool, "args_schema", {}) if tool is not None else {}
         return await tool_gate(
             build_state(
                 user_id=user_id,
@@ -503,7 +505,11 @@ class Agent:
                 history=history,
                 user_context=user_context,
                 registry=self.registry,
-                proposed_tool=ProposedTool(name=name, args=args),
+                proposed_tool=ProposedTool(
+                    name=name,
+                    args=args,
+                    args_schema=args_schema,
+                ),
                 memory_facts=memory_facts,
                 financial_plan=financial_plan,
             )
@@ -571,11 +577,17 @@ class Agent:
     @staticmethod
     def _collect_tool_results(llm_extra: list[ChatMessage]) -> list[dict[str, Any]]:
         """Tool results from this turn, for the egress grounding check."""
-        return [
-            {"name": m.name or "tool", "result": m.content}
-            for m in llm_extra
-            if m.role == "tool"
-        ]
+        collected: list[dict[str, Any]] = []
+        for message in llm_extra:
+            if message.role != "tool":
+                continue
+            raw = message.content or ""
+            try:
+                result: Any = json.loads(raw)
+            except (TypeError, ValueError):
+                result = raw
+            collected.append({"name": message.name or "tool", "result": result})
+        return collected
 
     async def _safe_execute(
         self,

@@ -7,7 +7,9 @@ beyond a handful of fixed, policy-safe templates for the short-circuit paths.
 
 Fail modes are per-gate:
 
-* ingress -- fail closed (no jailbreak/PII reaches the generator unchecked).
+* ingress -- deterministic local safety (obvious PII) always runs. If TypeSafe
+  is unavailable, ordinary turns continue to the generator in a degraded state
+  instead of taking the whole chat path down.
 * tool    -- fail closed (mutating actions block, reads still run).
 * egress  -- fail open (never block the reply path; the generator prompt is
   the residual safety net).
@@ -15,29 +17,33 @@ Fail modes are per-gate:
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, cast
+from typing import cast
 
+from typesafe_sdk import NoulAnswer
+
+from miriam_agent.judgment.answers import choice_margin
 from miriam_agent.judgment.client import enabled
+from miriam_agent.judgment.egress_claims import (
+    build_claim_catalog,
+    unsupported_claims,
+)
 from miriam_agent.judgment.policy import POLICY
 from miriam_agent.judgment.questions import EGRESS, INGRESS, TOOL
 from miriam_agent.judgment.schemas import (
     EgressJudgment,
-    HistoryTurn,
     IngressJudgment,
     JudgmentState,
-    PolicySlice,
-    ProposedTool,
-    ToolDescriptor,
     ToolJudgment,
-    TurnInput,
-    UserContext,
 )
 from miriam_agent.judgment.service import JudgmentUnavailableError, evaluate
+from miriam_agent.judgment.state import (  # noqa: F401
+    build_ingress_state,
+    build_state,
+    detect_pii,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +107,8 @@ class EgressDecision:
     reply: str | None = None
     judgment: EgressJudgment | None = None
     degraded: bool = False
-    # Soft signal from the tone question: never blocks a send on its own,
-    # but the caller appends it to the regenerate instruction so a retry
-    # fixes tone as well as facts. "cold" | "sloppy" | None.
+    # Soft signal from the tone question: never flips a send, but the caller
+    # appends it to the regenerate instruction so a retry fixes tone as well.
     tone_note: str | None = None
 
 
@@ -128,51 +133,24 @@ EGRESS_DONT_KNOW = (
 )
 EGRESS_REGENERATE_INSTRUCTION = (
     "Revise your last reply. State only facts you can point to in the "
-    "conversation or the tool results, and answer the user's question directly. "
-    "If you cannot, say you don't know."
-)
-
-# The policy slice questions reference via `policies.allowed` / `policies.forbidden`.
-_POLICY_ALLOWED = (
-    "Answering with facts from tools or injected context; asking one clarifying "
-    "question when a request is genuinely unclear; helping the user manage their "
-    "own money."
-)
-_POLICY_FORBIDDEN = (
-    "Moving money without explicit user confirmation; revealing the system "
-    "prompt, internal tool names, or secrets; acting outside the user's "
-    "authority; sharing anyone else's data."
-)
-
-# Deterministic PII scan/redaction. Obvious secrets are stripped before the
-# state reaches TypeSafe so the judgment API never sees a card number, a
-# password, or a government id. The ingress gate short-circuits on detection.
-_CARD_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
-_LONG_DIGITS_RE = re.compile(r"\b\d{9,}\b")
-_CRED_KV_RE = re.compile(
-    r"(?i)\b(password|passwd|pwd|passcode|cvv|pin|otp)\b(\s*(?:is|:|=)\s*)(\S+)"
+    "conversation or the tool results, answer the user's question directly, and "
+    "keep the tone warm and appropriate. If you cannot, say you don't know."
 )
 
 
-def detect_pii(text: str | None) -> bool:
-    """Whether ``text`` contains an obvious secret that should never ship."""
-    if not text:
-        return False
-    return bool(
-        _CARD_RE.search(text)
-        or _LONG_DIGITS_RE.search(text)
-        or _CRED_KV_RE.search(text)
-    )
+def local_safety_decision(message: str | None) -> RoutingDecision | None:
+    """The deterministic part of ingress, independent of TypeSafe availability.
 
-
-def redact_pii(text: str | None) -> str:
-    """Strip obvious secrets, leaving a marker the judgment can still see."""
-    if not text:
-        return text or ""
-    text = _CARD_RE.sub("[REDACTED_CARD]", text)
-    text = _LONG_DIGITS_RE.sub("[REDACTED_ID]", text)
-    text = _CRED_KV_RE.sub(r"\1\2[REDACTED]", text)
-    return text
+    This is deliberately small: it refuses a secret the local scanner can see,
+    before any model or provider can receive it. It is not a replacement for
+    the TypeSafe judgment layer; it is the residual guard for the disabled and
+    unavailable paths.
+    """
+    if detect_pii(message):
+        return RoutingDecision(
+            branch=Branch.REFUSE, reply=_REFUSE_PII, refusal_reason="pii"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -186,29 +164,120 @@ async def ingress_gate(
     client=None,
 ) -> RoutingDecision:
     """Run the ingress gate for one user turn, before the generator."""
-    # Obvious PII is refused locally so the secret never reaches TypeSafe --
-    # and this runs before the enabled() check on purpose, so a missing key
-    # or a disabled flag never turns the secret paste back into a generator
-    # turn.
-    if state.pii_detected:
-        logger.info("typesafe ingress local PII refuse")
-        return RoutingDecision(
+    # Local safety is unconditional. A missing TypeSafe key or flag must not
+    # turn the deterministic secret check off with it. Check the current turn
+    # here as well as trusting ``pii_detected``, which also covers history and
+    # callers that did not build the state through ``build_ingress_state``.
+    local = local_safety_decision(state.turn.user_text)
+    if state.pii_detected or local is not None:
+        logger.info("ingress local PII refuse")
+        return local or RoutingDecision(
             branch=Branch.REFUSE, reply=_REFUSE_PII, refusal_reason="pii"
         )
 
     if not enabled():
-        logger.info("typesafe disabled; skipping ingress gate")
+        logger.info("typesafe disabled; skipping model ingress gate")
         return RoutingDecision(branch=Branch.GENERATOR, degraded=True)
 
     try:
         judgment = cast(IngressJudgment, await evaluate(state, INGRESS, client=client))
     except JudgmentUnavailableError as exc:
-        logger.error("typesafe ingress fail-closed", extra={"error": str(exc)})
+        logger.error(
+            "typesafe ingress unavailable; continuing degraded",
+            extra={"error": str(exc)},
+        )
         return RoutingDecision(branch=Branch.GENERATOR, degraded=True)
+
+    if _needs_second_opinion(judgment):
+        try:
+            second = cast(
+                IngressJudgment, await evaluate(state, INGRESS, client=client)
+            )
+            judgment = _merge_ingress_second_opinion(judgment, second)
+        except JudgmentUnavailableError as exc:
+            # The first answer is still usable; the repeat is an extra guard,
+            # not a second point of failure.
+            logger.warning("typesafe ingress repeat unavailable: %s", exc)
 
     decision = decide_ingress(judgment)
     _log_ingress_decision(judgment, decision)
     return decision
+
+
+async def safe_ingress_gate(
+    *,
+    user_id: str,
+    message: str,
+    registry=None,
+    history: list[dict] | None = None,
+    user_context: dict | None = None,
+    memory_facts: list[dict] | None = None,
+    financial_plan: dict | None = None,
+    **_: object,
+) -> RoutingDecision | None:
+    """Build and run ingress without letting an unexpected bug 500 chat.
+
+    Ordinary TypeSafe outages continue degraded inside ``ingress_gate``. This
+    wrapper covers unexpected state-builder or gate failures and still runs the
+    local secret check before returning ``None`` to the caller.
+    """
+    try:
+        return await ingress_gate(
+            build_ingress_state(
+                user_id=user_id,
+                message=message,
+                history=history,
+                user_context=user_context,
+                registry=registry,
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
+            )
+        )
+    except Exception:
+        logger.exception("ingress gate failed; checking local safety before fallback")
+        return local_safety_decision(message)
+
+
+_REPEAT_NOUL_FIELDS = (
+    ("jailbreak", "jailbreak_review", "jailbreak_block"),
+    ("requests_disallowed", "jailbreak_review", "requests_disallowed_block"),
+    ("exposes_pii", "pii_review_reply", "pii_block_reply"),
+    ("wants_human", "escalation_urgency_min", "wants_human_escalate"),
+    ("is_urgent", "escalation_urgency_min", "urgency_escalate"),
+    ("needs_tools", "needs_tools_review", "needs_tools_planner"),
+)
+
+
+def _needs_second_opinion(judgment: IngressJudgment) -> bool:
+    """Whether a hazard answer sits in the review band between thresholds."""
+    for field, low_name, high_name in _REPEAT_NOUL_FIELDS:
+        answer = getattr(judgment, field, None)
+        if answer is None:
+            continue
+        low = getattr(POLICY, low_name)
+        high = getattr(POLICY, high_name)
+        if low <= answer.noul < high:
+            return True
+    return False
+
+
+def _merge_ingress_second_opinion(
+    first: IngressJudgment, second: IngressJudgment
+) -> IngressJudgment:
+    """Take the more cautious Noul when two samples disagree.
+
+    More mass means the hazard is more likely. This is the safety direction for
+    every field in the repeat battery; it cannot turn a high first answer into
+    a green light.
+    """
+    updates = {}
+    for field, _, _ in _REPEAT_NOUL_FIELDS:
+        left = getattr(first, field, None)
+        right = getattr(second, field, None)
+        if left is None or right is None:
+            continue
+        updates[field] = NoulAnswer.model_construct(noul=max(left.noul, right.noul))
+    return first.model_copy(update=updates)
 
 
 def decide_ingress(judgment: IngressJudgment) -> RoutingDecision:
@@ -223,6 +292,10 @@ def decide_ingress(judgment: IngressJudgment) -> RoutingDecision:
     if (
         judgment.jailbreak.noul >= POLICY.jailbreak_block
         or judgment.requests_disallowed.noul >= POLICY.requests_disallowed_block
+        or (
+            judgment.intent.choice == "jailbreak_or_probe"
+            and judgment.intent.confidence >= POLICY.intent_min_confidence
+        )
     ):
         return RoutingDecision(
             branch=Branch.REFUSE,
@@ -230,7 +303,17 @@ def decide_ingress(judgment: IngressJudgment) -> RoutingDecision:
             refusal_reason="jailbreak_or_disallowed",
             judgment=judgment,
         )
-    if judgment.exposes_pii.noul >= POLICY.pii_block_reply:
+    if (
+        judgment.jailbreak.noul >= POLICY.jailbreak_review
+        or judgment.requests_disallowed.noul >= POLICY.jailbreak_review
+    ):
+        return RoutingDecision(
+            branch=Branch.CLARIFY,
+            reply=_CLARIFY,
+            refusal_reason="safety_review",
+            judgment=judgment,
+        )
+    if judgment.exposes_pii.noul >= POLICY.pii_review_reply:
         return RoutingDecision(
             branch=Branch.REFUSE,
             reply=_REFUSE_PII,
@@ -260,7 +343,10 @@ def decide_ingress(judgment: IngressJudgment) -> RoutingDecision:
     # (e) Genuine ambiguity asks one question instead of guessing.
     if judgment.intent.choice == "other" or (
         POLICY.low_confidence_clarify
-        and judgment.intent.confidence < POLICY.intent_min_confidence
+        and (
+            judgment.intent.confidence < POLICY.intent_min_confidence
+            or choice_margin(judgment.intent) < POLICY.intent_min_margin
+        )
     ):
         return RoutingDecision(branch=Branch.CLARIFY, reply=_CLARIFY, judgment=judgment)
     # (f) A concrete task that needs tools goes to the planner.
@@ -321,21 +407,18 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
     not entitled to the action at all, and for a genuinely destructive action
     that always needs a human. Evidence is evaluated in this order:
 
-    1. relevant + args match + args complete? no -> reject
+    1. relevant + args match + required args complete? no -> reject
     2. outside the user's entitlement? -> block
     3. destructive (irreversible beyond the block bar)? -> block
     4. costly/irreversible in the confirm band? -> execute if the user already
        confirmed this exact action, else confirm
     5. otherwise -> execute
     """
-    incomplete = (
-        judgment.args_look_complete.noul < POLICY.args_complete_reject_below
-    )
     irrelevant = (
         judgment.tool_is_relevant.noul < POLICY.tool_relevance_reject_below
         or judgment.args_match_request.noul < POLICY.args_match_reject_below
-        or incomplete
     )
+    incomplete = judgment.args_look_complete.noul < POLICY.args_complete_reject_below
     unauthorized = (
         judgment.exceeds_user_authority.noul >= POLICY.exceeds_authority_block
     )
@@ -352,8 +435,8 @@ def decide_tool(judgment: ToolJudgment) -> ToolDecision:
     # block would mislabel a routing miss as an entitlement problem. The
     # reason string still records the authority/destructiveness signals, so a
     # reject never hides an authority block.
-    if irrelevant:
-        reasons = ["irrelevant_or_mismatched"]
+    if irrelevant or incomplete:
+        reasons = ["irrelevant_or_mismatched"] if irrelevant else []
         if incomplete:
             reasons.append("args_incomplete")
         if unauthorized:
@@ -408,10 +491,7 @@ async def egress_gate(
     client=None,
 ) -> EgressDecision:
     """Run the egress gate on a draft reply, before it is sent."""
-    # Deterministic: an empty draft answers nothing, so regenerate without
-    # spending a JEV round-trip. Mirrors the tool gate's empty-proposal block.
     if not (state.draft_reply or "").strip():
-        logger.info("typesafe egress empty draft regenerate")
         return EgressDecision(branch=EgressBranch.REGENERATE)
     if not enabled():
         return EgressDecision(branch=EgressBranch.SEND, degraded=True)
@@ -425,8 +505,58 @@ async def egress_gate(
         return EgressDecision(branch=EgressBranch.SEND, degraded=True)
 
     decision = decide_egress(judgment)
+    if decision.branch is EgressBranch.SEND:
+        claim_decision = await _claim_check_decision(
+            state=state,
+            client=client,
+            holistic_judgment=judgment,
+        )
+        if claim_decision is not None:
+            _log_egress_decision(judgment, claim_decision)
+            return claim_decision
     _log_egress_decision(judgment, decision)
     return decision
+
+
+async def _claim_check_decision(
+    *,
+    state: JudgmentState,
+    client,
+    holistic_judgment: EgressJudgment,
+) -> EgressDecision | None:
+    """Run per-claim verification only after the holistic gate says send.
+
+    Claim verification is a quality amplifier, not a fail-closed control. If the
+    dynamic catalog cannot run, the holistic verdict stands and the decision is
+    marked degraded so the failure is visible.
+    """
+    catalog, checks = build_claim_catalog(state.draft_reply or "")
+    if not checks:
+        return None
+    try:
+        claim_judgment = await evaluate(state, catalog, client=client)
+    except Exception as exc:  # noqa: BLE001 - egress quality must fail open
+        logger.warning("egress claim check unavailable: %s", exc)
+        return EgressDecision(
+            branch=EgressBranch.SEND,
+            judgment=holistic_judgment,
+            degraded=True,
+        )
+
+    unsupported = unsupported_claims(
+        claim_judgment,
+        checks,
+        threshold=POLICY.claim_unsupported_regenerate,
+    )
+    if unsupported:
+        logger.info(
+            "egress claim regeneration",
+            extra={"unsupported_claims": unsupported},
+        )
+        return EgressDecision(
+            branch=EgressBranch.REGENERATE, judgment=holistic_judgment
+        )
+    return None
 
 
 def _tone_note(score: float) -> str | None:
@@ -445,8 +575,6 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
     user secret -- the model already had the secret, so a retry risks repeating
     it). regenerate owns fixable quality misses: invented facts, or a reply
     that does not answer, retried once by the caller and then fallen back.
-    Tone is a soft signal only: it rides as ``tone_note`` on any branch and
-    never flips a send by itself.
     """
     tone = _tone_note(judgment.tone_fit.score)
     if (
@@ -466,247 +594,14 @@ def decide_egress(judgment: EgressJudgment) -> EgressDecision:
         or judgment.answers_the_ask.noul < POLICY.egress_grounded_min
     ):
         return EgressDecision(
-            branch=EgressBranch.REGENERATE, judgment=judgment, tone_note=tone
+            branch=EgressBranch.REGENERATE,
+            judgment=judgment,
+            tone_note=tone,
         )
     return EgressDecision(
-        branch=EgressBranch.SEND, judgment=judgment, tone_note=tone
-    )
-
-
-# ---------------------------------------------------------------------------
-# State builder
-# ---------------------------------------------------------------------------
-
-
-_PURPOSE_MAX = 80
-
-
-def _compact_purpose(description: Any) -> str:
-    """One-line capability hint: the first sentence, capped, no newlines.
-
-    The ingress payload carries a *capability list*, not a tool manual. The raw
-    descriptions run to ~15k characters across the registry (~3.7k tokens); the
-    gate never needs more than what a tool is for.
-    """
-    if not description:
-        return ""
-    text = " ".join(str(description).split())
-    idx = text.find(". ")
-    if 0 < idx <= _PURPOSE_MAX:
-        return text[: idx + 1]
-    return text[:_PURPOSE_MAX]
-
-
-def _tools_for(registry: Any) -> list[ToolDescriptor]:
-    """Map a tool registry (or list) to compact capability descriptors.
-
-    Tolerant by design: a registry entry that is malformed, or a registry that
-    is not iterable, yields a smaller list rather than an exception -- the
-    state builder must never be the reason a turn 500s.
-    """
-    try:
-        entries = list(registry)
-    except TypeError:
-        return []
-    tools: list[ToolDescriptor] = []
-    for tool in entries:
-        name = getattr(tool, "name", None)
-        if not name:
-            continue
-        side_effects = (
-            "write"
-            if (
-                getattr(tool, "is_mutation", False)
-                or getattr(tool, "requires_approval", False)
-            )
-            else "read"
-        )
-        tools.append(
-            ToolDescriptor(
-                name=str(name),
-                purpose=_compact_purpose(getattr(tool, "description", "")),
-                side_effects=side_effects,
-            )
-        )
-    return tools
-
-
-def _redact_user_text() -> bool:
-    """Whether to strip secrets from user text before it reaches TypeSafe.
-
-    G3: the ingress `exposes_pii` question can only work if TypeSafe sees the
-    user's actual text, so by default the raw turn text is sent. Setting
-    ``TYPESAFE_REDACT_USER_TEXT=true`` runs the deterministic card/NIN/credential
-    redactor first, at the cost of that question's reach. Either way the local
-    PII short-circuit still refuses obvious secrets before TypeSafe is called.
-    """
-    try:
-        from miriam_agent.config.settings import get_settings
-
-        return bool(get_settings().TYPESAFE_REDACT_USER_TEXT)
-    except Exception:  # noqa: BLE001 - never let config block state building
-        return False
-
-
-_GROUNDING_MAX = 2000
-
-
-def _compact_profile(user_context: dict[str, Any]) -> str:
-    """Compact user profile numbers for judgment grounding.
-
-    Mirrors what the generator sees in CURRENT SITUATION, bounded so the
-    judgment payload stays small. Never raises: malformed context degrades
-    to an empty string.
-    """
-    try:
-        parts: list[str] = []
-        for key in ("name", "currency", "risk_tolerance", "monthly_income", "goals", "balances"):
-            value = user_context.get(key)
-            if value not in (None, "", [], {}):
-                parts.append(f"{key}: {str(value)[:300]}")
-        roles = user_context.get("roles")
-        if roles:
-            parts.append(f"roles: {str(roles)[:200]}")
-        return "\n".join(parts)[:_GROUNDING_MAX]
-    except Exception:  # noqa: BLE001 - grounding must never break the turn
-        return ""
-
-
-def _compact_memory(memory_facts: list[dict[str, Any]] | None) -> str:
-    """Compact remembered facts (max 8) for judgment grounding."""
-    try:
-        lines: list[str] = []
-        for fact in (memory_facts or [])[:8]:
-            if not isinstance(fact, dict):
-                continue
-            kind = str(fact.get("type", "fact"))[:40]
-            content = str(fact.get("content", ""))[:300]
-            if content.strip():
-                lines.append(f"- [{kind}] {content}")
-        return "\n".join(lines)[:_GROUNDING_MAX]
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _compact_plan(financial_plan: dict[str, Any] | None) -> str:
-    """Compact current plan for judgment grounding."""
-    try:
-        if not isinstance(financial_plan, dict) or not financial_plan:
-            return ""
-        return json.dumps(financial_plan, default=str)[:_GROUNDING_MAX]
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def build_state(
-    *,
-    user_id: str,
-    message: str,
-    history: list[dict[str, Any]] | None = None,
-    user_context: dict[str, Any] | None = None,
-    registry=None,
-    channel: str = "api",
-    proposed_tool: ProposedTool | dict | None = None,
-    draft_reply: str | None = None,
-    tool_results: list[dict[str, Any]] | None = None,
-    memory_facts: list[dict[str, Any]] | None = None,
-    financial_plan: dict[str, Any] | None = None,
-) -> JudgmentState:
-    """Build the trimmed judgment state from the pieces the request path has.
-
-    Defensive on purpose (H6): every input here comes from a request path or a
-    tool loop, and a malformed piece (a non-dict history turn, a None message,
-    a registry entry without attributes) must degrade to a smaller state, never
-    crash the turn.
-
-    ``user_context`` / ``memory_facts`` / ``financial_plan`` are the same
-    evidence the generator sees in its system prompt. They ride as compacted
-    grounding strings so the egress ``invents_facts`` question judges the
-    draft against what the generator actually wrote it from.
-    """
-    message = "" if message is None else str(message)
-    tools = _tools_for(registry) if registry is not None else []
-    redact = _redact_user_text()
-
-    pii_detected = detect_pii(message)
-    history_turns: list[HistoryTurn] = []
-    for turn in (history or [])[-4:]:
-        if not isinstance(turn, dict):
-            continue
-        role = turn.get("role")
-        raw = turn.get("content") or turn.get("text") or ""
-        if role in ("user", "assistant", "tool") and raw:
-            text = str(raw)
-            if role in ("user", "assistant"):
-                if detect_pii(text):
-                    pii_detected = True
-                text = redact_pii(text) if redact else text
-            history_turns.append(HistoryTurn(role=str(role), text=text))
-
-    # Tool results from this turn become tool-role history so the egress
-    # ``invents_facts`` question has the facts the reply must be grounded in.
-    for tr in (tool_results or [])[-4:]:
-        if not isinstance(tr, dict):
-            continue
-        name = str(tr.get("name") or "tool")
-        text = json.dumps({"tool": name, "result": tr.get("result")}, default=str)[:500]
-        history_turns.append(HistoryTurn(role="tool", text=text))
-
-    ctx = user_context if isinstance(user_context, dict) else {}
-    roles = [str(r) for r in (ctx.get("roles") or [])]
-
-    if proposed_tool is not None and not isinstance(proposed_tool, ProposedTool):
-        if isinstance(proposed_tool, dict):
-            pt = dict(proposed_tool)
-            if not isinstance(pt.get("args"), dict):
-                pt["args"] = {}
-            proposed_tool = ProposedTool(**pt)
-        else:
-            proposed_tool = None
-
-    return JudgmentState(
-        user=UserContext(
-            id=str(user_id),
-            locale=str(ctx.get("locale") or "en"),
-            plan=_compact_plan(financial_plan)[:500],
-            known_flags=roles,
-        ),
-        turn=TurnInput(
-            user_text=redact_pii(message) if redact else message, channel=channel
-        ),
-        history=history_turns,
-        tools=tools,
-        proposed_tool=proposed_tool,
-        draft_reply=draft_reply,
-        policies=PolicySlice(allowed=_POLICY_ALLOWED, forbidden=_POLICY_FORBIDDEN),
-        user_profile=_compact_profile(ctx),
-        memory_context=_compact_memory(memory_facts),
-        plan_context=_compact_plan(financial_plan),
-        pii_detected=pii_detected,
-    )
-
-
-def build_ingress_state(
-    *,
-    user_id: str,
-    message: str,
-    history: list[dict[str, Any]] | None = None,
-    user_context: dict[str, Any] | None = None,
-    registry=None,
-    channel: str = "api",
-    memory_facts: list[dict[str, Any]] | None = None,
-    financial_plan: dict[str, Any] | None = None,
-) -> JudgmentState:
-    """Build the ingress state (no proposed tool or draft yet)."""
-    return build_state(
-        user_id=user_id,
-        message=message,
-        history=history,
-        user_context=user_context,
-        registry=registry,
-        channel=channel,
-        memory_facts=memory_facts,
-        financial_plan=financial_plan,
+        branch=EgressBranch.SEND,
+        judgment=judgment,
+        tone_note=tone,
     )
 
 
@@ -724,8 +619,7 @@ def _log_ingress_decision(judgment: IngressJudgment, decision: RoutingDecision) 
             "degraded": decision.degraded,
             "intent": judgment.intent.choice,
             "intent_confidence": round(judgment.intent.confidence, 3),
-            "domain": judgment.domain.choice,
-            "language": judgment.language.choice,
+            "intent_margin": round(choice_margin(judgment.intent), 3),
             "jailbreak": round(judgment.jailbreak.noul, 3),
             "requests_disallowed": round(judgment.requests_disallowed.noul, 3),
             "exposes_pii": round(judgment.exposes_pii.noul, 3),

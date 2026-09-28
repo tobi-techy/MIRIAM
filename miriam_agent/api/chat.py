@@ -62,7 +62,7 @@ from miriam_agent.integrations.supermemory_client import (
     display_name_for,
     person_entity_context,
 )
-from miriam_agent.judgment.gates import build_ingress_state, ingress_gate
+from miriam_agent.judgment.gates import safe_ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
 from miriam_agent.orchestrator import (
@@ -414,6 +414,7 @@ async def _prepare_turn(
     await memory_store.ensure_user(user)
     # Move a finished guest interview onto this account before ownership checks.
     from miriam_agent.onboarding.handoff import adopt_guest_interview
+
     await adopt_guest_interview(memory_store, user, body.conversation_id)
     conversation_id = await _require_owned_conversation(
         memory_store, user, body.conversation_id
@@ -500,39 +501,9 @@ async def _agent_inputs(
     }
 
 
-async def _ingress_decision(
-    *,
-    user_id: str,
-    message: str,
-    registry: Any,
-    history: list,
-    user_context: Any,
-    memory_facts: list | None = None,
-    financial_plan: dict | None = None,
-    **_: Any,
-) -> Any:
-    """TypeSafe ingress gate, failing open.
-
-    A judgment-layer bug must never 500 a chat turn; network errors are
-    already handled (fail-closed) inside ingress_gate, so this only catches
-    unexpected code paths. Local PII refusal lives inside ingress_gate and
-    runs even when TypeSafe is disabled, so secrets never reach the generator.
-    """
-    try:
-        return await ingress_gate(
-            build_ingress_state(
-                user_id=user_id,
-                message=message,
-                history=history,
-                user_context=user_context,
-                registry=registry,
-                memory_facts=memory_facts,
-                financial_plan=financial_plan,
-            )
-        )
-    except Exception:
-        logger.exception("ingress gate failed; failing open to generator")
-        return None
+async def _ingress_decision(**kwargs: Any) -> Any:
+    """Compatibility seam for the API tests and both chat entry points."""
+    return await safe_ingress_gate(**kwargs)
 
 
 @router.post("/chat")
@@ -1332,6 +1303,7 @@ async def merge_users(
         )
     await memory_store.ensure_user(user)
     from miriam_agent.onboarding.handoff import transfer_onboarding_state
+
     await transfer_onboarding_state(from_user, user.id)
     counts = await memory_store.merge_user_data(from_user, user.id)
     # Supermemory is keyed by containerTag(user_id), so the graph under the

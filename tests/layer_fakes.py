@@ -14,7 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from typesafe_sdk import ChoiceAnswer, NoulAnswer, ScoreAnswer
+from typesafe_sdk import ChoiceAnswer
 
 from miriam_agent.agents.llm import LLMResponse
 from miriam_agent.hands.ledger import Ledger, RentFirst, Track, money
@@ -35,14 +35,6 @@ def choice(label: str, confidence: float = 0.9) -> ChoiceAnswer:
     return ChoiceAnswer.model_construct(choice=label, confidence=confidence)
 
 
-def noul(value: float) -> NoulAnswer:
-    return NoulAnswer.model_construct(noul=value)
-
-
-def score(value: float) -> ScoreAnswer:
-    return ScoreAnswer.model_construct(score=value)
-
-
 def jev(
     *,
     inflow: str = "salary",
@@ -55,14 +47,13 @@ def jev(
     conf: float = 0.9,
 ) -> MoneyJudgment:
     """One complete set of JEV answers, with sane defaults for everything else."""
+    # The extra keyword arguments are kept as a compatibility shim for older
+    # tests. The new catalog no longer lets the model vote on affordability,
+    # policy, reversibility, mode, or action.
+    _ = afford, violation, reversible, mode, action
     return MoneyJudgment.model_construct(
         inflow_class=choice(inflow, conf),
         intent_type=choice(intent, conf),
-        affordability=score(afford),
-        policy_violation=noul(violation),
-        reversibility=noul(reversible),
-        next_mode=choice(mode, conf),
-        action_choice=choice(action, conf),
     )
 
 

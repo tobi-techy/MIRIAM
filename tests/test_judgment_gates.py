@@ -14,7 +14,6 @@ from typesafe_sdk import NoulAnswer, ScoreAnswer, TypeSafeError, Usage
 from miriam_agent.judgment.gates import (
     EgressBranch,
     ToolBranch,
-    build_state,
     decide_egress,
     decide_tool,
     egress_gate,
@@ -28,6 +27,7 @@ from miriam_agent.judgment.schemas import (
     ToolJudgment,
     TurnInput,
 )
+from miriam_agent.judgment.state import build_state
 
 TOOL_GOLDEN = Path(__file__).parent / "fixtures" / "tool_golden.json"
 EGRESS_GOLDEN = Path(__file__).parent / "fixtures" / "egress_golden.json"
@@ -117,6 +117,25 @@ def test_irrelevant_tool_is_rejected():
         )
     )
     assert decision.branch is ToolBranch.REJECT
+
+
+def test_incomplete_tool_args_are_rejected():
+    """Completeness is an execution precondition, not a logging side note."""
+    decision = decide_tool(
+        _tool_judgment(
+            {
+                "tool_is_relevant": 0.95,
+                "args_match_request": 0.95,
+                "args_look_complete": 0.1,
+                "costly": 0.9,
+                "irreversible": 0.1,
+                "exceeds_user_authority": 0.1,
+            }
+        )
+    )
+
+    assert decision.branch is ToolBranch.REJECT
+    assert decision.reason == "args_incomplete"
 
 
 def test_irreversible_tool_is_blocked_above_threshold():
@@ -301,6 +320,25 @@ def test_invented_facts_regenerate():
     assert decision.branch is EgressBranch.REGENERATE
 
 
+def test_extreme_tone_rides_as_a_note_without_blocking_send():
+    decision = decide_egress(
+        _egress_judgment(
+            {
+                "answers_the_ask": 0.95,
+                "invents_facts": 0.02,
+                "leaks_system": 0.01,
+                "repeats_pii": 0.01,
+                "echoes_user_secret": 0.01,
+                "tone_fit": 0.2,
+                "policy_violation": 0.01,
+            }
+        )
+    )
+
+    assert decision.branch is EgressBranch.SEND
+    assert decision.tone_note == "cold"
+
+
 def test_good_reply_sends():
     decision = decide_egress(
         _egress_judgment(
@@ -384,3 +422,164 @@ def test_build_state_includes_proposed_tool_and_tool_results():
     assert state.draft_reply == "You have 500."
     # The tool result became a tool-role history entry for grounding checks.
     assert any(h.role == "tool" and "get_balance" in h.text for h in state.history)
+
+
+def test_build_state_includes_egress_grounding_sources():
+    state = build_state(
+        user_id="u-1",
+        message="How am I doing?",
+        user_context={"balances": {"spendable": 500}, "roles": ["member"]},
+        draft_reply="You have 500 spendable and a 1,000 savings goal.",
+        memory_facts=[{"type": "goal", "content": "Save 1,000 this year"}],
+        financial_plan={"savings_target": 1000},
+    )
+
+    sources = {item.source for item in state.supporting_context}
+    assert "profile" in sources
+    assert "memory:goal" in sources
+    assert "plan" in sources
+
+
+def test_ingress_state_does_not_carry_egress_grounding():
+    state = build_state(
+        user_id="u-1",
+        message="Hi",
+        user_context={"balances": {"spendable": 500}, "roles": ["member"]},
+    )
+
+    assert state.supporting_context == []
+
+
+async def test_streaming_emits_egress_correction_when_reply_is_rewritten(monkeypatch):
+    from miriam_agent.agents.agent_loop import Agent
+    from miriam_agent.tools import build_tool_registry
+
+    class _Provider:
+        async def stream(self, *, messages, tools, temperature, max_tokens):
+            yield {"type": "token", "content": "unsafe "}
+            yield {"type": "token", "content": "draft"}
+            yield {"type": "done"}
+
+        async def complete(self, **kwargs):  # pragma: no cover - not reached
+            raise AssertionError("regeneration should not run")
+
+    async def fake_apply_egress(self, **kwargs):
+        assert kwargs["draft"] == "unsafe draft"
+        assert kwargs["memory_facts"] == [
+            {"type": "goal", "content": "Save 1,000 this year"}
+        ]
+        assert kwargs["financial_plan"] == {"savings_target": 1000}
+        return "safe reply"
+
+    monkeypatch.setattr("miriam_agent.agents.agent_loop.typesafe_enabled", lambda: True)
+    monkeypatch.setattr(Agent, "_apply_egress", fake_apply_egress)
+
+    agent = Agent(registry=build_tool_registry(), provider=_Provider())
+    events = [
+        event
+        async for event in agent.stream_run(
+            user_id="u-1",
+            token="tok",
+            message="How am I doing?",
+            memory_facts=[{"type": "goal", "content": "Save 1,000 this year"}],
+            financial_plan={"savings_target": 1000},
+        )
+    ]
+
+    assert [e for e in events if e["type"] == "token"] == [
+        {"type": "token", "content": "unsafe "},
+        {"type": "token", "content": "draft"},
+    ]
+    assert {e["content"] for e in events if e["type"] == "egress_correction"} == {
+        "safe reply"
+    }
+    assert events[-1] == {"type": "done", "content": "safe reply"}
+
+
+def test_build_state_populates_plan_and_entitlements_for_tool_authority():
+    state = build_state(
+        user_id="u-1",
+        message="Can I rebalance?",
+        user_context={
+            "roles": ["member"],
+            "plan": "pro",
+            "entitlements": ["rebalance"],
+        },
+    )
+
+    assert state.user.plan == "pro"
+    assert state.user.known_flags == ["member", "rebalance"]
+
+
+def test_claim_extraction_keeps_material_financial_claims():
+    from miriam_agent.judgment.egress_claims import extract_claims
+
+    claims = extract_claims(
+        "You have 1,250 in spendable. Nice work. "
+        "You paid Ada 500 and your savings rate grew by 3%."
+    )
+
+    assert len(claims) == 2
+    assert "1,250" in claims[0]
+    assert "3%" in claims[1]
+
+
+def test_claim_catalog_builds_one_question_per_material_claim():
+    from miriam_agent.judgment.egress_claims import build_claim_catalog
+
+    catalog, checks = build_claim_catalog("You have 1,250. You paid Ada 500.")
+
+    assert len(checks) == 2
+    assert set(catalog.questions) == {check.question_id for check in checks}
+    assert all(
+        getattr(catalog.response_model, "model_fields")[check.question_id]
+        for check in checks
+    )
+
+
+async def test_egress_gate_regenerates_when_a_claim_is_unsupported(monkeypatch):
+    from miriam_agent.judgment.egress_claims import (
+        build_claim_catalog,
+        unsupported_claims,
+    )
+
+    monkeypatch.setattr("miriam_agent.judgment.gates.enabled", lambda: True)
+    state = build_state(
+        user_id="u-1",
+        message="What's my balance?",
+        draft_reply="You have 1,250 in spendable. You paid Ada 500.",
+        tool_results=[{"name": "get_balance", "result": {"spendable": 1250}}],
+    )
+    holistic = _egress_judgment(
+        {
+            "answers_the_ask": 0.95,
+            "invents_facts": 0.05,
+            "leaks_system": 0.01,
+            "repeats_pii": 0.01,
+            "echoes_user_secret": 0.01,
+            "tone_fit": 1.0,
+            "policy_violation": 0.01,
+        }
+    )
+    catalog, checks = build_claim_catalog(state.draft_reply or "")
+    claim_response = catalog.response_model.model_construct(
+        model="jev-latest",
+        usage=Usage(input_tokens=5, output_tokens=2),
+        **{
+            checks[0].question_id: NoulAnswer.model_construct(noul=0.95),
+            checks[1].question_id: NoulAnswer.model_construct(noul=0.05),
+        },
+    )
+
+    class _ClaimClient:
+        async def system_one(self, state, questions, *, response_model=None, **kwargs):
+            if response_model is EgressJudgment:
+                return holistic
+            return claim_response
+
+    decision = await egress_gate(state, client=_ClaimClient())
+
+    assert decision.branch is EgressBranch.REGENERATE
+    assert unsupported_claims(claim_response, checks, threshold=0.6) == [
+        checks[0].claim
+    ]

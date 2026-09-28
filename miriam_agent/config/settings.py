@@ -150,13 +150,11 @@ class Settings(BaseSettings):
     TYPESAFE_MODEL: str = Field(default="jev-latest")
     TYPESAFE_TIMEOUT: float = Field(default=10.0)
     TYPESAFE_MAX_RETRIES: int = Field(default=3)
-    # G3: the ingress `exposes_pii` question can only work if TypeSafe sees the
-    # user's actual text, so the raw turn text is sent by default. Set this to
-    # true to run the deterministic card/NIN/credential redactor before the
-    # request (at the cost of that question's reach). The local PII
-    # short-circuit still refuses obvious secrets before TypeSafe is called
-    # either way, so this never disables `exposes_pii`.
-    TYPESAFE_REDACT_USER_TEXT: bool = Field(default=False)
+    # Privacy-first default: strip deterministic card/NIN/credential values
+    # before the request. The local PII short-circuit still refuses obvious
+    # secrets before TypeSafe is called, so this does not disable the guard.
+    # Set to false only for a deliberate evaluation that needs raw text.
+    TYPESAFE_REDACT_USER_TEXT: bool = Field(default=True)
 
     # Proactive analyst (24/7 money watch + private outreach). The Go reacher
     # worker (RAIL_BACKEND) calls POST /api/v1/proactive/analyze to ask whether

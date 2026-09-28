@@ -37,7 +37,6 @@ class Catalog:
     version: str
     questions: dict[str, Any]
     response_model: type[SystemOneResponse]
-    safety_critical: bool = True
 
 
 # --- Criteria -----------------------------------------------------------------
@@ -89,46 +88,6 @@ _INTENT_CRITERIA = {
     },
 }
 
-_DOMAIN_CRITERIA = {
-    "money_movement": {
-        "what": "Sending, transferring, depositing, or moving money between wallets.",
-        "examples": ["Send money to a friend", "Move from stash to spending"],
-    },
-    "bills": {
-        "what": "Airtime, data, cable, electricity, or any bill payment and its providers.",
-        "examples": ["Buy airtime", "Pay my light bill", "Check my data plan"],
-    },
-    "investments": {
-        "what": "Portfolio, positions, assets, strategies, or buying and selling.",
-        "examples": ["What are my positions?", "Buy BTC", "Create a strategy"],
-    },
-    "budgeting": {
-        "what": "Spending, budgets, savings advice, cash flow, or financial health.",
-        "examples": ["Where did my money go?", "Give me a budget"],
-    },
-    "account_overview": {
-        "what": "Balances, transactions, transfer status, or uploaded documents.",
-        "examples": ["What is my balance?", "Show my transactions"],
-    },
-    "account_settings": {
-        "what": "Automations, obligations, saved beneficiaries, or remembered preferences.",
-        "examples": ["Pause my weekly save", "Save this bill beneficiary"],
-    },
-    "other": {
-        "what": "None of the product areas above.",
-        "examples": [],
-    },
-}
-
-_LANGUAGE_CRITERIA = {
-    "en": "Standard English.",
-    "pidgin_or_nglish": "Nigerian Pidgin or informal Naija English.",
-    "yo": "Yoruba.",
-    "ig": "Igbo.",
-    "ha": "Hausa.",
-    "other": "Any other language.",
-}
-
 
 # --- Ingress catalog ----------------------------------------------------------
 
@@ -136,14 +95,6 @@ INGRESS_QUESTIONS: dict[str, Any] = {
     "intent": Choice(
         instructions="What is the primary intent of `turn.user_text`, given `history`?",
         criteria=_INTENT_CRITERIA,
-    ),
-    "domain": Choice(
-        instructions="Which product area does `turn.user_text` concern?",
-        criteria=_DOMAIN_CRITERIA,
-    ),
-    "language": Choice(
-        instructions="What language is `turn.user_text` written in?",
-        criteria=_LANGUAGE_CRITERIA,
     ),
     "needs_tools": Noul(
         instructions="Does fulfilling `turn.user_text` require calling a tool or external system?",
@@ -219,7 +170,6 @@ INGRESS = Catalog(
     version=INGRESS_CATALOG_VERSION,
     questions=INGRESS_QUESTIONS,
     response_model=IngressJudgment,
-    safety_critical=True,
 )
 
 
@@ -233,7 +183,21 @@ TOOL_QUESTIONS: dict[str, Any] = {
         instructions="Do `proposed_tool.args` match what the user actually asked?",
     ),
     "args_look_complete": Noul(
-        instructions="Are the required arguments of `proposed_tool` present and non-contradictory?",
+        instructions=(
+            "Given `proposed_tool.args_schema`, are all required arguments of "
+            "`proposed_tool` present and non-contradictory?"
+        ),
+        criteria={
+            "true": (
+                "Every required field in `proposed_tool.args_schema.required` has "
+                "a non-null value in `proposed_tool.args`, and the supplied values "
+                "do not contradict each other."
+            ),
+            "false": (
+                "At least one required field is missing or null, or two supplied "
+                "values cannot both be true."
+            ),
+        },
     ),
     "costly": Noul(
         instructions=(
@@ -319,7 +283,6 @@ TOOL = Catalog(
     version=TOOL_CATALOG_VERSION,
     questions=TOOL_QUESTIONS,
     response_model=ToolJudgment,
-    safety_critical=True,
 )
 
 
@@ -331,13 +294,25 @@ EGRESS_QUESTIONS: dict[str, Any] = {
     ),
     "invents_facts": Noul(
         instructions=(
-            "Does `draft_reply` assert facts not supported by `history`, the "
-            "tool results in state, `user_profile`, `memory_context`, or "
-            "`plan_context`? Those three grounding fields carry exactly what "
-            "the generator saw (profile numbers, remembered facts, current "
-            "plan): a number or claim present in any of them is grounded, "
-            "even when no tool ran this turn."
+            "Does `draft_reply` assert a material fact that is not supported by "
+            "`supporting_context`, `user_profile`, `memory_context`, "
+            "`plan_context`, `history`, or `turn.user_text`? Those grounding "
+            "fields carry exactly what the generator saw. Do not treat the "
+            "assistant's own earlier messages as evidence for a money fact; "
+            "they are not a source."
         ),
+        criteria={
+            "true": (
+                "The reply states a specific number, balance, transaction, rate, "
+                "date, holding, or event that cannot be found in the supplied "
+                "context, or was only asserted by the assistant earlier."
+            ),
+            "false": (
+                "Every material fact in the reply is supported by a named source "
+                "in `supporting_context`, by the user's own current message, or by "
+                "a user statement in `history`."
+            ),
+        },
     ),
     "leaks_system": Noul(
         instructions=(
@@ -385,5 +360,4 @@ EGRESS = Catalog(
     version=EGRESS_CATALOG_VERSION,
     questions=EGRESS_QUESTIONS,
     response_model=EgressJudgment,
-    safety_critical=False,
 )

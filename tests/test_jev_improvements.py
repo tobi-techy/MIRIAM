@@ -7,8 +7,6 @@ the tone soft-signal (which must never flip a send by itself).
 
 from __future__ import annotations
 
-from typesafe_sdk import NoulAnswer, ScoreAnswer, Usage
-
 from miriam_agent.judgment.gates import (
     EgressBranch,
     ToolBranch,
@@ -18,7 +16,6 @@ from miriam_agent.judgment.gates import (
     egress_gate,
     ingress_gate,
 )
-from miriam_agent.judgment.schemas import EgressJudgment
 from tests.test_judgment_gates import _egress_judgment, _tool_judgment
 
 
