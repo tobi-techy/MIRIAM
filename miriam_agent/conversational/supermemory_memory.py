@@ -109,6 +109,7 @@ class SupermemoryMemory:
         search_mode: str = "memories",
         threshold: float | None = None,
         rerank: bool = False,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Assemble the memory block shown to the LLM every turn.
 
@@ -116,6 +117,12 @@ class SupermemoryMemory:
         + buckets + searchResults together (one search meter). A separate
         ``search`` is only issued when the profile carried no search
         results but a query was asked.
+
+        The always-on profile stays unfiltered (durable anchors like the
+        name live there). ``filters`` scope the query-scoped recall only,
+        so a money turn is not crowded by onboarding chit-chat and vice
+        versa. Every write tags ``metadata={"channel", "source"}``; pass
+        e.g. ``{"channel": "web"}`` to read one channel's recall.
 
         Handles both response shapes: memory hits (``memory``) and
         SuperRAG chunk hits (``chunk`` or ``chunks[]``) — callers must read
@@ -141,7 +148,9 @@ class SupermemoryMemory:
 
         search_results: dict[str, Any] | None = None
         try:
-            result = await self.client.profile(container_tag, query=query)
+            result = await self.client.profile(
+                container_tag, query=query, filters=filters
+            )
             profile: dict[str, Any] = result.get("profile", {}) or {}
             for item in profile.get("static", []):
                 add("profile", item if isinstance(item, str) else str(item))
@@ -175,6 +184,7 @@ class SupermemoryMemory:
                     include_related=include_related,
                     threshold=threshold,
                     rerank=rerank,
+                    filters=filters,
                 )
                 hits = search_result.get("results", [])
             except Exception as e:

@@ -23,7 +23,17 @@ ONBOARDING_EVENTS = Counter(
     "interview_finished, statement_requested, statement_provided, "
     "plan_presented, aha_generated, consent_poll, adjusting, "
     "completed_automated, completed_draft, abandoned, restarted)",
-    ["user_id", "event"],
+    ["event"],
+)
+AGENT_BUDGET_EXCEEDED = Counter(
+    "miriam_agent_budget_exceeded_total",
+    "Agent per-task budget aborts (steps/tokens/cost/wall_clock)",
+    ["budget"],
+)
+AGENT_COST_USD = Counter(
+    "miriam_agent_cost_usd_total",
+    "Estimated LLM cost in USD",
+    ["model"],
 )
 MIRIAM_AHA_DETECTED = Counter(
     "miriam_aha_detected_total",
