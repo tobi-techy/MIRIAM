@@ -135,7 +135,21 @@ until re-ingested. Two options when that matters:
 
 Both are operational, not code paths, and are not run automatically.
 
-## 7. Not done here
+## 7. Correction surface
+
+- `api/memory.py` exposes it: POST /memory/remember, POST /memory/correct
+  (versioned update), POST /memory/forget (dry-run preview, then bound
+  apply via `forget_exact`), GET /memory/inferred + POST
+  /memory/inferred/{id}/review, DELETE /memory (GDPR erasure). All are
+  authenticated and scoped to the caller's own container; all fail open
+  when Supermemory is disabled. The agent loop's registry stays read-only
+  by design — correction runs outside it.
+- Money turns never ingest numbers: `_finalize_money_turn` (chat) and the
+  spectrum money/portfolio paths ingest a scrubbed user message plus a
+  de-identified `action + status + counterparty` summary. Memory carries
+  facts about the person, never balances.
+
+## 8. Not done here
 
 - **A correction surface.** `forget` / `update` exist on the client but no user
   path calls them ("that's not right anymore"). Wiring one is additive; it was

@@ -50,6 +50,10 @@ async def read_facts(
             container_tag_for(user_id),
             query=query or "What should I know about this user?",
             limit=limit,
+            # Money path needs precision over recall: a low-relevance fact
+            # crowding out the right one is how a stale number gets quoted.
+            threshold=0.35,
+            rerank=True,
         )
     except Exception as exc:  # noqa: BLE001 - memory must never break a turn
         logger.info("voice memory read failed, continuing without facts: %s", exc)

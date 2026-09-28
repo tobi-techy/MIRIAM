@@ -24,6 +24,7 @@ any other and settles nothing.
 
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -303,7 +304,15 @@ async def _finalize_money_turn(
     result: TurnResult,
     conversation_id: str | None,
 ) -> dict[str, Any]:
-    """Persist and serialize a finished money turn."""
+    """Persist and serialize a finished money turn.
+
+    The local store keeps the full exchange (it is the resume history).
+    The memory graph gets a de-identified summary only: the user's message
+    with numbers scrubbed plus the action type/status without amounts or
+    balances. Memory carries facts about the person, never numbers — a
+    stored balance would otherwise resurface as a [WHAT YOU KNOW] fact
+    and be quoted as current without re-querying state.
+    """
     conv_id = conversation_id or f"conv_{user.id}"
     payload = _serialize_money_result(result)
     payload["conversation_id"] = conv_id
@@ -330,14 +339,67 @@ async def _finalize_money_turn(
         supermemory_memory,
         user.id,
         channel="web",
-        user_message=message,
-        assistant_message=payload["response"],
+        user_message=_scrub_money_numbers(message),
+        assistant_message=_money_memory_summary(result),
         name=_display_name(user),
     )
     payload["conversation_history"] = await memory_store.get_conversation_history(
         conv_id, user.id
     )
     return payload
+
+
+# Matches currency amounts (₦200k, $1,000.50, 200000 NGN, 1.5m) and bare
+# figures. This runs only on money turns, where any standalone number is
+# almost certainly an amount, balance, or id — so the final branch is
+# deliberately aggressive: no number from a money turn reaches the graph.
+_MONEY_NUMBER_RE = re.compile(
+    r"[₦$€£]\s?[\d,]+(?:\.\d+)?[kmbKMB]?"
+    r"|\b\d[\d,]*\.?\d*\s?(?:₦|NGN|naira|kobo|USD|USDT|\$)\b"
+    r"|\b\d[\d,]{3,}(?:\.\d+)?\b"
+    r"|\b\d+\.\d{2}\b"
+    r"|\b\d+[kmbKMB]\b"
+    r"|\b\d+(?:\.\d+)?\b"
+)
+
+
+def _scrub_money_numbers(text: str) -> str:
+    """Replace money-like numbers with [amount], keeping names/intent.
+
+    "send 200k to Femi" -> "send [amount] to Femi". Fail-open: on any
+    error the caller gets a number-free fallback, never the raw text.
+    """
+    try:
+        cleaned = _MONEY_NUMBER_RE.sub("[amount]", text or "")
+        # Collapse accidental doubles from adjacent matches.
+        cleaned = re.sub(r"(\[amount\]\s*){2,}", "[amount] ", cleaned)
+        return cleaned.strip()
+    except Exception:
+        return "money turn (details withheld)"
+
+
+def _money_memory_summary(result: TurnResult) -> str:
+    """De-identified money-turn summary for the memory graph.
+
+    Action type + settlement status + counterparty name only. No amounts,
+    balances, sleeves, ids, reasons, or narration — all of which carry
+    numbers the next turn must re-query from state, not recall from memory.
+    """
+    try:
+        receipt = getattr(result, "receipt", None)
+        if receipt is None:
+            if getattr(result, "confirm_id", ""):
+                return "money turn: challenge awaiting confirmation (no movement)"
+            return "money turn: no movement"
+        action = (getattr(receipt, "action", "") or "money").strip() or "money"
+        status = (getattr(receipt, "status", "") or "unknown").strip() or "unknown"
+        counterparty = (getattr(receipt, "counterparty", "") or "").strip()
+        who = f" with {counterparty}" if counterparty else ""
+        if getattr(result, "confirm_id", "") and status != "executed":
+            return f"money turn: {action}{who} awaiting confirmation ({status})"
+        return f"money turn: {action}{who} ({status})"
+    except Exception:
+        return "money turn (details withheld)"
 
 
 class ChatRequest(BaseModel):
@@ -1515,7 +1577,13 @@ async def _load_memory_facts(
         try:
             container_tag = container_tag_for(user_id)
             smart_facts = await supermemory_memory.build_memory_facts(
-                container_tag, query=query or "What should I know about this user?"
+                container_tag,
+                query=query or "What should I know about this user?",
+                # Web recall reads web turns: onboarding interview chatter
+                # and spectrum/money receipts must not crowd it out. The
+                # always-on profile (name and other static anchors) is
+                # unaffected — this scopes the query-scoped search only.
+                filters={"channel": "web", "source": "miriam"},
             )
             if smart_facts:
                 return smart_facts
