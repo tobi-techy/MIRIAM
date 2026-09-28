@@ -36,6 +36,7 @@ from miriam_agent.agents.llm import ChatMessage, LLMProvider, get_llm_provider
 from miriam_agent.money.plan import build_money_plan
 from miriam_agent.money.reference import CountryReference
 from miriam_agent.money.schema import MoneyPlan
+from miriam_agent.safety.grounding import normalise_figure
 
 logger = logging.getLogger(__name__)
 
@@ -142,10 +143,14 @@ def _parse_arguments(raw: Any) -> dict[str, Any] | None:
 
 
 def _normalize_number(raw: str) -> str:
-    text = raw.replace(",", "").strip()
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text or "0"
+    """Canonical form of one figure token.
+
+    Delegates to ``safety.grounding``: the money narration clamp and the reply
+    guard must agree on what a figure is worth, or a plan the clamp accepts
+    could be refused by the guard downstream. ``_NUMBER_RE`` captures a token
+    starting with a digit, so the shared rule substitutes exactly.
+    """
+    return normalise_figure(raw)
 
 
 def _numbers_in(text: str) -> set[str]:

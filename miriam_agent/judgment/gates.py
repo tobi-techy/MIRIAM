@@ -557,7 +557,13 @@ def build_state(
         if not isinstance(tr, dict):
             continue
         name = str(tr.get("name") or "tool")
-        text = json.dumps({"tool": name, "result": tr.get("result")}, default=str)[:500]
+        # Bounded, but generously: the judge can only rule on a claim whose
+        # source it can actually see, and a real read (balances with sub-accounts,
+        # a portfolio, a spend breakdown) clears 500 characters easily -- at which
+        # point every figure past the cut looked invented and the reply was
+        # rewritten for no reason.
+        payload = json.dumps({"tool": name, "result": tr.get("result")}, default=str)
+        text = payload[:4000]
         history_turns.append(HistoryTurn(role="tool", text=text))
 
     ctx = user_context if isinstance(user_context, dict) else {}

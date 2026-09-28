@@ -78,7 +78,7 @@ from miriam_agent.onboarding.contracts import (
     MoneyMomentMeta,
     Plan,
 )
-from miriam_agent.onboarding.quality import EvalMeta, evaluate_reply
+from miriam_agent.onboarding.quality import EvalMeta, evaluate_reply, hard_violations
 from miriam_agent.onboarding.state import (
     STAGE_AWAITING_ADJUSTMENT,
     STAGE_AWAITING_STATEMENT,
@@ -1004,6 +1004,49 @@ class OnboardingService:
             outcome = None
         if outcome is None:
             return await self._fallback_turn(user_id, state, conversation_id, text)
+
+        # spec §30, never invent numbers. _present_plan has always dropped a
+        # presentation that reports a figure nobody stated; the conversation
+        # itself only recorded the drift in the trace and sent it anyway, which
+        # is how a number the user was never told reached them.
+        #
+        # Linting before _apply_outcome matters for more than ordering: it runs
+        # before this turn's extracted facts are merged into ``state.learned``,
+        # so a reply cannot ground its own invented figure in the fact it just
+        # made up beside it.
+        violations = self._spec_violations(
+            state, outcome, grounded_extra=text, present=False
+        )
+        if hard_violations(violations):
+            retry = await self._reground(
+                state=state,
+                history=history,
+                text=text,
+                is_poll_vote=is_poll_vote,
+                event=event,
+                poll_title=poll_title,
+            )
+            if retry is not None:
+                outcome = retry
+                violations = self._spec_violations(
+                    state, outcome, grounded_extra=text, present=False
+                )
+        if hard_violations(violations):
+            # The retry drifted too, or there was no retry to be had. A
+            # deterministic line is a worse conversation and a better answer
+            # than a confident figure nobody gave.
+            await self._trace_turn(
+                user_id,
+                state,
+                outcome,
+                mode="conductor",
+                stage=state.stage,
+                prompt_version=driver.prompt_version("conductor"),
+                grounded_extra=text,
+                violations=violations,
+                clamped=True,
+            )
+            return await self._fallback_turn(user_id, state, conversation_id, text)
         return await self._apply_outcome(
             user_id,
             state,
@@ -1012,6 +1055,39 @@ class OnboardingService:
             outcome,
             is_poll_vote=is_poll_vote,
         )
+
+    async def _reground(
+        self,
+        *,
+        state: OnboardingState,
+        history: list[dict[str, Any]],
+        text: str,
+        is_poll_vote: bool,
+        event: str,
+        poll_title: str,
+    ) -> driver.DriverOutcome | None:
+        """One re-ask after a reply reported a figure nobody stated.
+
+        Mirrors the egress gate's regenerate step: retry once with the drift
+        named, then let the caller fall back. Returns ``None`` when the retry
+        itself failed, so the caller keeps the original outcome for the trace
+        and still refuses to send it.
+        """
+        try:
+            return await driver.conductor_turn(
+                provider=self._llm(),
+                state=state,
+                history=history,
+                user_text=text,
+                is_poll_vote=is_poll_vote,
+                event=event,
+                poll_title=poll_title,
+                moving_on_hint=self._moving_on_hint(state),
+                correction=driver.GROUNDING_CORRECTION,
+            )
+        except Exception:
+            logger.exception("onboarding grounding retry failed for the turn")
+            return None
 
     def _dimension_for(self, key: str) -> str:
         """Map a free-form fact label to a broad memory dimension (for the

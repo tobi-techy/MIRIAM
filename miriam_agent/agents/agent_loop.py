@@ -54,11 +54,41 @@ from miriam_agent.judgment.gates import (
 )
 from miriam_agent.judgment.schemas import ProposedTool
 from miriam_agent.observability.correlation import current_trace_id
+from miriam_agent.observability.metrics import record_reply_guard
+from miriam_agent.safety import grounding
 from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
 from miriam_agent.safety.policy import SafetyPolicy
-from miriam_agent.utils.text import bubble_sets, clean_text, lift_reaction
+from miriam_agent.utils.text import (
+    bubble_sets,
+    clean_text,
+    lift_reaction,
+    split_ready_sentences,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _rule_of(problem: str) -> str:
+    """The rule name from a prefixed problem line, for the runtime counters."""
+    return problem.split(":", 1)[0].strip() or "unknown"
+
+
+def _without_stale(block: Any, *, label: str) -> Any:
+    """Drop any part of a context block that declares itself too old to use.
+
+    Applied before the prompt is built, so stale data never reaches the model
+    at all, and the guard's corpus cannot disagree with what the model read.
+    """
+    if isinstance(block, list):
+        kept = [item for item in block if not grounding.is_stale_block(item)]
+        if len(kept) != len(block):
+            logger.info("stale source dropped from %s", label)
+        return kept
+    if grounding.is_stale_block(block):
+        logger.info("stale source dropped from %s", label)
+        return None
+    return block
+
 
 MAX_TOOL_ROUNDS = 5
 
@@ -154,6 +184,11 @@ class Agent:
         )
 
         tool_calls_made: list[dict[str, Any]] = []
+        # Untruncated results, kept for the two checks that need the whole
+        # evidence: the deterministic figure guard and the TypeSafe judge. The
+        # model's own copy is trimmed in ``_tool_message``; the checks that
+        # decide whether to trust the model must not be.
+        raw_tool_results: list[dict[str, Any]] = []
         # Accumulated assistant-tool_calls + tool-result messages sent to the
         # provider so multi-round tool use is a clean call/result pairing
         # (OpenAI and Concentrate both reject tool results without the
@@ -180,7 +215,15 @@ class Agent:
                     user_context=user_context,
                     draft=response.content,
                     llm_messages=llm_messages,
-                    tool_results=self._collect_tool_results(llm_extra),
+                    tool_results=raw_tool_results,
+                    grounded=self._grounding_corpus(
+                        message=message,
+                        history=history,
+                        user_context=user_context,
+                        memory_facts=memory_facts,
+                        financial_plan=financial_plan,
+                        tool_results=raw_tool_results,
+                    ),
                 )
                 return self._decorate(
                     AgentRunResult(
@@ -256,10 +299,12 @@ class Agent:
                         name, args, ctx, user_id, user_context
                     )
                     llm_extra.append(self._tool_message(call.get("id"), name, result))
+                    raw_tool_results.append({"name": name, "result": result})
                 except Exception as e:
                     llm_extra.append(
                         self._tool_message(call.get("id"), name, {"error": str(e)})
                     )
+                    raw_tool_results.append({"name": name, "result": {"error": str(e)}})
 
         # Tool loop exhausted without a final answer.
         return self._decorate(
@@ -300,12 +345,30 @@ class Agent:
         ctx = {"user_id": user_id, "token": token}
         schemas = self.registry.llm_schemas()
         llm_extra: list[ChatMessage] = []
+        # Untruncated results, for the same two reasons as ``run``: the figure
+        # guard and the judge both need the whole evidence.
+        raw_tool_results: list[dict[str, Any]] = []
 
         for _round in range(MAX_TOOL_ROUNDS):
             llm_messages = list(messages) + llm_extra
+            grounded = self._grounding_corpus(
+                message=message,
+                history=history,
+                user_context=user_context,
+                memory_facts=memory_facts,
+                financial_plan=financial_plan,
+                tool_results=raw_tool_results,
+            )
 
             collected: list[str] = []
             stream_tool_calls: list[dict[str, Any]] = []
+            # Hold each sentence back until it has been checked. A number
+            # becomes a claim when its sentence completes, so emitting whole
+            # sentences is the finest grain that can be guaranteed honest --
+            # and the stream still types.
+            emitted = ""
+            holdback = ""
+            refused = False
             async for event in self.provider.stream(
                 messages=llm_messages,
                 tools=schemas,
@@ -314,14 +377,67 @@ class Agent:
             ):
                 if event["type"] == "token":
                     collected.append(event["content"])
-                    yield {"type": "token", "content": event["content"]}
+                    if refused:
+                        continue  # nothing more of this reply is shown
+                    holdback += event["content"]
+                    ready, holdback = split_ready_sentences(holdback)
+                    problems = (
+                        self._reply_problems(emitted + ready, grounded) if ready else []
+                    )
+                    if problems:
+                        refused = True
+                        for problem in problems:
+                            record_reply_guard(_rule_of(problem), "blocked")
+                        logger.warning(
+                            "streamed reply refused mid-flight: %s",
+                            "; ".join(problems[:5]),
+                        )
+                        correction = "\n" + EGRESS_DONT_KNOW
+                        emitted += correction
+                        yield {"type": "token", "content": correction}
+                        continue
+                    if ready:
+                        emitted += ready
+                        yield {"type": "token", "content": ready}
                 elif event["type"] == "tool_call":
                     tc = event["tool_call"]
                     yield {"type": "tool_call", "tool_call": tc}
                     stream_tool_calls.append(tc)
 
             if not stream_tool_calls:
-                yield {"type": "done", "content": "".join(collected)}
+                if not refused and holdback:
+                    problems = self._reply_problems(emitted + holdback, grounded)
+                    if problems:
+                        refused = True
+                        for problem in problems:
+                            record_reply_guard(_rule_of(problem), "blocked")
+                        logger.warning(
+                            "streamed reply refused at the tail: %s",
+                            "; ".join(problems[:5]),
+                        )
+                        correction = "\n" + EGRESS_DONT_KNOW
+                        emitted += correction
+                        yield {"type": "token", "content": correction}
+                    else:
+                        emitted += holdback
+                        yield {"type": "token", "content": holdback}
+                if not refused:
+                    # Streaming shows words as they are produced, so the judge
+                    # cannot prevent -- it can only correct. Run it on the whole
+                    # reply once it exists and append the standard line when it
+                    # refuses what the user has already seen.
+                    correction = await self._judge_streamed(
+                        text=emitted,
+                        user_id=user_id,
+                        message=message,
+                        history=history,
+                        user_context=user_context,
+                        tool_results=raw_tool_results,
+                    )
+                    if correction:
+                        emitted += "\n" + correction
+                        yield {"type": "token", "content": "\n" + correction}
+                yield {"type": "done", "content": emitted}
                 return
 
             # Record the assistant's tool_calls so the next round is a clean
@@ -385,6 +501,7 @@ class Agent:
                         name, args, ctx, user_id, user_context
                     )
                     llm_extra.append(self._tool_message(call.get("id"), name, result))
+                    raw_tool_results.append({"name": name, "result": result})
                     yield {
                         "type": "tool_result",
                         "tool": name,
@@ -395,6 +512,7 @@ class Agent:
                     llm_extra.append(
                         self._tool_message(call.get("id"), name, {"error": str(e)})
                     )
+                    raw_tool_results.append({"name": name, "result": {"error": str(e)}})
                     yield {
                         "type": "tool_result",
                         "tool": name,
@@ -416,6 +534,9 @@ class Agent:
         memory_facts: list[dict[str, Any]] | None,
         financial_plan: dict[str, Any] | None = None,
     ) -> list[ChatMessage]:
+        user_context = _without_stale(user_context, label="user_context")
+        memory_facts = _without_stale(memory_facts, label="memory_facts")
+        financial_plan = _without_stale(financial_plan, label="financial_plan")
         system_prompt = build_system_prompt(
             user_context=user_context,
             memory_facts=memory_facts,
@@ -442,6 +563,54 @@ class Agent:
         if name in MONEY_TOOL_NAMES:
             return {"error": _MONEY_TOOL_REFUSAL.format(name=name), "_blocked": True}
         return {"error": f"unknown tool {name}"}
+
+    async def _judge_streamed(
+        self,
+        *,
+        text: str,
+        user_id: str,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        user_context: dict[str, Any] | None,
+        tool_results: list[dict[str, Any]],
+    ) -> str | None:
+        """The egress judge, applied to a stream that has already been sent.
+
+        Returns the correction to append, or ``None`` when the reply stands.
+        Best effort by construction: the words are on the user's screen before
+        this runs, which is the price of typing. The figure guard does not have
+        that limitation -- it holds each sentence back -- so the split is
+        deliberate: correctness is prevented, policy and tone are corrected.
+        """
+        if not text or not typesafe_enabled():
+            if not typesafe_enabled() and self.config.fail_closed_without_judge:
+                record_reply_guard("judge", "fell_back")
+                return EGRESS_DONT_KNOW
+            return None
+        try:
+            decision = await egress_gate(
+                build_state(
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                    user_context=user_context,
+                    registry=self.registry,
+                    draft_reply=text,
+                    tool_results=tool_results,
+                )
+            )
+        except Exception:
+            logger.warning("streamed egress judge failed", exc_info=True)
+            if self.config.fail_closed_without_judge:
+                record_reply_guard("judge", "fell_back")
+                return EGRESS_DONT_KNOW
+            return None
+        if decision.branch is EgressBranch.SEND and not (
+            decision.degraded and self.config.fail_closed_without_judge
+        ):
+            return None
+        record_reply_guard("judge", "fell_back")
+        return decision.reply or EGRESS_DONT_KNOW
 
     async def _tool_gate_decision(
         self,
@@ -477,9 +646,32 @@ class Agent:
         draft: str,
         llm_messages: list[ChatMessage],
         tool_results: list[dict[str, Any]],
+        grounded: str = "",
     ) -> str:
-        """Run the egress gate on a draft and return the reply to send."""
+        """Gate a draft, then return the reply to send.
+
+        The deterministic figure guard runs first and unconditionally: it is
+        the one check that must not depend on the judge being reachable, and
+        the only one that still runs when the judge is switched off. The
+        TypeSafe egress judge then owns policy, secrets, and tone, and keeps
+        its fail-open behaviour -- by that point the figures are already safe.
+        """
+        guarded = await self._guard_reply(
+            draft=draft,
+            grounded=grounded,
+            llm_messages=llm_messages,
+        )
+        if guarded is None:
+            return EGRESS_DONT_KNOW
+        draft = guarded
+
         if not typesafe_enabled():
+            if self.config.fail_closed_without_judge:
+                logger.error(
+                    "judge is off and fail-closed is configured: refusing the reply"
+                )
+                record_reply_guard("judge", "fell_back")
+                return EGRESS_DONT_KNOW
             return draft
 
         async def _evaluate(text: str) -> EgressDecision:
@@ -496,6 +688,12 @@ class Agent:
             )
 
         decision = await _evaluate(draft)
+        if decision.degraded and self.config.fail_closed_without_judge:
+            logger.error(
+                "judge unavailable and fail-closed is configured: refusing the reply"
+            )
+            record_reply_guard("judge", "fell_back")
+            return EGRESS_DONT_KNOW
         if decision.branch is EgressBranch.DISCARD:
             return decision.reply or EGRESS_DONT_KNOW
         if decision.branch is EgressBranch.REGENERATE:
@@ -511,6 +709,17 @@ class Agent:
             except Exception:
                 logger.warning("egress regeneration failed", exc_info=True)
                 return EGRESS_DONT_KNOW
+            # A rewrite is a fresh draft, so it gets the figure guard too --
+            # otherwise the judge would be the only thing between a retry and a
+            # new invented number.
+            reguarded = await self._guard_reply(
+                draft=regenerated,
+                grounded=grounded,
+                llm_messages=llm_messages,
+            )
+            if reguarded is None:
+                return EGRESS_DONT_KNOW
+            regenerated = reguarded
             second = await _evaluate(regenerated)
             if second.branch is EgressBranch.SEND:
                 return regenerated
@@ -518,13 +727,165 @@ class Agent:
         return draft
 
     @staticmethod
-    def _collect_tool_results(llm_extra: list[ChatMessage]) -> list[dict[str, Any]]:
-        """Tool results from this turn, for the egress grounding check."""
-        return [
-            {"name": m.name or "tool", "result": m.content}
-            for m in llm_extra
-            if m.role == "tool"
+    def _grounding_parts(block: Any, *, label: str) -> list[str]:
+        """JSON for one source block, dropping any part that declares itself stale.
+
+        A stale source cannot ground a figure. That is the difference between
+        "I was told this" and "I was told this, and it was still true" -- the
+        staler class of wrong figure is confidently repeated old data, which no
+        amount of source-checking catches on its own.
+        """
+        if not block:
+            return []
+        items = block if isinstance(block, list) else [block]
+        parts: list[str] = []
+        for item in items:
+            stale = grounding.is_stale_block(item) or (
+                isinstance(item, dict) and grounding.is_stale_block(item.get("result"))
+            )
+            if stale:
+                logger.info("stale source excluded from grounding: %s", label)
+                continue
+            parts.append(json.dumps(item, default=str))
+        return parts
+
+    @staticmethod
+    def _grounding_corpus(
+        *,
+        message: str,
+        history: list[dict[str, Any]] | None,
+        user_context: dict[str, Any] | None,
+        memory_facts: list[dict[str, Any]] | None,
+        financial_plan: dict[str, Any] | None,
+        tool_results: list[dict[str, Any]] | None,
+    ) -> str:
+        """Everything this turn was actually given, as text a figure can be traced to.
+
+        Only the user's own turns are read back out of history. Miriam's earlier
+        replies are deliberately left out: a number she invented last turn is not
+        a source for the number she states this turn, and including them would let
+        one hallucination ground its own successor.
+        """
+        parts: list[str] = [message or ""]
+        parts.extend(
+            str(turn.get("content") or turn.get("text") or "")
+            for turn in (history or [])
+            if isinstance(turn, dict) and turn.get("role") == "user"
+        )
+        # The blocks go in as their own data, not as the prompt's rendering of
+        # them. Two reasons: the checks that need structure (which label a
+        # figure wears, whether two sources disagree) cannot read prose, and the
+        # data is a superset of the prompt -- so this can only ever accept a
+        # figure the turn genuinely holds, which is the direction that matters.
+        # Stale blocks are excluded here *and* from the prompt itself.
+        for block, label in (
+            (user_context, "user_context"),
+            (memory_facts, "memory_facts"),
+            (financial_plan, "financial_plan"),
+        ):
+            parts.extend(Agent._grounding_parts(block, label=label))
+        for result in tool_results or []:
+            parts.extend(Agent._grounding_parts(result, label="tool_result"))
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _reply_problems(reply: str, grounded: str) -> list[str]:
+        """Everything wrong with a draft, in one list.
+
+        One function so the rules cannot drift between the paths that apply
+        them. Every entry is prefixed with the rule that produced it, so the
+        runtime counters and the log lines agree with the eval set about what
+        fired.
+
+        The action rule is the reason this loop is special: it never executes
+        anything, so a completed-action claim here is not merely unverified, it
+        is false. The rest are claims about the user's money that nothing in
+        the turn supports -- a prediction, a change, a reading of the account,
+        or a merchant who was never mentioned.
+        """
+        problems = [
+            f"figure: no source for {figure}"
+            for figure in grounding.ungrounded_figures(reply, grounded)
         ]
+        problems.extend(
+            f"label: {figure} is labelled against its source"
+            for figure in grounding.label_conflicts(reply, grounded)
+        )
+        problems.extend(
+            f"contested: {figure} comes from sources that disagree"
+            for figure in grounding.contested_figures(reply, grounded)
+        )
+        problems.extend(
+            f"action: claims an action that did not happen: {phrase!r}"
+            for phrase in grounding.action_claims(reply)
+        )
+        problems.extend(
+            f"forecast: predicts {phrase!r} with no projection to point to"
+            for phrase in grounding.forecast_claims(reply, grounded)
+        )
+        problems.extend(
+            f"change: asserts {phrase!r} with nothing to compare against"
+            for phrase in grounding.change_claims(reply, grounded)
+        )
+        problems.extend(
+            f"observation: claims to have read the account: {phrase!r}"
+            for phrase in grounding.observation_claims(reply, grounded)
+        )
+        problems.extend(
+            f"entity: {name!r} appears nowhere in the turn"
+            for name in grounding.novel_entities(reply, grounded)
+        )
+        return problems
+
+    async def _guard_reply(
+        self,
+        *,
+        draft: str,
+        grounded: str,
+        llm_messages: list[ChatMessage],
+    ) -> str | None:
+        """Refuse to send a claim the turn does not support.
+
+        Returns the text to send -- the draft when it is clean, a rewrite when
+        the first attempt only drifted -- or ``None`` when nothing safe can be
+        said, which the caller turns into the fixed "I don't have that reliably
+        yet" line. One retry at most: a model that invents a figure twice will
+        not stop on the third ask, and the user is owed a straight answer
+        instead.
+        """
+        problems = self._reply_problems(draft, grounded)
+        if not problems:
+            record_reply_guard("none", "allowed")
+            return draft
+        for problem in problems:
+            record_reply_guard(_rule_of(problem), "blocked")
+        logger.warning(
+            "draft rejected before send: %s (trace_id=%s)",
+            "; ".join(problems[:5]),
+            current_trace_id(),
+            extra={"problems": problems[:5]},
+        )
+        try:
+            corrected = await self.provider.complete(
+                messages=llm_messages
+                + [ChatMessage(role="user", content=EGRESS_REGENERATE_INSTRUCTION)],
+                tools=None,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+            )
+            regenerated = corrected.content or ""
+        except Exception:
+            logger.warning("reply regeneration failed", exc_info=True)
+            for problem in problems:
+                record_reply_guard(_rule_of(problem), "fell_back")
+            return None
+        remaining = self._reply_problems(regenerated, grounded) if regenerated else []
+        if not regenerated or remaining:
+            for problem in remaining or problems:
+                record_reply_guard(_rule_of(problem), "fell_back")
+            return None
+        record_reply_guard("none", "retried")
+        return regenerated
 
     async def _safe_execute(
         self,

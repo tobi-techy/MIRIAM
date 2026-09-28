@@ -50,6 +50,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from miriam_agent.safety import grounding
+
 MAX_WORDS_CONVERSATIONAL = 120
 MAX_WORDS_PRESENT = 220
 MAX_PARAGRAPHS = 4
@@ -508,54 +510,37 @@ def _parrot_payload_adds_information(reply: str, prev_user: str, lower: str) -> 
     return len(info) >= _PARROT_INFO_THRESHOLD
 
 
-# Number tokens (dollars, percents, amounts, years) and list ordinals.
-_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)*%?")
-_ORDINAL_PREFIX_RE = re.compile(r"(?m)^[ \t]*\d+[.)][ \t]+")
+# The figure rules live in ``miriam_agent.safety.grounding`` and are shared with
+# the answer path, so the chat agent and onboarding cannot disagree about what
+# counts as an invented number. The names below stay as aliases because the
+# onboarding tests and drift tooling reference them.
+_NUMBER_TOKEN_RE = grounding.NUMBER_TOKEN_RE
+_ORDINAL_PREFIX_RE = grounding.ORDINAL_PREFIX_RE
 
 
 def _normalize_number(match: str) -> str:
-    """Digits + decimal, commas/currency/percent stripped. Decimal trailing
-    zeros are trimmed so 1,500.00 == 1500; integer trailing zeros are
-    significant, so "1500" is never mistaken for "15".
-
-    A literal percent sign means a ratio, so it normalizes to its decimal form:
-    "60%" and "0.6" are the same figure (a presenter must be able to say
-    "sixty percent" next to a plan confidence of 0.6 without being flagged as
-    inventing a number)."""
-    percent = match.rstrip().endswith("%")
-    clean = re.sub(r"[^0-9.]", "", match)
-    if "." not in clean:
-        normalized = clean or "0"
-    else:
-        whole, _, fraction = clean.partition(".")
-        fraction = fraction.rstrip("0")
-        normalized = f"{whole}.{fraction}" if fraction else whole or "0"
-    if not percent:
-        return normalized
-    try:
-        return str(round(float(normalized) / 100, 6))
-    except ValueError:
-        return normalized
+    """Canonical form of one figure token (see ``grounding.normalise_figure``)."""
+    return grounding.normalise_figure(match)
 
 
 def _grounded_set(text: str) -> set[str]:
-    return {_normalize_number(t) for t in _NUMBER_TOKEN_RE.findall(text or "")}
+    """Every figure a body of text supplies, digits and spelled-out alike."""
+    return grounding.grounded_values(text)
 
 
 def _ungrounded_numbers(reply: str, grounded: str) -> list[str]:
     """Numeric tokens in ``reply`` that have no match in the normalized
     ``grounded`` context. List ordinals ("1." line prefixes) are structural,
-    not figures, so they are never flagged. A reply containing numbers against
-    a grounding context with no numbers is entirely ungrounded."""
+    not figures, so they are never flagged.
+
+    Onboarding keeps its historical opt-out: a reply is not scored against an
+    empty corpus, because an interview turn that has been told nothing yet is
+    not lying when it repeats a figure back. The answer path is stricter, and
+    opts in through ``grounding.ungrounded_figures`` directly.
+    """
     if not grounded or not reply:
         return []
-    ground = _grounded_set(grounded)
-    cleaned = _ORDINAL_PREFIX_RE.sub("", reply)
-    bad: list[str] = []
-    for token in _NUMBER_TOKEN_RE.findall(cleaned):
-        if _normalize_number(token) not in ground:
-            bad.append(token)
-    return bad
+    return [figure.text for figure in grounding.ungrounded_figures(reply, grounded)]
 
 
 @dataclass
@@ -606,3 +591,18 @@ def evaluate_reply(reply: str, meta: EvalMeta | None = None) -> list[str]:
     if any(p in lower for p in _THERAPIST_PHRASES):
         violations.append("R12")
     return sorted(violations)
+
+
+# Rules that stop a reply from being sent at all.
+#
+# R10 is the safety rule: a fabricated figure is indistinguishable from a real
+# one once it is in the user's hands, and in a money conversation the user acts
+# on it. Every other rule here is voice drift -- worth tracing, worth tuning,
+# never worth silently dropping a sentence over. Adding a rule to this tuple is
+# a product decision, not a lint tweak.
+HARD_VIOLATIONS: tuple[str, ...] = ("R10",)
+
+
+def hard_violations(violations: list[str]) -> list[str]:
+    """The subset of ``violations`` that must block a reply from shipping."""
+    return [rule for rule in violations if rule in HARD_VIOLATIONS]

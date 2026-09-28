@@ -290,32 +290,58 @@ def build_system_prompt(
     """
     prompt = BASE_PROMPT.replace("[[EXECUTION_MODEL]]", _execution_model())
     sections = [prompt]
-
-    if user_context:
-        sections.append(
-            "CURRENT SITUATION (use these numbers, don't invent others):\n"
-            + _render_context(user_context)
+    sections.extend(
+        section
+        for section in (
+            render_context_section(user_context),
+            render_memory_section(memory_facts),
+            render_plan_section(financial_plan),
         )
-
-    if memory_facts:
-        lines = []
-        for fact in memory_facts[:8]:
-            kind = fact.get("type", "fact")
-            content = fact.get("content", "")
-            lines.append(f"- [{kind}] {content}")
-        sections.append(
-            "WHAT YOU KNOW ABOUT THIS USER (from past conversations):\n"
-            + "\n".join(lines)
-            + "\nUse these to personalize, but never contradict real data from tools."
-        )
-
-    if financial_plan:
-        sections.append(
-            "THEIR CURRENT PLAN (reference it when relevant):\n"
-            + _render_plan(financial_plan)
-        )
-
+        if section
+    )
     return "\n\n".join(sections)
+
+
+def render_context_section(user_context: dict[str, Any] | None) -> str:
+    """The CURRENT SITUATION block, or "" when there is nothing to show."""
+    if not user_context:
+        return ""
+    return (
+        "CURRENT SITUATION (use these numbers, don't invent others):\n"
+        + _render_context(user_context)
+    )
+
+
+def render_memory_section(memory_facts: list[dict[str, Any]] | None) -> str:
+    """The WHAT YOU KNOW block, or "" when there is nothing remembered."""
+    if not memory_facts:
+        return ""
+    lines = []
+    for fact in memory_facts[:8]:
+        kind = fact.get("type", "fact")
+        content = fact.get("content", "")
+        lines.append(f"- [{kind}] {content}")
+    return (
+        "WHAT YOU KNOW ABOUT THIS USER (from past conversations):\n"
+        + "\n".join(lines)
+        + "\nUse these to personalize, but never contradict real data from tools."
+    )
+
+
+def render_plan_section(financial_plan: dict[str, Any] | None) -> str:
+    """The CURRENT PLAN block, or "" when no plan exists.
+
+    Truncated at 2,000 characters, which is load-bearing for the reply guard:
+    the guard's grounding corpus is built from these same renderers, so what
+    counts as "grounded" is exactly what the model was shown. Building the
+    corpus from the raw plan instead would let a reply state a figure the model
+    never saw.
+    """
+    if not financial_plan:
+        return ""
+    return "THEIR CURRENT PLAN (reference it when relevant):\n" + _render_plan(
+        financial_plan
+    )
 
 
 def _render_context(ctx: dict[str, Any]) -> str:
@@ -331,6 +357,10 @@ def _render_context(ctx: dict[str, Any]) -> str:
         lines.append(f"- Balances: {balances}")
     if ctx.get("monthly_income") is not None:
         lines.append(f"- Monthly income: {ctx['monthly_income']}")
+    # Loaded by ``api/chat._load_user_context`` and, until now, never shown to
+    # the model -- so Miriam could not mention savings she had been handed.
+    if ctx.get("current_savings") is not None:
+        lines.append(f"- Current savings: {ctx['current_savings']}")
     if ctx.get("goals"):
         lines.append(f"- Goals: {ctx['goals']}")
     if not lines:
