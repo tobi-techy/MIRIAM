@@ -736,3 +736,152 @@ section; `✅` = implemented and covered by tests, `⏳` = partial/outstanding.
   `send_money`; `test_traceability` missing `mocker`/`client` fixtures and a trace-id length-cap mismatch).
 - `ruff check` clean on all changed files; `mypy` reports the same pre-existing errors as the untouched
   equivalents (no new ones introduced).
+
+---
+
+## Addendum — Hallucinated Figures (2026-09-27)
+
+An incident, not a review: Miriam told a user "₦30000.00 left this month. That's
+about ₦10000.00/day if we keep it tidy." in reply to a question about funding the
+account. The 30,000 was never stated and the daily rate was arithmetic nobody
+did. Root cause in §19/§20 terms: the figure lint existed and worked (R10 flagged
+both numbers) but only `_present_plan` acted on it; the conductor path recorded
+the violation in the trace and dispatched the reply anyway. The everyday
+conversation had a rule with no teeth.
+
+### ✅ One shared figure guard, and it can't go down
+- New module `miriam_agent/safety/grounding.py`: pure string work, no network, no
+  LLM. It answers "which figures in this reply can be traced to something the
+  turn was actually given?"
+  - Digits are always figures (separators, currency marks, and `60% == 0.6`
+    handled). Spelled-out figures count only next to a currency noun, because
+    Miriam's own voice says "Two moves first" and flagging that trains people to
+    ignore the guard.
+  - Grounding is deliberately generous: the user's own words (including spelled
+    figures — "I take home four thousand" grounds a reply that writes `4,000`),
+    injected context blocks, this turn's tool results, and *the user's* earlier
+    turns. Miriam's own earlier replies are excluded: a number she invented last
+    turn is not a source for the number she states this turn.
+- `agent_loop._apply_egress` runs it **first, unconditionally**, before and
+  independently of the TypeSafe judge. One rewrite on drift, then the fixed
+  "I don't have that reliably yet" line. The judge keeps its fail-open behaviour,
+  because by the time it runs the figures are already safe (§26's fail-open
+  question, answered for the one thing that must not fail open).
+- The judge can now rule on what it can see: `judgment/gates.py` raised its
+  per-tool-result cap from 500 to 4,000 characters. A real read clears 500 easily,
+  and every figure past the cut looked invented.
+- `onboarding/quality.py` R10 is now a thin alias over the same module, so the
+  chat agent and onboarding cannot drift apart on what an invented number is.
+  Onboarding keeps its historical "not scored against an empty corpus" opt-out.
+- Covered by `tests/test_grounding_guard.py` (14 tests), including the incident
+  string, the answer path with the judge switched off, and the anti-false-positive
+  cases from Miriam's own voice.
+
+### ✅ Second pass: the eval set, and the gaps that were still open (2026-09-27)
+
+The first pass closed "a figure with no source". A guard is only worth what it
+blocks, so this pass added the measurement and then closed what it exposed.
+
+- **The eval set** (`eval/hallucination_cases.py`, gated by
+  `tests/test_hallucination_eval.py`): 46 labelled cases across fabricated
+  figures, mislabelled figures, invented arithmetic, false completion claims,
+  honest replies, and declared gaps. Two numbers, both asserted in CI:
+  **caught rate 100%** (22/22 must-catch) and **false-positive rate 0%** (0/12
+  honest). The honest set is weighted towards Miriam's own voice, because a
+  guard that refuses her normal sentences is worse than the problem it solves.
+  The first run of the set immediately found a missed mislabel and one false
+  positive — which is the entire argument for having it.
+- **Mislabelled figures** (the biggest hole named in the first pass): a figure
+  is now checked against the label it sits under. Labels are read from the JSON
+  tree when the source is structured, because proximity gives the wrong answer
+  on `{"spend": {"balance": 12500}, "stash": {"balance": 400}}` (the nearest
+  label to 12500 is "stash"). Prose sources fall back to proximity. Only
+  positive evidence counts: a label the source says nothing about is not a
+  conflict, and generic wrappers ("balance", "account") never contradict.
+- **False completion claims**: `grounding.action_claims` catches "I've sent it",
+  "Payment sent", "Done, your bill is paid", "I've set it up", "It's done",
+  "The money is on its way". Valid only because the answer loop refuses every
+  mutation, so nothing can have executed; the check must never be applied to
+  Voice, which narrates real executions from STATE. Future tense, offers, and
+  "I paid attention" are explicitly not claims.
+- **Streaming is now guarded.** `stream_run` holds each sentence back until it
+  has been checked, so a figure is never emitted before its sentence is
+  verified — the sentence is the finest grain at which a number becomes a
+  claim. The splitter refuses to cut a period that sits inside a number, or the
+  fragment ("1.") would itself look like an invented figure. A refusal emits
+  the standard line and `done` carries exactly what was streamed. The TypeSafe
+  judge still does not run on this path.
+- **Stale sources**: a block that declares `_stale: true` is dropped from the
+  grounding corpus, so its figures cannot be stated. Only the mechanism is
+  wired — nothing sets the marker yet, because inferring staleness from a
+  payload's own date fields needs a decision about which of them mean what (a
+  `created_at` is not an `as_of`).
+- **Compressed and spelled figures**: "30k" and "₦1.5m" are figures; "5m" is
+  not unless a currency mark sits beside it, because it is minutes far more
+  often than millions. "ten thousand in your stash" now counts (a filler or two
+  may sit between the number and its noun), and "twenty grand" multiplies.
+
+### ✅ Third pass: every remaining gap (2026-09-27)
+
+The gaps the second pass named are closed, and the eval set grew to: **62 cases,
+caught rate 100%, false-positive rate 0%**. Nine rule families now run
+deterministically on both paths:
+
+| Rule | Catches | Evidence test |
+| --- | --- | --- |
+| `figure` | a number with no source | the turn's data |
+| `label` | a figure on the wrong wallet or period | the JSON tree, nearest label |
+| `contested` | a figure from sources that disagree | same field, two scalar values |
+| `action` | "I've sent it", "Payment sent", "It's done" | the loop never executes |
+| `forecast` | "you're on track to hit your goal" | no projection in the turn |
+| `change` | "your rent went up" | no second point in time |
+| `observation` | "I found a charge from…" | no figure in the turn at all |
+| `entity` | a merchant or bank nobody named | absent from the turn's data |
+
+- **Streaming now runs the judge too.** The figure guard holds each sentence
+  back and can therefore prevent; the judge can only correct, because the words
+  are on screen before it sees them. That split is deliberate and is written
+  into `_judge_streamed`.
+- **Fail-closed is now a choice**, not a rewrite: `AgentConfig.
+  fail_closed_without_judge` refuses the reply when the judge is off or
+  degraded. Default stays open, because by that point the figures are already
+  safe — an outage costs policy review, not correctness.
+- **The guard is measured in production, not just in CI.**
+  `miriam_reply_guard_total{rule,outcome}` counts every allow, block, retry and
+  fallback.
+- **Stale blocks are dropped before the prompt is built**, so old data cannot
+  be repeated with a straight face; the corpus and the prompt now agree about
+  what was excluded.
+- **`current_savings` was loaded and never rendered** — a real product bug the
+  work surfaced: `_load_user_context` put it in the context and `_render_context`
+  dropped it, so Miriam could not mention savings she had been handed. Now
+  rendered.
+- **One figure normaliser.** `voice/generate.py` and `money/agent.py` now
+  delegate to `safety/grounding`, so all four surfaces agree on what a figure is
+  worth. The money and Voice suites pass unchanged.
+
+### ⏳ Still open, and why
+- **Wrong-but-sourced figures.** If the upstream data is wrong, the guard has
+  nothing to compare it against. Out of reach in the reply layer.
+- **Contradictory sources are refused, not resolved.** `contested` says "I
+  cannot state that reliably" when the plan and the ledger disagree; the repair
+  is for Miriam to fetch a fresh value, which is a product decision.
+- **The corpus is the turn's data, not the prompt's rendering of it.** The
+  corpus is a superset (the plan is truncated to 2,000 characters in the prompt
+  but whole in the corpus), which can only ever *accept* a figure the turn
+  genuinely holds. The label and contradiction checks need the structure, so
+  the trade goes this way on purpose.
+- **Semantic paraphrase is invisible.** "Your biggest expense is rent" with no
+  figure and no action verb cannot be checked without the judge.
+
+### Verification
+- Full suite after the third pass: **1270 passed, 17 skipped**, with only the three pre-existing
+  failures (`test_blob_ratchet`, and two in `test_trace.py`) — confirmed identical
+  at HEAD by stashing the changes.
+- New tests: `tests/test_hallucination_eval.py` (6, the CI gate),
+  `tests/test_reply_guard.py` (29, the rules and both paths end to end),
+  `tests/test_grounding_guard.py` (14, first pass), and 62 eval cases.
+- Two smoke fixtures were corrected rather than the guard: both asserted a
+  `$2,500` balance from a `get_balance` stub that returned nothing, which is the
+  invented figure the guard now refuses. They stub a real balance instead, so the
+  assertion now proves the reply is traceable to the tool result.

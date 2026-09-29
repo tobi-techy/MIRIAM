@@ -142,7 +142,14 @@ payload (`current_stage`, `completed_stages`, `unresolved`,
 - No second user identity system (§31). No money movement outside Go.
 - No KYC collected conversationally (§19) — Go owns the flow.
 - No fabricated numbers anywhere: every engine labels estimates and confidence
-  (§10, §29).
+  (§10, §29). Enforced rather than intended: a conductor reply is linted
+  against the user's own words and the plan *before* that turn's extracted
+  facts are merged into state, so a reply cannot ground its own invented figure
+  in the fact it made up beside it. `R10` (a figure nobody stated) is a hard
+  violation: it buys one re-ask carrying `driver.GROUNDING_CORRECTION`, and a
+  second drift drops to the deterministic fallback. Every other lint rule
+  (`quality.py` R1-R12) stays advisory and is only traced. The blocking list
+  lives in one place, `quality.HARD_VIOLATIONS`.
 
 ## 7. Definition of done mapping
 

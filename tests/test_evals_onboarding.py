@@ -395,7 +395,9 @@ def test_present_plan_clamps_invented_number(monkeypatch):
         poisoned,
     ]
     state, turn = _drive(
-        monkeypatch, responses, ["hey", "Tola", "income is lumpy", "wrap it"]
+        monkeypatch,
+        responses,
+        ["hey", "Tola", "income is lumpy, about 4000 a month", "wrap it"],
     )
     shown = " ".join([turn.response, *turn.messages])
     assert state["stage"] == STAGE_PLAN_CONSENT
@@ -417,7 +419,9 @@ def test_present_plan_keeps_grounded_reply(monkeypatch):
         json.dumps({"reply": grounded_reply}),
     ]
     _, turn = _drive(
-        monkeypatch, responses, ["hey", "Tola", "income is lumpy", "wrap it"]
+        monkeypatch,
+        responses,
+        ["hey", "Tola", "income is lumpy, about 4000 a month", "wrap it"],
     )
     shown = " ".join([turn.response, *turn.messages])
     assert "4,000" in shown

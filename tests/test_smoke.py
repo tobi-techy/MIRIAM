@@ -238,7 +238,12 @@ def test_agent_refuses_a_bill_payment_without_running_it():
 def test_agent_executes_readonly_tool_then_returns_answer():
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.agents.llm import LLMResponse
+    from miriam_agent.integrations import go_client
     from miriam_agent.tools import build_tool_registry
+
+    class _BalanceOK:
+        async def get_balances(self, token):
+            return {"wallets": [{"type": "spend", "currency": "USD", "balance": 2500}]}
 
     reg = build_tool_registry()
     provider = MockProvider(
@@ -259,14 +264,21 @@ def test_agent_executes_readonly_tool_then_returns_answer():
         ]
     )
     agent = Agent(registry=reg, provider=provider)
+    orig = go_client._client
+    go_client._client = _BalanceOK()
 
     async def _():
-        result = await agent.run(
-            user_id="u1", token="fake", message="what's my balance?"
-        )
-        assert "$2,500" in result.response
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_balance"
+        try:
+            result = await agent.run(
+                user_id="u1", token="fake", message="what's my balance?"
+            )
+            # The figure is now traceable to the tool result, which is the only
+            # reason it is allowed to reach the user at all.
+            assert "$2,500" in result.response
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0]["name"] == "get_balance"
+        finally:
+            go_client._client = orig
 
     asyncio.get_event_loop().run_until_complete(_())
 
@@ -584,7 +596,12 @@ def test_concentrate_agent_loop_multi_round_pairing():
     """The agent loop must re-emit assistant tool_calls before the results."""
     from miriam_agent.agents.agent_loop import Agent
     from miriam_agent.agents.llm import ChatMessage, LLMResponse
+    from miriam_agent.integrations import go_client
     from miriam_agent.tools import build_tool_registry
+
+    class _BalanceOK:
+        async def get_balances(self, token):
+            return {"wallets": [{"type": "spend", "currency": "USD", "balance": 2500}]}
 
     sent_message_lists: list[list[ChatMessage]] = []
 
@@ -612,10 +629,15 @@ def test_concentrate_agent_loop_multi_round_pairing():
         ]
     )
     agent = Agent(registry=reg, provider=provider)
+    orig = go_client._client
+    go_client._client = _BalanceOK()
 
-    asyncio.get_event_loop().run_until_complete(
-        agent.run(user_id="u1", token="fake", message="what's my balance?")
-    )
+    try:
+        asyncio.get_event_loop().run_until_complete(
+            agent.run(user_id="u1", token="fake", message="what's my balance?")
+        )
+    finally:
+        go_client._client = orig
     assert len(sent_message_lists) == 2
     round2 = sent_message_lists[1]
     # assistant tool_calls message must precede the tool result
