@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     # Safety
     MAX_DAILY_TRANSFER: float = Field(default=10000.0)
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
+    # Rolling 7-day (Monday-based) outbound cap and per-hour velocity cap.
+    # Read by ``hands/limits.Policy.from_settings``; the same single source of
+    # truth as the daily and per-transaction ceilings. Zero/falsy values are
+    # not treated as "unlimited": ``from_settings`` falls back to the module
+    # defaults instead.
+    MAX_WEEKLY_TRANSFER: float = Field(default=500000.0)
+    MAX_TRANSFERS_PER_HOUR: int = Field(default=20)
     # The ceiling above which a money movement needs the user's confirmation.
     # Read by ``hands/limits.Policy.from_settings`` as max_auto; it is the only
     # consumer. There is no client-side or tool-side approval step.
