@@ -70,6 +70,43 @@ jobs:
           DATABASE_URL: postgresql://miriam:miriam_password@localhost:5432/miriam_test
           REDIS_URL: redis://localhost:6379/0
 
+  trust-gates:
+    # The money trust boundary has a named gate: grounding, limits tiers,
+    # exactly-once, shadow parity, and the hallucination eval. It runs without
+    # Redis or network so a red gate always means the boundary regressed, never
+    # that infra flaked.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a26af69be951a213d388a127769a75162d762 # v4.7.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Trust regression suites
+        run: |
+          pytest tests/test_trust_rails.py tests/test_execution_journal.py tests/test_shadow_parity.py tests/test_hallucination_eval.py tests/test_reply_guard.py tests/test_grounding_guard.py -q
+        env:
+          PYTHONPATH: miriam_agent
+
+      - name: Shadow parity over the recorded corpus
+        run: |
+          python scripts/shadow_parity.py tests/fixtures/shadow/corpus.jsonl
+        env:
+          PYTHONPATH: miriam_agent
+
       - name: Upload coverage
         uses: codecov/codecov-action@e28ff129e5465c2c0dcc6f003fc735cb6ae0c673 # v4.5.0
         with:
