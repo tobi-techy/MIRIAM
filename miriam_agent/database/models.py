@@ -84,9 +84,7 @@ class Transaction(Base):
     category: Mapped[str] = mapped_column(String, nullable=False)
     # income, expense, transfer
     type: Mapped[str] = mapped_column(String, nullable=False)
-    transaction_date: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow_naive
-    )
+    transaction_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
@@ -260,6 +258,49 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+
+class MoneyExecution(Base):
+    """Durable exactly-once journal for money movements. Layer 1 - HANDS.
+
+    One row per idempotency key, written BEFORE the rail is called. The row is
+    the arbiter that closes the check-then-act race in ``execute_transfer``:
+    two workers racing the same key both try to insert, exactly one wins
+    (the primary key), and the loser replays instead of calling the rail a
+    second time.
+
+    Lifecycle: ``reserved`` -> ``dispatched`` -> ``confirmed`` | ``failed``.
+    ``reserved`` means "this key is claimed, the rail has not been called yet"
+    (crash here = safe to retry: nothing moved). ``dispatched`` means "the
+    rail was called" (crash here = reconcile against ``rail_reference`` before
+    retrying, never blindly re-fire). Terminal states are ``confirmed`` and
+    ``failed``.
+
+    This journal is the exactly-once arbiter, NOT the money record: the ledger
+    (``hands/ledger.py``) stays the single source of truth for balances. Rows
+    are never updated in place except for the forward lifecycle transitions;
+    nothing is ever deleted (retention is a separate, future concern).
+    """
+
+    __tablename__ = "money_executions"
+
+    # The idempotency key (e.g. "{decision_id}:{action.signature()}"). The
+    # primary key IS the claim: insert-or-conflict is the whole mechanism.
+    idempotency_key: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    amount: Mapped[str] = mapped_column(String, nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False, default="")
+    counterparty: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sleeve: Mapped[str] = mapped_column(String, nullable=False, default="")
+    decision_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="reserved")
+    rail_reference: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
+    )
 
 
 class ToolUsage(Base):
