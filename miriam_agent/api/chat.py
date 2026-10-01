@@ -123,7 +123,8 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
         try:
             audit = await get_audit_system().__anext__()
             if audit is None:
-                raise RuntimeError("audit system unavailable")
+                # Transient unavailability (DB not yet ready); retry rather than fail-closed immediately
+                raise RuntimeError("audit system unavailable (transient)")
             await audit.log_money_movement(
                 user_id=event.user_id,
                 transaction_id=receipt.id,

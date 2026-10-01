@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import JSON as SQLAlchemyJSON
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -286,11 +287,11 @@ class PaymentReference(Base):
     )
     channel: Mapped[str] = mapped_column(String, nullable=False)
     sender_handle: Mapped[str] = mapped_column(String, nullable=False)
-    amount_minor: Mapped[int] = mapped_column(nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reference: Mapped[str] = mapped_column(String, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String, nullable=False)
     raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="reported")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="reported")  # reported/unmatched until settlement-finality
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 

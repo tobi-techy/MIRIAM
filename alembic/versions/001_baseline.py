@@ -137,7 +137,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("channel", sa.String(), nullable=False),
         sa.Column("sender_handle", sa.String(), nullable=False),
-        sa.Column("amount_minor", sa.Integer(), nullable=False),
+        sa.Column("amount_minor", sa.BigInteger(), nullable=False),
         sa.Column("reference", sa.String(), nullable=False),
         sa.Column("payload_hash", sa.String(), nullable=False),
         sa.Column("raw_payload", sa.Text(), nullable=False),

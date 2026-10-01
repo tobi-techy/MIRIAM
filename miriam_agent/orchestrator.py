@@ -187,7 +187,11 @@ class Orchestrator(
                 getattr(result.receipt, "id", "?"),
                 exc,
             )
-            raise _LU(f"durable audit unavailable: {exc}") from exc
+            # Only surface as LedgerUnavailable when money actually moved; pure audit/journal
+            # races without a receipt are not money-unavailable and should not trigger 503 retry storms.
+            if getattr(result, "receipt", None) is not None:
+                raise _LU(f"durable audit unavailable: {exc}") from exc
+            raise
         return result
 
     async def _emit_audit(self, event: Event, result: TurnResult) -> None:

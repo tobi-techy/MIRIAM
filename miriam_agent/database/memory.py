@@ -61,7 +61,8 @@ class MemoryStore:
         # is the source of truth (see ``alembic/versions/001_baseline.py``);
         # ``create_all`` is idempotent there and will not overwrite migrated
         # tables, but no DDL differences should be introduced outside a
-        # migration (G27).
+        # migration (G27). Deploys must run ``alembic upgrade head`` before
+        # starting the app so create_all never masks a missing migration.
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 

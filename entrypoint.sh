@@ -13,4 +13,6 @@ GRACEFUL_TIMEOUT="${GRACEFUL_TIMEOUT:-30}"
 
 # Lifespan drain: on SIGTERM/SIGINT, uvicorn handles graceful shutdown
 # (drains in-flight requests up to --timeout-graceful-shutdown).
+# Migrations are applied by the deploy job (alembic upgrade head) before containers start.
+# This entrypoint only starts the app — it does not run migrations.
 exec uvicorn miriam_agent.cli:app --host "$HOST" --port "$PORT" --log-level "$LOG_LEVEL" --timeout-graceful-shutdown "$GRACEFUL_TIMEOUT"

@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS payment_references (
     id             VARCHAR PRIMARY KEY,
     channel        VARCHAR NOT NULL,
     sender_handle  VARCHAR NOT NULL,
-    amount_minor   INTEGER NOT NULL,
+    amount_minor   BIGINT NOT NULL,
     reference      VARCHAR NOT NULL,
     payload_hash   VARCHAR NOT NULL,
     raw_payload    TEXT NOT NULL,

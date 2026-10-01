@@ -351,6 +351,36 @@ class ToolRegistry:
         user_id = (context or {}).get("user_id", "")
         key = idempotency_key(name, args or {}, user_id)
         now = time.monotonic()
+        # Only mutations are cached; reads (is_mutation=False) must not replay stale results.
+        if not getattr(tool, "is_mutation", False):
+            # Bypass idempotency cache entirely for read-only tools
+            start = time.perf_counter()
+            try:
+                validated = validate_args(tool, args or {})
+                result = await tool.handler(validated, context or {})
+            except ValidationError:
+                raise
+            except IntegrationError:
+                raise
+            except ToolExecutionError:
+                raise
+            except Exception as e:
+                elapsed = time.perf_counter() - start
+                self._notify(name, {"status": "error", "error": str(e), "elapsed": elapsed, "trace_id": trace_id, "_context": context or {}, "_args": args or {}})
+                record_tool_execution(name, "error")
+                raise ToolExecutionError(f"Tool '{name}' failed: {e}")
+            elapsed = time.perf_counter() - start
+            record_tool_execution(name, "success")
+            if not isinstance(result, dict):
+                result = {"result": result}
+            result.setdefault("_tool_name", name)
+            result.setdefault("_risk_level", tool.risk_level.value)
+            result.setdefault("_is_mutation", tool.is_mutation)
+            result["_idempotency_key"] = key
+            if trace_id:
+                result.setdefault("_trace_id", trace_id)
+            self._notify(name, {"status": "success", "elapsed": elapsed, "result": result, "trace_id": trace_id, "_context": context or {}, "_args": args or {}})
+            return result
         cached = self._idem_cache.get(key)
         if cached is not None:
             expires_at, prior = cached
@@ -400,15 +430,17 @@ class ToolRegistry:
         # the message that caused it (see observability.correlation).
         if trace_id:
             result.setdefault("_trace_id", trace_id)
-        try:
-            self._idem_cache[key] = (time.monotonic() + self._idem_ttl_s, dict(result))
-            # Bound cache growth: drop expired entries opportunistically.
-            if len(self._idem_cache) > 1000:
-                expired = [k for k, (e, _) in self._idem_cache.items() if e <= time.monotonic()]
-                for k in expired:
-                    self._idem_cache.pop(k, None)
-        except Exception:
-            pass
+        # Only persist mutations in the idempotency cache
+        if getattr(tool, "is_mutation", False):
+            try:
+                self._idem_cache[key] = (time.monotonic() + self._idem_ttl_s, dict(result))
+                # Bound cache growth: drop expired entries opportunistically.
+                if len(self._idem_cache) > 1000:
+                    expired = [k for k, (e, _) in self._idem_cache.items() if e <= time.monotonic()]
+                    for k in expired:
+                        self._idem_cache.pop(k, None)
+            except Exception:
+                pass
         self._notify(
             name,
             {
