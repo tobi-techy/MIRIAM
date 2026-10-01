@@ -105,25 +105,47 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
 
     Injected into the Orchestrator as its audit sink. The receipt is the
     compliance fact — what was attempted, moved, or refused — and until now
-    it lived only in the rewritable Redis ledger blob. Fail-open: the
-    orchestrator catches sink errors, so this raising never breaks a turn.
+    it lived only in the rewritable Redis ledger blob.
+
+    G25 fix: bounded synchronous retry (3x, backoff). The orchestrator now
+    blocks settlement acknowledgement on a durable write before returning to
+    the caller. This function raises on failure so the orchestrator can
+    withhold the success reply; _emit_audit failure no longer silently allows
+    settled money without a durable row.
     """
-    audit = await get_audit_system().__anext__()
-    if audit is None:
-        return
+    import asyncio
+
     receipt = result.receipt
-    await audit.log_money_movement(
-        user_id=event.user_id,
-        transaction_id=receipt.id,
-        amount=float(receipt.amount or 0),
-        currency=receipt.currency,
-        action=receipt.action,
-        status=receipt.status,
-        from_account=receipt.sleeve,
-        to_account=receipt.counterparty,
-        requires_approval=False,
-        approval_id=result.confirm_id or None,
-    )
+    if receipt is None:
+        return
+    last_exc = None
+    for attempt in range(3):
+        try:
+            audit = await get_audit_system().__anext__()
+            if audit is None:
+                raise RuntimeError("audit system unavailable")
+            await audit.log_money_movement(
+                user_id=event.user_id,
+                transaction_id=receipt.id,
+                amount=float(receipt.amount or 0),
+                currency=receipt.currency,
+                action=receipt.action,
+                status=receipt.status,
+                from_account=receipt.sleeve,
+                to_account=receipt.counterparty,
+                requires_approval=False,
+                approval_id=result.confirm_id or None,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2:
+                await asyncio.sleep(0.2 * (2**attempt))
+    # Raise so the orchestrator withholds a successful reply; the ledger
+    # already holds the receipt and the outbox will retry, but the caller
+    # gets a 503 to retry rather than a false "done".
+    raise last_exc if last_exc is not None else RuntimeError("audit persist failed")
+
 
 
 def _orchestrator_for(token: str) -> Orchestrator:
@@ -267,26 +289,37 @@ async def _run_money_turn(
     client the server is broken.
     """
     orchestrator = _orchestrator_for(token)
-    try:
-        if confirm_id:
-            return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
-            # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
-            # stable id derived from the alert so a re-paste cannot split twice.
-            # Off by default and refused in production entirely — chat text is
-            # not a payment fact, so it must not mint ledger money.
-            return await orchestrator.handle_inflow(
-                user.id,
-                payment_id=inflow_id_for_alert(message),
-                amount=_alert_amount(message),
-                source_raw=message,
-            )
-        return await orchestrator.handle_utterance(user.id, message)
-    except LedgerConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="that ledger is busy; try again in a moment",
-        ) from exc
+    # G22: reload-and-retry on LedgerConflictError (lost-update) with
+    # bounded retries so a concurrent commit does not surface as 409 to the
+    # user when a retry would succeed.
+    last_conflict: LedgerConflictError | None = None
+    for attempt in range(3):
+        try:
+            if confirm_id:
+                return await orchestrator.handle_confirm(user.id, confirm_id, yes)
+            if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
+                # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
+                # stable id derived from the alert so a re-paste cannot split twice.
+                # Off by default and refused in production entirely — chat text is
+                # not a payment fact, so it must not mint ledger money.
+                return await orchestrator.handle_inflow(
+                    user.id,
+                    payment_id=inflow_id_for_alert(message),
+                    amount=_alert_amount(message),
+                    source_raw=message,
+                )
+            return await orchestrator.handle_utterance(user.id, message)
+        except LedgerConflictError as exc:
+            last_conflict = exc
+            if attempt < 2:
+                import asyncio as _aio
+
+                await _aio.sleep(0.05 * (2**attempt))
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="that ledger is busy; try again in a moment",
+            ) from last_conflict
 
 
 def _alert_amount(message: str) -> Decimal:

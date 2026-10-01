@@ -56,7 +56,12 @@ class MemoryStore:
         # Create async engine
         self.engine = create_async_engine(self.database_url)
 
-        # Create tables
+        # In development/tests the DB is created via ``create_all`` so the
+        # suite works without a migration. In deployed environments Alembic
+        # is the source of truth (see ``alembic/versions/001_baseline.py``);
+        # ``create_all`` is idempotent there and will not overwrite migrated
+        # tables, but no DDL differences should be introduced outside a
+        # migration (G27).
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 

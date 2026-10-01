@@ -51,6 +51,7 @@ dependencies = [
     "pypdf>=6.19.0",
     "typesafe-sdk>=0.7.0",
     "matplotlib>=3.11.2",
+    "alembic>=1.13.0",
     "pillow>=12.3.0",
 ]
 
@@ -131,3 +132,8 @@ asyncio_mode = "auto"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_"
+
+[dependency-groups]
+dev = [
+    "psycopg2-binary>=2.9.13",
+]

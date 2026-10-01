@@ -115,3 +115,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created
 
 CREATE INDEX IF NOT EXISTS idx_tool_usage_user_created
     ON tool_usage (user_id, created_at);
+-- G23: structured payment reference dedupe (mirrors PaymentReference model).
+CREATE TABLE IF NOT EXISTS payment_references (
+    id             VARCHAR PRIMARY KEY,
+    channel        VARCHAR NOT NULL,
+    sender_handle  VARCHAR NOT NULL,
+    amount_minor   INTEGER NOT NULL,
+    reference      VARCHAR NOT NULL,
+    payload_hash   VARCHAR NOT NULL,
+    raw_payload    TEXT NOT NULL,
+    status         VARCHAR NOT NULL DEFAULT 'reported',
+    created_at     TIMESTAMP WITHOUT TIME ZONE DEFAULT (now() AT TIME ZONE 'utc'),
+    CONSTRAINT uq_payment_ref_dedupe UNIQUE (channel, sender_handle, amount_minor, reference, payload_hash)
+);

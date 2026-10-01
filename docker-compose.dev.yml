@@ -34,8 +34,10 @@ services:
       - ./miriam_agent:/app/miriam_agent
       - ./tests:/app/tests
     depends_on:
-      - miriam-postgres
-      - miriam-redis
+      miriam-postgres:
+        condition: service_healthy
+      miriam-redis:
+        condition: service_healthy
     command: >-
       sh -c "
       pip install -e .[dev] && \

@@ -167,27 +167,35 @@ class Orchestrator(
             # Face ID provenance rides on the audit rows, never on the
             # decision: the trail shows which factor settled the challenge.
             result = self._tag_provenance(result, event.provenance)
-        await self._emit_audit(event, result)
+        # G25: durable audit write is required. If it fails after retries,
+        # treat as unavailable so the caller retries rather than seeing a
+        # false "done" with settled money but no durable row.
+        try:
+            await self._emit_audit(event, result)
+        except Exception as exc:  # noqa: BLE001
+            # Ledger movement already persisted (Redis); durable audit did not.
+            # Raise as unavailable so API layers return 503 (retryable) not 500.
+            from miriam_agent.hands.ledger import LedgerUnavailable as _LU
+
+            logger.error(
+                "durable audit write failed for receipt %s: %s",
+                getattr(result.receipt, "id", "?"),
+                exc,
+            )
+            raise _LU(f"durable audit unavailable: {exc}") from exc
         return result
 
     async def _emit_audit(self, event: Event, result: TurnResult) -> None:
         """Persist what the turn did, via the injected sink.
 
-        Only turns with a receipt are emitted: a receipt is the fact that
-        money was attempted, moved, or refused, and it is what the durable
-        store must show later. The sink is fail-open — the receipt already
-        lives in the ledger, so an audit outage degrades the paper trail
-        without turning a settled turn into an error.
+        Only turns with a receipt are emitted. G25: fail-closed — if the
+        durable write fails after retries, raise so handle() withholds the
+        success narration. The Redis receipt keeps the movement; the caller
+        gets a retryable error instead of a false "done".
         """
         if self.audit_sink is None or result.receipt is None:
             return
-        try:
-            await self.audit_sink(event, result)
-        except Exception:
-            logger.exception(
-                "audit sink failed; receipt %s kept in ledger only",
-                result.receipt.id,
-            )
+        await self.audit_sink(event, result)
 
     async def _dispatch(self, event: Event) -> TurnResult:
         ledger = await self.store.load(event.user_id)
@@ -997,6 +1005,25 @@ def looks_like_inflow_alert(text: str) -> bool:
 
 # The classifier reads the user's text only. It never calls a model: which layer
 # owns a turn must not be a judgement a model can be talked out of.
+def classify_turn_with_nl(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
+    """Route money intents on deterministic hands/nl.py verdict (G21).
+
+    Falls back to money-turn routing when the nl parser produces a structured
+    action. Low-confidence/None returns ``agent`` so judgment asks rather than
+    silently dropping a Pidgin/photo-caption sale.
+    """
+    if has_confirm_id:
+        return "orchestrator"
+    try:
+        from miriam_agent.hands.nl import parse_transfer_utterance
+
+        if parse_transfer_utterance(text) is not None:
+            return "orchestrator"
+    except Exception:
+        pass
+    return classify_turn(text, has_confirm_id=has_confirm_id)
+
+
 def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
     """Decide whether a turn is a money turn.
 

@@ -309,3 +309,7 @@ This contract is backed by:
 - The existing design docs (`docs/ADVISER-ARCHITECTURE.md`, `docs/P1-BLUEPRINT.md`) define the trust model, playbooks, and noise gate that enforce the layering.
 
 All existing code remains untouched except for the three grandfathered violations, the trace-id plumbing, and CI tooling additions. No breaking changes to public APIs.
+
+## M0 Addendum (G27)
+
+Database DDL is owned by **Alembic** (`alembic/versions/001_baseline.py`). `Base.metadata.create_all()` remains idempotent for local/dev/tests but must not introduce schema differences outside a migration. CI must fail if `alembic check` or `alembic upgrade --sql` would drift from `models.py`.
