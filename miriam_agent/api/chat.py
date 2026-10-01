@@ -148,6 +148,25 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
 
 
 
+_journal_singleton: Any | None = None
+
+
+def _get_or_build_journal():
+    """Process-wide Postgres journal, built lazily without probing.
+
+    The journal connects on first use: if Postgres is down, the first
+    ``reserve()`` raises and the transfer path refuses fail-closed. No probe
+    at build time, no event-loop tricks -- construction never touches the
+    network, so this is safe to call synchronously per request.
+    """
+    global _journal_singleton
+    if _journal_singleton is None:
+        from miriam_agent.hands.execution_journal import PostgresExecutionJournal
+
+        _journal_singleton = PostgresExecutionJournal(get_settings().DATABASE_URL)
+    return _journal_singleton
+
+
 def _orchestrator_for(token: str) -> Orchestrator:
     """The money entrypoint for one request.
 
@@ -167,6 +186,7 @@ def _orchestrator_for(token: str) -> Orchestrator:
         rail=GoRail(token),
         go_token=token,
         audit_sink=_persist_money_audit,
+        journal=_get_or_build_journal(),
         cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
         card_channels=tuple(channels) if channels else ("imessage",),
     )

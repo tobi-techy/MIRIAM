@@ -145,6 +145,22 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=True),
         sa.UniqueConstraint("channel", "sender_handle", "amount_minor", "reference", "payload_hash", name="uq_payment_ref_dedupe"),
     )
+    op.create_table(
+        "money_executions",
+        sa.Column("idempotency_key", sa.String(), primary_key=True),
+        sa.Column("user_id", sa.String(), nullable=False),
+        sa.Column("action", sa.String(), nullable=False),
+        sa.Column("amount", sa.String(), nullable=False),
+        sa.Column("currency", sa.String(), nullable=False, server_default=""),
+        sa.Column("counterparty", sa.String(), nullable=False, server_default=""),
+        sa.Column("sleeve", sa.String(), nullable=False, server_default=""),
+        sa.Column("decision_id", sa.String(), nullable=False, server_default=""),
+        sa.Column("status", sa.String(), nullable=False, server_default="reserved"),
+        sa.Column("rail_reference", sa.String(), nullable=True),
+        sa.Column("detail", sa.String(), nullable=False, server_default=""),
+        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("updated_at", sa.DateTime(), nullable=True),
+    )
     for tbl, col in [
         ("conversations", "user_id"),
         ("messages", "conversation_id"),
@@ -158,6 +174,6 @@ def upgrade() -> None:
     # Vector extension handled externally; embedding remains JSON until pgvector is wired.
 
 def downgrade() -> None:
-    for tbl in ["payment_references","tool_usage","audit_logs","budgets","investments","transactions","financial_profiles","memory_entries","messages","conversations","channel_identities","users"]:
+    for tbl in ["money_executions","payment_references","tool_usage","audit_logs","budgets","investments","transactions","financial_profiles","memory_entries","messages","conversations","channel_identities","users"]:
         op.drop_table(tbl)
 

@@ -24,6 +24,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
+from miriam_agent.hands.assets import company_aliases as _company_aliases
 from miriam_agent.hands.ledger import money
 from miriam_agent.hands.state import ProposedAction
 
@@ -300,18 +301,12 @@ _ORDER_SELL_WORDS = frozenset(
     }
 )
 
-# Plain-English company names people actually say -> sleeve tickers.
-_COMPANY_ALIASES = {
-    "apple": "AAPLx",
-    "nvidia": "NVDAx",
-    "tesla": "TSLAx",
-    "microsoft": "MSFTx",
-    "google": "GOOGLx",
-    "alphabet": "GOOGLx",
-    "amazon": "AMZNx",
-    "meta": "METAx",
-    "facebook": "METAx",
-}
+# Plain-English company names people actually say -> sleeve tickers. Derived
+# from the canonical catalogue in ``hands/assets.py`` (a single source of truth),
+# so a company name resolves to the same ticker here and in the resolve gate.
+# The "x" suffix is this parser's marker for "the user named a ticker"; it is
+# stripped again before the symbol reaches Go (see orders.py::_pick_asset).
+_COMPANY_ALIASES = {name: f"{symbol}x" for name, symbol in _company_aliases().items()}
 
 _TOKEN_RE = re.compile(r"\b([A-Za-z]{2,6})\b")
 _STOPWORDS = frozenset(

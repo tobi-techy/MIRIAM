@@ -128,3 +128,19 @@ CREATE TABLE IF NOT EXISTS payment_references (
     created_at     TIMESTAMP WITHOUT TIME ZONE DEFAULT (now() AT TIME ZONE 'utc'),
     CONSTRAINT uq_payment_ref_dedupe UNIQUE (channel, sender_handle, amount_minor, reference, payload_hash)
 );
+-- Trust rails (A-M): durable exactly-once journal (mirrors MoneyExecution model).
+CREATE TABLE IF NOT EXISTS money_executions (
+    idempotency_key VARCHAR PRIMARY KEY,
+    user_id         VARCHAR NOT NULL,
+    action          VARCHAR NOT NULL,
+    amount          VARCHAR NOT NULL,
+    currency        VARCHAR NOT NULL DEFAULT '',
+    counterparty    VARCHAR NOT NULL DEFAULT '',
+    sleeve          VARCHAR NOT NULL DEFAULT '',
+    decision_id     VARCHAR NOT NULL DEFAULT '',
+    status          VARCHAR NOT NULL DEFAULT 'reserved',
+    rail_reference  VARCHAR,
+    detail          VARCHAR NOT NULL DEFAULT '',
+    created_at      TIMESTAMP WITHOUT TIME ZONE DEFAULT (now() AT TIME ZONE 'utc'),
+    updated_at      TIMESTAMP WITHOUT TIME ZONE DEFAULT (now() AT TIME ZONE 'utc')
+);

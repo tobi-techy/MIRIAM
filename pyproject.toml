@@ -135,5 +135,6 @@ python_functions = "test_"
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.22.1",
     "psycopg2-binary>=2.9.13",
 ]

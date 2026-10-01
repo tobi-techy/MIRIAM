@@ -35,6 +35,7 @@ from miriam_agent.integrations.supermemory_client import (
     SupermemoryClient,
     get_supermemory_client,
 )
+from miriam_agent.conversational.redact import redact_money_figures
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,14 @@ class SupermemoryMemory:
         if user_message:
             messages.append({"role": "user", "content": user_message})
         if assistant_message:
-            messages.append({"role": "assistant", "content": assistant_message})
+            # Facts, not balances: the memory graph must never store Miriam's
+            # own computed figures ("you're at ₦720"), or a later turn will
+            # quote a stale number as current (TRUTH RULE #1). The user's own
+            # words are left verbatim -- "I earn 250k" is their truth and
+            # legitimate memory material.
+            messages.append(
+                {"role": "assistant", "content": redact_money_figures(assistant_message)}
+            )
         if not messages:
             return None
         try:

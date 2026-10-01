@@ -121,6 +121,7 @@ class Orchestrator(
         audit_sink: Callable[[Event, TurnResult], Any] | None = None,
         cards_enabled: bool = False,
         card_channels: tuple[str, ...] | list[str] = ("imessage",),
+        journal: Any | None = None,
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -145,6 +146,10 @@ class Orchestrator(
         # that produced a receipt. Fail-open by contract: an audit outage is
         # logged, never allowed to break a settled money turn.
         self.audit_sink = audit_sink
+        # Exactly-once journal for the transfer path (Postgres in production,
+        # process-local default inside execute_transfer when None). Wired by
+        # the API layer, which owns Postgres; tests leave it None.
+        self.journal = journal
 
     # -- the door ---------------------------------------------------------
 
@@ -729,6 +734,7 @@ class Orchestrator(
                 policy=self.policy,
                 rail=self.rail,
                 at=self.clock(),
+                journal=self.journal,
             )
         if action.type == "internal_move":
             return await move_between_sleeves(
