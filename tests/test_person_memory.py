@@ -304,6 +304,152 @@ class TestChatIngest:
         scopes = {t["conversation_id"] for t in memory.turns}
         assert scopes == {"miriam:web:user_1", "miriam:onboarding:user_1"}
 
+    def test_money_scrub_removes_numbers(self):
+        from miriam_agent.api import chat
+
+        assert chat._scrub_money_numbers("send 200k to Femi") == (
+            "send [amount] to Femi"
+        )
+        assert "[amount]" in chat._scrub_money_numbers(
+            "Your balance is ₦1,234,567.89"
+        )
+        assert any(
+            ch.isdigit()
+            for ch in chat._scrub_money_numbers("put 30 into stocks")
+        ) is False
+
+    def test_money_summary_carries_no_numbers(self):
+        from miriam_agent.api import chat
+
+        class _Receipt:
+            action = "transfer"
+            status = "executed"
+            counterparty = "Femi"
+
+        class _Result:
+            receipt = _Receipt()
+            confirm_id = ""
+
+        summary = chat._money_memory_summary(_Result())
+        assert summary == "money turn: transfer with Femi (executed)"
+        assert any(ch.isdigit() for ch in summary) is False
+
+
+class _FakeCorrectionMemory:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def remember_person_fact(self, *args, **kwargs):
+        self.calls.append(("remember", args, kwargs))
+        return {"id": "m1"}
+
+    async def update(self, *args, **kwargs):
+        self.calls.append(("update", args, kwargs))
+        return {"id": "m2"}
+
+    async def forget(self, *args, **kwargs):
+        self.calls.append(("forget-preview", args, kwargs))
+        return {"candidates": [{"id": "a"}, {"id": "b"}]}
+
+    async def forget_exact(self, *args, **kwargs):
+        self.calls.append(("forget-apply", args, kwargs))
+        return {"deleted": 2}
+
+    async def list_inferred(self, *args, **kwargs):
+        return [{"id": "i1", "memory": "Alex likely works on payments"}]
+
+    async def review_inferred(self, *args, **kwargs):
+        self.calls.append(("review", args, kwargs))
+        return {"ok": True}
+
+
+def _user() -> Any:
+    from miriam_agent.database.models import User
+
+    u = User()
+    u.id = "user_1"
+    u.username = "t"
+    u.full_name = "Tobiloba"
+    return u
+
+
+class TestMemoryCorrectionSurface:
+    def test_remember_correct_forget_review_flow(self):
+        from miriam_agent.api import memory as memapi
+
+        mem = _FakeCorrectionMemory()
+        user = _user()
+        assert _run(
+            memapi.remember_fact(
+                memapi.RememberRequest(content="I bank with Kuda"),
+                user,
+                mem,
+            )
+        )["stored"] is True
+        assert _run(
+            memapi.correct_fact(
+                memapi.CorrectRequest(
+                    query="I bank with GTB", new_content="I bank with Kuda"
+                ),
+                user,
+                mem,
+            )
+        )["updated"] is True
+        preview = _run(
+            memapi.forget_fact(
+                memapi.ForgetRequest(query="GTB", dry_run=True), user, mem
+            )
+        )
+        assert preview["dry_run"] is True and preview["candidates"] == 2
+        applied = _run(
+            memapi.forget_fact(
+                memapi.ForgetRequest(query="GTB", dry_run=False), user, mem
+            )
+        )
+        assert applied["applied"] == {"deleted": 2}
+        kinds = [c[0] for c in mem.calls]
+        assert "forget-preview" in kinds and "forget-apply" in kinds
+        # Apply is bound to the previewed ids via forget_exact, never a
+        # re-run of the semantic match.
+        assert mem.calls[[c[0] for c in mem.calls].index("forget-apply")][
+            0
+        ] == "forget-apply"
+
+    def test_inferred_review_and_validation(self):
+        from miriam_agent.api import memory as memapi
+
+        mem = _FakeCorrectionMemory()
+        user = _user()
+        listed = _run(memapi.list_inferred(user, mem))
+        assert listed["total"] == 1
+        ok = _run(
+            memapi.review_inferred(
+                "i1", memapi.ReviewRequest(action="decline"), user, mem
+            )
+        )
+        assert ok["reviewed"] is True
+        bad = _run(
+            memapi.review_inferred(
+                "i1", memapi.ReviewRequest(action="maybe"), user, mem
+            )
+        )
+        assert bad["reviewed"] is False
+
+    def test_disabled_memory_fails_open(self):
+        from miriam_agent.api import memory as memapi
+
+        class _Off:
+            enabled = False
+
+        user = _user()
+        assert _run(
+            memapi.remember_fact(
+                memapi.RememberRequest(content="x"), user, _Off()
+            )
+        )["enabled"] is False
+
 
 # ---------------------------------------------------------------------------
 # Onboarding: settled facts reach the graph

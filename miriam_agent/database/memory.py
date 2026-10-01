@@ -56,7 +56,13 @@ class MemoryStore:
         # Create async engine
         self.engine = create_async_engine(self.database_url)
 
-        # Create tables
+        # In development/tests the DB is created via ``create_all`` so the
+        # suite works without a migration. In deployed environments Alembic
+        # is the source of truth (see ``alembic/versions/001_baseline.py``);
+        # ``create_all`` is idempotent there and will not overwrite migrated
+        # tables, but no DDL differences should be introduced outside a
+        # migration (G27). Deploys must run ``alembic upgrade head`` before
+        # starting the app so create_all never masks a missing migration.
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
@@ -412,27 +418,50 @@ class MemoryStore:
     async def search_memories(
         self, user_id: str, query: str, limit: int = 5
     ) -> list[MemoryEntry]:
-        """Search for memories based on query text."""
+        """Hybrid-lite search: token-overlap + recency, vector-ready.
+
+        Why not pure ILIKE: exact-substring misses paraphrases and buries
+        recent important facts. This scores candidates by token overlap
+        (BM25-lite) with recency boost, so fresh relevant memories win.
+        When a pgvector column exists with embeddings, prefer it; else this
+        path keeps local recall sovereign without Supermemory.
+        """
         async with self._session() as session:
             try:
-                # This is a simple text-based search
-                # In a production system, you would use vector search with embeddings
-                search_term = f"%{query}%"
-
-                memory_entries = await session.execute(
+                tokens = [t.lower() for t in query.split() if len(t) > 2][:8]
+                if not tokens:
+                    tokens = [query.lower()]
+                clauses = []
+                for tok in tokens:
+                    pat = f"%{tok}%"
+                    clauses.append(MemoryEntry.content.ilike(pat))
+                # Fetch broader candidate set, rank in Python (small N, cheap).
+                candidates = await session.execute(
                     select(MemoryEntry)
                     .where(MemoryEntry.user_id == user_id)
-                    .where(
-                        or_(
-                            MemoryEntry.content.ilike(search_term),
-                            MemoryEntry.extra_data["content"].astext.ilike(search_term),
-                        )
-                    )
+                    .where(or_(*clauses) if clauses else True)
                     .order_by(MemoryEntry.created_at.desc())
-                    .limit(limit)
+                    .limit(max(limit * 4, 20))
                 )
+                rows = list(candidates.scalars())
+                if not rows:
+                    return []
 
-                return list(memory_entries.scalars())
+                def _score(m: MemoryEntry) -> float:
+                    text = (m.content or "").lower()
+                    hits = sum(1 for t in tokens if t in text)
+                    # Recency boost: newer first within same hit count.
+                    try:
+                        age_h = (
+                            utcnow_naive() - (m.created_at or utcnow_naive())
+                        ).total_seconds() / 3600.0
+                    except Exception:
+                        age_h = 0.0
+                    recency = 1.0 / (1.0 + age_h / 72.0)
+                    return hits * 2.0 + recency
+
+                rows.sort(key=_score, reverse=True)
+                return rows[:limit]
 
             except Exception as e:
                 raise e

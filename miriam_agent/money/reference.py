@@ -216,6 +216,10 @@ def reference_from_env() -> CountryReference | None:
 
     Returns a ``sourced=True`` override or ``None`` when unset/incomplete, so
     the placeholder table keeps working until an operator wires the feed.
+
+    ``MONEY_REF_AS_OF`` defaults to today when unset/invalid, so operator-
+    supplied live rates never inherit the placeholder pin date and go stale
+    on arrival.
     """
     import os
 
@@ -237,10 +241,13 @@ def reference_from_env() -> CountryReference | None:
         judgment_pct = _Decimal(judgment) if judgment else None
     except Exception:
         return None
+    raw_as_of = (os.environ.get("MONEY_REF_AS_OF") or "").strip()
+    if not raw_as_of or _parse_date(raw_as_of) is None:
+        raw_as_of = _today().isoformat()
     return CountryReference(
         country_code=(os.environ.get("MONEY_REF_COUNTRY") or "NG").strip().upper(),
         currency=(os.environ.get("MONEY_REF_CURRENCY") or "NGN").strip().upper(),
-        as_of=(os.environ.get("MONEY_REF_AS_OF") or REFERENCE_AS_OF).strip(),
+        as_of=raw_as_of,
         inflation_pct=inflation_pct,
         risk_free_rate_pct=risk_free_pct,
         fire_apr_pct=fire_pct,

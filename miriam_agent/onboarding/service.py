@@ -2068,7 +2068,9 @@ class OnboardingService:
         try:
             from miriam_agent.observability.metrics import ONBOARDING_EVENTS
 
-            ONBOARDING_EVENTS.labels(user_id=user_id, event=event).inc()
+            # No user_id label: unbounded cardinality. user_id stays in logs.
+            ONBOARDING_EVENTS.labels(event=event).inc()
+            logger.debug("onboarding event", extra={"event": event, "user_id": user_id})
         except Exception:
             logger.debug("onboarding metric emit failed (non-blocking)")
 

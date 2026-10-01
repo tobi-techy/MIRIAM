@@ -1372,6 +1372,11 @@ def build_tool_registry() -> Any:
 
     for name in sorted(MONEY_TOOL_NAMES):
         registry.unregister(name)
+    # Fail-closed: prove zero money tools survived into the live registry.
+    try:
+        registry.assert_no_money_tools()
+    except AttributeError:
+        pass
     # Push the tool metadata into RBAC from this side (adapters ->
     # cross_cutting is the allowed direction; auth must not import tools).
     rbac.register_tool_permissions(

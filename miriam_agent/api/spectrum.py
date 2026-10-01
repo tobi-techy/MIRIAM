@@ -274,8 +274,19 @@ async def spectrum_chat(
     result: TurnResult | None
 
     async def _remember(
-        user_text: str, reply: str, extra: dict[str, Any] | None = None
+        user_text: str,
+        reply: str,
+        extra: dict[str, Any] | None = None,
+        *,
+        memory_user_text: str | None = None,
+        memory_assistant_text: str | None = None,
     ) -> None:
+        """Persist locally in full; ingest into the graph scrubbed.
+
+        Money/portfolio replies carry amounts and balances that must never
+        become retrievable facts. Local history keeps the full text for
+        resume; Supermemory gets the scrubbed override when provided.
+        """
         meta: dict[str, Any] = {
             "channel": channel,
             "space_id": space_id,
@@ -315,8 +326,14 @@ async def spectrum_chat(
             await supermemory_memory.ingest_turn(
                 container_tag=container_tag,
                 conversation_id=conversation_scope_for(user.id, channel),
-                user_message=user_text,
-                assistant_message=reply,
+                user_message=(
+                    memory_user_text if memory_user_text is not None else user_text
+                ),
+                assistant_message=(
+                    memory_assistant_text
+                    if memory_assistant_text is not None
+                    else reply
+                ),
                 metadata={
                     "channel": channel,
                     "source": "miriam",
@@ -382,7 +399,13 @@ async def spectrum_chat(
         reply = " | ".join(
             p.get("text", p.get("title", "")) for p in parts if isinstance(p, dict)
         )
-        await _remember(f"confirm {confirm_id}", reply, {"confirm_id": confirm_id})
+        await _remember(
+            f"confirm {confirm_id}",
+            reply,
+            {"confirm_id": confirm_id},
+            memory_user_text="confirmation tap (details withheld)",
+            memory_assistant_text=chatmod._money_memory_summary(result),
+        )
         confirm_id_out = result.confirm_id
         return {
             "parts": parts,
@@ -448,7 +471,12 @@ async def spectrum_chat(
                     detail or (result.narration or "Enrollment did not complete.")
                 )
             )
-        await _remember("signed <tx>", parts[0].get("text", "") if parts else "")
+        await _remember(
+            "signed <tx>",
+            parts[0].get("text", "") if parts else "",
+            memory_user_text="wallet signature submitted (details withheld)",
+            memory_assistant_text=chatmod._money_memory_summary(result),
+        )
         return {
             "parts": parts,
             "confirm_id": confirm_id_out,
@@ -527,7 +555,11 @@ async def spectrum_chat(
             # it is untouched.
             pass
         await _remember(
-            text, parts[0].get("text", ""), {"confirm_id": result.confirm_id}
+            text,
+            parts[0].get("text", ""),
+            {"confirm_id": result.confirm_id},
+            memory_user_text=chatmod._scrub_money_numbers(text),
+            memory_assistant_text=chatmod._money_memory_summary(result),
         )
         confirm_id_out = result.confirm_id
         return {
@@ -552,7 +584,12 @@ async def spectrum_chat(
             reply = f"Your sleeve is holding at ${total:,.2f}."
             parts.append(_text_part(reply))
             parts.append(_chart_part(png))
-        await _remember(text, reply)
+        await _remember(
+            text,
+            reply,
+            memory_user_text=chatmod._scrub_money_numbers(text),
+            memory_assistant_text="portfolio snapshot viewed (balances withheld)",
+        )
         return {
             "parts": parts,
             "confirm_id": confirm_id_out,
