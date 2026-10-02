@@ -18,8 +18,9 @@ set to make it happen.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from miriam_agent.hands.ledger import SLEEVES, money
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
 # Fail-closed fallback when MAX_DAILY_TRANSFER is missing from settings. A daily
 # cap that silently becomes unlimited is worse than one that is too tight.
 DAILY_CAP_DEFAULT = Decimal("10000")
+WEEKLY_CAP_DEFAULT = Decimal("500000")
+VELOCITY_DEFAULT = 20
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,8 @@ class Policy:
     max_with_confirm: Decimal = Decimal("100000")
     reversible_under: Decimal = Decimal("5000")
     max_daily: Decimal = Decimal("10000")
+    max_weekly: Decimal = Decimal("500000")
+    max_per_hour: int = 20
     locked_sleeves: tuple[str, ...] = ("locked",)
     # Where a yield route parks when the yield rail is down. Never a sleeve the
     # user cannot reach, and never a claim that the yield posted.
@@ -62,11 +67,17 @@ class Policy:
 
         settings = get_settings()
         daily = getattr(settings, "MAX_DAILY_TRANSFER", None)
+        weekly = getattr(settings, "MAX_WEEKLY_TRANSFER", None)
+        per_hour = getattr(settings, "MAX_TRANSFERS_PER_HOUR", None)
         return cls(
             max_auto=money(settings.APPROVAL_REQUIRED_ABOVE),
             max_with_confirm=money(settings.MAX_TRANSACTION_AMOUNT),
             reversible_under=money(settings.APPROVAL_REQUIRED_ABOVE),
             max_daily=(money(daily) if daily is not None else money(DAILY_CAP_DEFAULT)),
+            max_weekly=(
+                money(weekly) if weekly is not None else money(WEEKLY_CAP_DEFAULT)
+            ),
+            max_per_hour=(int(per_hour) if per_hour is not None else VELOCITY_DEFAULT),
         )
 
     def is_locked(self, sleeve: str) -> bool:
@@ -79,6 +90,7 @@ class Policy:
             "max_with_confirm": str(self.max_with_confirm),
             "reversible_under": str(self.reversible_under),
             "max_daily": str(self.max_daily),
+            "max_weekly": str(self.max_weekly),
             "locked_sleeves": list(self.locked_sleeves),
         }
 
@@ -139,21 +151,18 @@ class LimitReport:
     cap: Decimal = Decimal("0")
 
 
-def settled_outbound_today(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
-    """Settled outbound P2P-like sends for this user since local-day start.
+def settled_outbound_since(ledger: Ledger, *, since: datetime) -> Decimal:
+    """Settled outbound P2P-like sends at or after ``since``.
 
-    Measured from receipt records (executed transfer receipts), not from
-    movements, so it covers exactly what Hands debited through execute_transfer.
-    Inflow splits, internal moves, yield routes, declines and rejections are
-    never counted.
+    Only executed ``transfer`` receipts count: inflow splits, internal moves,
+    yield routes, declines and rejections are never counted.
     """
-    day_start = _day_start(at)
     total = Decimal("0")
     for receipt in ledger.receipts:
         receipt_at = receipt.at
         if receipt_at.tzinfo is None:
             continue
-        if receipt_at.astimezone(day_start.tzinfo) < day_start:
+        if receipt_at.astimezone(since.tzinfo) < since:
             continue
         if receipt.status != "executed":
             continue
@@ -163,6 +172,17 @@ def settled_outbound_today(ledger: Ledger, *, at: datetime | None = None) -> Dec
             continue
         total += money(receipt.amount)
     return money(total)
+
+
+def settled_outbound_today(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
+    """Settled outbound P2P-like sends for this user since local-day start.
+
+    Measured from receipt records (executed transfer receipts), not from
+    movements, so it covers exactly what Hands debited through execute_transfer.
+    Inflow splits, internal moves, yield routes, declines and rejections are
+    never counted.
+    """
+    return settled_outbound_since(ledger, since=_day_start(at))
 
 
 def reserved_outbound(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
@@ -186,6 +206,44 @@ def daily_usage(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
     return money(
         settled_outbound_today(ledger, at=at) + reserved_outbound(ledger, at=at)
     )
+
+
+def _week_start(at: datetime | None) -> datetime:
+    """Monday that starts the trailing week, in the money timezone."""
+    day_start = _day_start(at)
+    return day_start - timedelta(days=day_start.weekday())
+
+
+def weekly_usage(ledger: Ledger, *, at: datetime | None = None) -> Decimal:
+    """Settled (since Monday) plus reserved outbound, the weekly cap figure."""
+    return money(
+        settled_outbound_since(ledger, since=_week_start(at))
+        + reserved_outbound(ledger, at=at)
+    )
+
+
+def mutations_in_window(
+    ledger: Ledger, *, window_minutes: int, at: datetime | None = None
+) -> int:
+    """Number of settled outbound transfers in the trailing ``window_minutes``.
+
+    Velocity is measured on executed ``transfer`` receipts only -- the P2P-like
+    sends that are the highest-friction, highest-risk surface.
+    """
+    now = at or datetime.now().astimezone()
+    since = now - timedelta(minutes=window_minutes)
+    count = 0
+    for receipt in ledger.receipts:
+        if receipt.status != "executed":
+            continue
+        if receipt.action != "transfer":
+            continue
+        receipt_at = receipt.at
+        if receipt_at.tzinfo is None:
+            continue
+        if receipt_at.astimezone(now.tzinfo) >= since:
+            count += 1
+    return count
 
 
 def _day_start(at: datetime | None) -> datetime:
@@ -248,6 +306,10 @@ def evaluate_limits(
         # refused the final slot of the allowance forever.
         if money(used) + money(amount) > policy.max_daily:
             reasons.append("DAILY_CAP")
+        if money(weekly_usage(ledger, at=at)) + money(amount) > policy.max_weekly:
+            reasons.append("WEEKLY_CAP")
+        if mutations_in_window(ledger, window_minutes=60, at=at) >= policy.max_per_hour:
+            reasons.append("VELOCITY")
     known = [
         r
         for r in reasons
@@ -258,9 +320,72 @@ def evaluate_limits(
             "LOCKED_SLEEVE",
             "OVER_BALANCE",
             "DAILY_CAP",
+            "WEEKLY_CAP",
+            "VELOCITY",
         }
     ]
     return LimitReport(allowed=not known, reasons=reasons, cap=cap)
+
+
+class LimitVerdict(StrEnum):
+    """The three-tier autonomy outcome for one proposed movement."""
+
+    ALLOW = "allow"
+    CONFIRM = "confirm"
+    BLOCK = "block"
+
+
+@dataclass(frozen=True)
+class LimitDecision:
+    """A verdict plus the report that produced it."""
+
+    verdict: LimitVerdict
+    report: LimitReport
+    confirm_needed: bool = False
+
+    @property
+    def allowed(self) -> bool:
+        return self.verdict is LimitVerdict.ALLOW
+
+
+def classify_limits(
+    *,
+    policy: Policy,
+    amount: Decimal,
+    sleeve: str,
+    spendable: Decimal,
+    rent_required: Decimal,
+    rent_reserved: Decimal,
+    ledger: Ledger | None = None,
+    at: datetime | None = None,
+) -> LimitDecision:
+    """Map a proposed movement to ALLOW / CONFIRM / BLOCK.
+
+    * any limit breach (non-positive, over tx cap, locked, over balance,
+      daily/weekly cap, velocity) -> BLOCK
+    * within limits but above the act-without-asking ceiling -> CONFIRM
+    * otherwise -> ALLOW
+
+    ``evaluate_limits`` stays the single source of truth for what is allowed;
+    this only layers the autonomy tier on top of it.
+    """
+    report = evaluate_limits(
+        policy=policy,
+        amount=amount,
+        sleeve=sleeve,
+        spendable=spendable,
+        rent_required=rent_required,
+        rent_reserved=rent_reserved,
+        ledger=ledger,
+        at=at,
+    )
+    if not report.allowed:
+        return LimitDecision(verdict=LimitVerdict.BLOCK, report=report)
+    if needs_confirm(policy, amount):
+        return LimitDecision(
+            verdict=LimitVerdict.CONFIRM, report=report, confirm_needed=True
+        )
+    return LimitDecision(verdict=LimitVerdict.ALLOW, report=report)
 
 
 def known_sleeves() -> tuple[str, ...]:
@@ -270,15 +395,23 @@ def known_sleeves() -> tuple[str, ...]:
 
 __all__ = [
     "DAILY_CAP_DEFAULT",
+    "VELOCITY_DEFAULT",
+    "WEEKLY_CAP_DEFAULT",
+    "LimitDecision",
     "LimitReport",
+    "LimitVerdict",
     "Policy",
     "affordable_cap",
     "check_amount",
+    "classify_limits",
     "daily_usage",
     "evaluate_limits",
     "free_after_obligations",
     "known_sleeves",
+    "mutations_in_window",
     "needs_confirm",
     "reserved_outbound",
+    "settled_outbound_since",
     "settled_outbound_today",
+    "weekly_usage",
 ]
