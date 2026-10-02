@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from miriam_agent.agents.llm import LLMProvider, get_llm_provider
 from miriam_agent.hands.state import HandlerState
+from miriam_agent.safety.grounding import normalise_figure
 from miriam_agent.voice.prompt import build_voice_messages
 
 logger = logging.getLogger(__name__)
@@ -75,10 +76,14 @@ class VoiceMessage(BaseModel):
 
 
 def _normalize_number(raw: str) -> str:
-    text = raw.replace(",", "").strip()
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text or "0"
+    """Canonical form of one figure token.
+
+    Delegates to ``safety.grounding``, which is the one implementation of "what
+    is this number worth" in the codebase. ``_NUMBER_RE`` captures a token that
+    starts with a digit, so there is no currency mark or percent sign to
+    consider here and the shared rule is an exact substitute.
+    """
+    return normalise_figure(raw)
 
 
 def _numbers_in(text: str) -> set[str]:

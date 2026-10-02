@@ -669,6 +669,17 @@ def _context_block(
     return "\n".join(parts)
 
 
+GROUNDING_CORRECTION = (
+    "REVISION REQUIRED. Your previous answer reported a figure that does not "
+    "appear in WHAT YOU KNOW SO FAR. Rewrite that answer with no numbers at "
+    "all, or with numbers copied exactly from WHAT YOU KNOW SO FAR. Never "
+    "derive, divide, average, scale, or estimate a number -- if you were not "
+    "told it, you do not know it. If the user asked for something you cannot "
+    "state, say plainly that you do not have it yet and ask your question "
+    "without numbers."
+)
+
+
 async def conductor_turn(
     *,
     provider: LLMProvider,
@@ -679,6 +690,7 @@ async def conductor_turn(
     event: str = "",
     moving_on_hint: str = "",
     poll_title: str = "",
+    correction: str = "",
 ) -> DriverOutcome | None:
     """One LLM-led conversation turn in whatever stage the interview is in."""
     settings = get_settings()
@@ -691,8 +703,14 @@ async def conductor_turn(
         history=history,
         poll_title=poll_title,
     )
+    # ``correction`` rides inside the system prompt rather than as an extra
+    # user turn: the retry instruction is ours, never something the user is
+    # made to have said.
+    system_content = CONDUCTOR_SYSTEM_PROMPT
+    if correction:
+        system_content = f"{CONDUCTOR_SYSTEM_PROMPT}\n\n{correction}"
     messages = [
-        ChatMessage(role="system", content=CONDUCTOR_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=system_content),
         ChatMessage(role="user", content=user_block),
     ]
     response = await provider.complete(

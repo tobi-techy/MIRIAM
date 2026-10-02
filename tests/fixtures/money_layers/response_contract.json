@@ -45,14 +45,13 @@
         "inflow_conf": 0.9,
         "intent_type": "order",
         "intent_conf": 0.9,
-        "affordability": 0.9,
+        "affordability": 1.0,
         "policy_violation": false,
-        "reversibility": true,
+        "reversibility": false,
         "next_mode": "ask",
         "action_choice": "allow_smaller",
         "suggested_amount": "2000.00",
         "reasons": [
-          "REVERSIBLE",
           "OVER_AUTO"
         ],
         "confirm_id": "confirm_3d5345e9",
@@ -80,7 +79,6 @@
         "action_choice": "allow",
         "suggested_amount": "2000.00",
         "reasons": [
-          "REVERSIBLE",
           "OVER_AUTO"
         ],
         "confirm_id": "confirm_3d5345e9",
@@ -128,16 +126,13 @@
         "inflow_conf": 0.9,
         "intent_type": "order",
         "intent_conf": 0.9,
-        "affordability": 0.21,
+        "affordability": 0.674,
         "policy_violation": true,
-        "reversibility": true,
+        "reversibility": false,
         "next_mode": "ask",
         "action_choice": "deny",
         "suggested_amount": null,
         "reasons": [
-          "REVERSIBLE",
-          "TRACK_BREAK",
-          "LOW_AFFORDABILITY",
           "RENT_SHORT"
         ],
         "confirm_id": "",
@@ -155,9 +150,6 @@
         "decision_id": "dec_example",
         "idempotency_key": "idem_example",
         "reasons": [
-          "REVERSIBLE",
-          "TRACK_BREAK",
-          "LOW_AFFORDABILITY",
           "RENT_SHORT"
         ],
         "sleeves_before": {

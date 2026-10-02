@@ -27,3 +27,8 @@ class AgentConfig(BaseModel):
     memory_types: list[str] = Field(
         default_factory=list, description="Memory types to use"
     )
+    # Whether an unreachable judgment layer refuses the reply instead of
+    # sending it. Default False keeps the documented fail-open posture: the
+    # deterministic reply guard has already checked the figures by this point,
+    # so an outage costs policy and tone review, not correctness.
+    fail_closed_without_judge: bool = False

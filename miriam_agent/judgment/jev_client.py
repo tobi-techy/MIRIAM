@@ -54,7 +54,7 @@ async def evaluate_money(
     *,
     client: AsyncTypeSafeClient | None = None,
 ) -> MoneyJudgment:
-    """Answer the seven money questions for this STATE.
+    """Answer the two semantic money questions for this STATE.
 
     Raises :class:`JudgeUnavailable` on any transport or configuration problem
     rather than returning a default, so the rules layer has one thing to handle.

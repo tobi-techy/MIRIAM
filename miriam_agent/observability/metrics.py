@@ -68,3 +68,24 @@ def record_tool_execution(tool: str, status: str) -> None:
         TOOL_EXECUTIONS.labels(tool or "", status).inc()
     except Exception:
         pass
+
+
+REPLY_GUARD = Counter(
+    "miriam_reply_guard_total",
+    "Reply-guard decisions before a reply is sent",
+    ["rule", "outcome"],
+)
+
+
+def record_reply_guard(rule: str, outcome: str) -> None:
+    """Count one reply-guard decision. Never raises.
+
+    ``rule`` is the guard rule that fired (or "none" for an accepted reply) and
+    ``outcome`` is ``allowed``, ``blocked``, ``retried`` or ``fell_back``. This
+    is the runtime half of the hallucination measurement: the eval set says what
+    the guard catches in CI, this says how often it fires in production.
+    """
+    try:
+        REPLY_GUARD.labels(rule or "none", outcome).inc()
+    except Exception:
+        pass

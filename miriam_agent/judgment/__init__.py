@@ -13,12 +13,13 @@ from miriam_agent.judgment.gates import (
     RoutingDecision,
     ToolBranch,
     ToolDecision,
-    build_ingress_state,
-    build_state,
     egress_gate,
     ingress_gate,
+    local_safety_decision,
+    safe_ingress_gate,
     tool_gate,
 )
+from miriam_agent.judgment.state import build_ingress_state, build_state
 
 __all__ = [
     "Branch",
@@ -31,5 +32,7 @@ __all__ = [
     "build_state",
     "egress_gate",
     "ingress_gate",
+    "local_safety_decision",
+    "safe_ingress_gate",
     "tool_gate",
 ]

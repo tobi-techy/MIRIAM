@@ -42,9 +42,31 @@ async def lifespan(app: FastAPI):
     logger.info("Miriam Financial Agent API starting up")
     logger.info("Environment: %s", os.getenv("ENVIRONMENT", "production"))
 
+    # Prove Redis before the first money turn. A misconfigured URL (e.g. a
+    # rediss:// URL without its token) makes every money turn refuse while
+    # onboarding still works, which is confusing to diagnose from the refusal
+    # alone. Never fatal: onboarding must keep working with Redis down.
+    from miriam_agent.core.redis_client import check_redis_connectivity
+
+    redis_status = await check_redis_connectivity()
+    if redis_status == "ok":
+        logger.info("Redis reachable — money turns can read and write the ledger")
+    else:
+        logger.error(
+            "Redis unreachable (%s). Money turns will be refused until this is "
+            "fixed; onboarding keeps working from its in-process store.",
+            redis_status,
+        )
+
     yield
 
     # Shutdown
+    try:
+        from miriam_agent.judgment.client import close_async_client
+
+        await close_async_client()
+    except Exception:
+        logger.exception("TypeSafe client shutdown failed")
     logger.info("Miriam Financial Agent API shutting down")
 
 

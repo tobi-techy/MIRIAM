@@ -156,13 +156,13 @@ class Settings(BaseSettings):
     AGENT_MAX_TOKENS_PER_TURN: int = Field(default=12000)
     AGENT_MAX_COST_USD_PER_TURN: float = Field(default=0.05)
     AGENT_WALL_CLOCK_S: float = Field(default=30.0)
-    # G3: the ingress `exposes_pii` question can only work if TypeSafe sees the
-    # user's actual text, so the raw turn text is sent by default. Set this to
-    # true to run the deterministic card/NIN/credential redactor before the
-    # request (at the cost of that question's reach). The local PII
-    # short-circuit still refuses obvious secrets before TypeSafe is called
-    # either way, so this never disables `exposes_pii`.
-    TYPESAFE_REDACT_USER_TEXT: bool = Field(default=False)
+    # Whether TypeSafe's ingress `exposes_pii` question sees the user's raw
+    # turn text. Privacy-first default: strip deterministic card/NIN/credential
+    # values before the request. The local PII short-circuit still refuses
+    # obvious secrets before TypeSafe is called, so this does not disable the
+    # guard. Set to false only for a deliberate evaluation that needs raw text,
+    # in which case the `exposes_pii` question is at full reach.
+    TYPESAFE_REDACT_USER_TEXT: bool = Field(default=True)
 
     # Proactive analyst (24/7 money watch + private outreach). The Go reacher
     # worker (RAIL_BACKEND) calls POST /api/v1/proactive/analyze to ask whether
