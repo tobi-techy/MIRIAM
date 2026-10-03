@@ -705,6 +705,14 @@ class OnboardingService:
             ):
                 return await self._ask_gap(user.id, state, "income_frequency")
             if ready_now and not state.facts_confirmed:
+                if state.awaiting_fact_confirm:
+                    # The facts were already read back once. A redelivered or
+                    # retried turn must not re-send the identical sentence (users
+                    # saw it twice, verbatim) — re-ask briefly instead.
+                    return self._turn(
+                        "Say yes and I'll lock this in, or change a number.",
+                        stage=state.stage,
+                    )
                 state.awaiting_fact_confirm = True
                 await self._state_store.save_state(user.id, state)
                 return self._turn(fact_readback(state), stage=state.stage)

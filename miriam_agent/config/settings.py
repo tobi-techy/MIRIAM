@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     # Safety
     MAX_DAILY_TRANSFER: float = Field(default=10000.0)
     MAX_TRANSACTION_AMOUNT: float = Field(default=5000.0)
+    # Rolling 7-day (Monday-based) outbound cap and per-hour velocity cap.
+    # Read by ``hands/limits.Policy.from_settings``; the same single source of
+    # truth as the daily and per-transaction ceilings. Zero/falsy values are
+    # not treated as "unlimited": ``from_settings`` falls back to the module
+    # defaults instead.
+    MAX_WEEKLY_TRANSFER: float = Field(default=500000.0)
+    MAX_TRANSFERS_PER_HOUR: int = Field(default=20)
     # The ceiling above which a money movement needs the user's confirmation.
     # Read by ``hands/limits.Policy.from_settings`` as max_auto; it is the only
     # consumer. There is no client-side or tool-side approval step.
@@ -156,10 +163,12 @@ class Settings(BaseSettings):
     AGENT_MAX_TOKENS_PER_TURN: int = Field(default=12000)
     AGENT_MAX_COST_USD_PER_TURN: float = Field(default=0.05)
     AGENT_WALL_CLOCK_S: float = Field(default=30.0)
-    # Privacy-first default: strip deterministic card/NIN/credential values
-    # before the request. The local PII short-circuit still refuses obvious
-    # secrets before TypeSafe is called, so this does not disable the guard.
-    # Set to false only for a deliberate evaluation that needs raw text.
+    # Whether TypeSafe's ingress `exposes_pii` question sees the user's raw
+    # turn text. Privacy-first default: strip deterministic card/NIN/credential
+    # values before the request. The local PII short-circuit still refuses
+    # obvious secrets before TypeSafe is called, so this does not disable the
+    # guard. Set to false only for a deliberate evaluation that needs raw text,
+    # in which case the `exposes_pii` question is at full reach.
     TYPESAFE_REDACT_USER_TEXT: bool = Field(default=True)
 
     # Proactive analyst (24/7 money watch + private outreach). The Go reacher
