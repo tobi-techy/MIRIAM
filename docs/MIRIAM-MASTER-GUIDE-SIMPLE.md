@@ -212,7 +212,7 @@ Every step has an undo: quarantine, flag-for-review, **reversal entry (never era
 
 **The 24h rule:** shop messages you → 24h of free talk (text/buttons/photos). Silence >24h → you may only **start** with a pre-approved template. >80% of our traffic must be **replies** (free), not starts (paid). Proactive slots: **one** morning summary + **one** money-event + **one** weekly credit note. One 4-line morning beats five pings (5× cost, 5× block risk).
 
-**Prices (Nigeria, ex-provider markup — pin live card in CI):** Marketing ~$0.0516 (never for money), Utility ~$0.0067 (~₦14), Auth ~$0.0145, in-window Service free until 30 Sep 2026 → then charged (1k free/number/month). Anchor: 1,000 shops × 30 morning notes × $0.0067 ≈ **$201/mo**. One misclassified daily template × 30k sends = **$1,548 vs $201 — category discipline is profit.**
+**Prices (Nigeria, per delivered message since 1 Jul 2025, ex-provider markup — pin live card in CI):** Marketing ~$0.0516 (never for money), Utility ~$0.0067 (~₦9), Auth ~$0.0145, Service replies in-window free + unlimited, utility templates sent inside an open window free. Anchor: 1,000 shops × 30 morning notes × $0.0067 ≈ **$201/mo + BSP markup**. One misclassified daily template × 30k sends = **$1,548 vs $201 — category discipline is profit.** Full stack + pilot math: Part 13 (300 shops ≈ $400–650/mo).
 
 ```mermaid
 flowchart TD
@@ -345,22 +345,28 @@ message_costs(shop_id, direction, category, cost_minor, at);
 
 ---
 
-## PART 13 — TOOLS: BUY vs BUILD (one line each)
+## PART 13 — STACK: WHAT WE USE, WHY, AND WHAT IT COSTS (live rates, 2 Oct 2026)
 
-| Layer | Choice | Why |
-|---|---|---|
-| Queue + jobs | Redis Streams + Dramatiq/ARQ + outbox poller; Temporal only if needed (decided) | Already have Redis; no Kafka ops |
-| Scheduler | Postgres cron now; Temporal only if needed (decided) | Simple today, grow later |
-| Photos | Cloudflare R2 (primary)/S3; MinIO local | R2 zero egress (re-fetch for review gets pricey on S3) |
-| OCR | Google Document AI (decided) | Best handwriting on bad photos; 60-photo test |
-| Vision read | Frontier vision JSON-mode + small-model pre-filter (decided, EU region) | Handles book variety; small model rejects junk first |
-| Notebook | Go + Postgres | Single writer; `pgx`, migrations, kobo integers |
-| DB/vectors/cache | Postgres 16 + pgvector + locked drawers; Redis 7 | One home for money+app+vectors; shop-filtered search |
-| WhatsApp door | Meta Cloud API + iMessage, both via photon.codes (decided) + stamp table | One bridge host; 14-day raw log for disputes |
-| Bank data | Mono + partner virtual accounts | Mono = signal; partner = real accounts (no licence held) |
-| Secrets | Doppler → cloud/Vault | Injection, rotation, audit |
-| Deploy | Terraform + Compose dev → AtlasFlow only; delete dead targets | Split fleets break the one-leader assumption |
-| Tests/watch | Langfuse self-hosted (decided) + OTel tail → Grafana + Sentry | Golden CI + online judge + trace→test loop |
+**Simple version:** we buy the doors and pipes (WhatsApp, bank data, photo reading, secrets) and build only the money notebook + shop brain. Below is every layer, why we picked it, the live price today, and what 300 pilot shops vs 1,000 shops cost. Money in USD unless marked ₦. Rate used: ₦1,331 = $1.
+
+| Layer | Choice (why in one line) | Live price you pay (2 Oct 2026) | Pilot math (300 shops, Oshodi+Mushin) |
+|---|---|---|---|
+| WhatsApp door | Meta Cloud API via photon.codes — one postman for WA + iMessage; keeps window clock + templates + stamp table in one place | Nigeria (Rest-of-Africa card): Marketing ~$0.0516, Utility ~$0.0067 (~₦9), Auth ~$0.0145 per delivered template message (per-message billing since 1 Jul 2025). Service replies inside 24h window = free, unlimited. BSP markup on top: ~$0.003–0.010/msg. Tiers 250→1k→10k→100k→unlimited; quality Green/Yellow/Red; ~2 marketing/user/day cap (code 131049). Sources: Meta docs via blueticks 2 Oct 2026 + Ominiflow Nigeria card 12 Sep 2026 — pin live card in CI, rates drift quarterly. | 1 morning utility note/shop/day = 9,000 sends/mo × $0.0067 = **~$60 Meta** + ~$27–90 BSP = **~$90–150/mo**. Same sends misclassified as marketing: 9,000 × $0.0516 = **$464** — category discipline is profit. Replies from shops cost $0. |
+| Bridge host | photon.codes Pro to start → Business line at scale (decided); self-host open-source for dev | Free: 10 users. Pro **$25/mo**: 100 users, unlimited daily messages, SMS/RCS + Telegram included. Business **$250/line/mo**: dedicated number, unlimited users (Auto Scale), group messaging + cold outreach 50/day. Enterprise custom. Source: photon.codes/pricing 2 Oct 2026. | **$25/mo** pilot (one shared line + Pro). Scale: **$250/mo per dedicated line** (2–3 lines: receipts vs advice vs alerts so one bad rating never stops money receipts). |
+| Photo OCR | Google Document AI Enterprise OCR (decided) — best handwriting on bad photos; 60-photo bench first | **$1.50 per 1,000 pages** (first 1,000 free; $0.60/1k past 5M). Each photo = 1 page. OCR add-ons $6/1k. Form Parser $30/1k — we avoid it (JSON from vision instead). Failed requests (4xx/5xx) not billed. Source: cloud.google.com/document-ai/pricing. | 5 photos/shop/week = 6,000 pages/mo × $1.50/1k = **~$9/mo**. 1,000 shops (20k photos) = **~$30/mo**. Bench 60 photos ≈ $0.09. |
+| Vision read | Frontier vision JSON-mode + small-model pre-filter, single EU region (decided) — handles book variety; cheap model rejects junk first | Sep-2026 verified: GPT-6 Luna **$0.10 in / $0.50 out** per 1M tokens (cheapest); DeepSeek Flash $0.15/$0.60 off-peak; Sonnet 5 $2/$10; GPT-6 Sol $2/$10; Opus 5.5 $4/$20. Per photo (~1,500 image+prompt tokens in, ~500 out): Luna ≈ **$0.0004**, Sonnet/Sol ≈ **$0.008**, Opus 5.5 ≈ $0.016. Source: developersdigest frontier pricing 26 Sep 2026. EU residency +10% on some OpenAI models; Anthropic US-only 1.1× — budget it. | 6,000 photos: Luna route **~$2–3/mo**, Sonnet/Sol route **~$48/mo**, all-Opus **~$96/mo**. Plan: **cheap pre-filter (Luna/Flash) → frontier only on low-confidence** keeps pilot **<$15/mo**. 1,000 shops ≈ 3.3×. |
+| Notebook + DB | Go + Postgres 16 + pgvector + locked drawers (RLS) + PgBouncer; Redis 7 Streams | Hosted Postgres (pick one, AtlasFlow-only at scale): entry **$12–25/mo** (AWS t4g.micro $12.41, DigitalOcean $15, Supabase Pro $25), mid **$60–122** (DO $60, Aiven ~$110, Cloud SQL ~$122), serverless Neon usage-based $0.106/CU-h + $0.35/GB-mo. Source: bytebase comparison 29 Sep 2026. Redis: self-host on same box pilot, managed $10–30 later. | Pilot: **$25–60/mo** (Supabase Pro/DO + Redis). Scale 1k shops: **$100–250/mo** with read replica + PITR. |
+| Photo safe | Cloudflare R2 primary (zero egress), MinIO local dev | **$0.015/GB-mo** Standard ($0.01 IA), **$0 egress** any volume, Class A/B ops metered, free tier included. Source: Cloudflare R2 pricing 2026. | 6,000 photos × ~500KB ≈ 3GB + versions ≈ **<$1/mo storage**; ops **<$5/mo**. Re-fetch for review is free (S3 would sting here). |
+| Bank data (signal) | Mono (data + mandates) — signal only, never moves money | Trial **free** (5 accounts). Basic **₦50,000/mo (~$37)** capped 100 unique accounts/mo. Add-ons: Real-time Sync **₦100/call**, CAC Lookup ₦60–500, CAC+ ₦600+, widget branding ₦50k one-time. Source: mono.co/pricing. | 300 shops ≈ 3× Basic or enterprise deal ≈ **₦150k/mo (~$113)** + sync calls (nightly refresh 300 × 30 × ₦100 = ₦900k if naïve — **cache + weekly refresh**, sync only on credit-pack shops). Negotiate volume before M4. |
+| Real accounts (rails) | Licensed partner virtual accounts (we never hold money); Paystack DVA as reference card | Paystack DVA **1% capped ₦300** per credit; local collections 1.5% + ₦100 (waived <₦2,500, capped ₦2,000); transfers ₦10 (≤₦5k) / ₦25 (≤₦50k) / ₦50 (above). Source: paystack.com/pricing. Partner bank takes its cut on top — confirm in MOU. | Per-shop static account (decided — never per-sale). 10 buyer payments/shop/day × 300 shops = 90k credits/mo; DVA fee mostly hits buyer/sender side — **our cost ≈ transfers + settlement**: budget **₦50–150k/mo (~$40–115)** + partner minimums. |
+| Queue + timetable | Redis Streams + Dramatiq/ARQ + Postgres cron now; Temporal only if needed (decided) | $0 extra (already have Redis + Postgres). Temporal avoided = no new cluster bill. | **$0 incremental.** |
+| Brain offline graphs | LangGraph self-hosted, 2 offline graphs only (camera line + loan-pack) | $0 license (open source). Runs on existing Python box. | **$0 incremental.** |
+| Tests + watch | Langfuse self-hosted OSS (decided) + OTel tail → Grafana + Sentry | Langfuse OSS **free, MIT, unlimited** self-host (ClickHouse OSS bundled by you); Enterprise custom. Source: langfuse.com/pricing-self-host. No LangSmith ($39/seat + traces) in prod. | Host on existing box: **~$25–60/mo compute** for Langfuse + ClickHouse at pilot. Tail sampling (100% errors/money, 1–5% boring reads) keeps Grafana/Sentry **<$30/mo**. |
+| Secrets | Doppler → cloud/Vault (decided) | Developer **free ≤3 users** (+$8/extra user); Team **$21/user/mo**; add-ons $9/seat (custom roles, groups, extra syncs). Source: doppler.com/pricing. | Pilot (≤3 ops): **$0**. Team of 5: **~$105/mo**. Start free, upgrade when RBAC/audit needed (before loan-intros). |
+| Deploy | Terraform + Compose dev → single host (AtlasFlow-only); delete dead targets | App host ~$25–100/mo (1–2 shared-CPU boxes pilot). Single fleet = no split-brain bill. | **~$50/mo** pilot. Scale: add boxes, not platforms. |
+
+**Pilot total (300 shops, per month, ex-staff):** WhatsApp ~$90–150 + Photon $25 + DocAI $9 + vision $5–50 + Postgres/Redis $25–60 + R2 <$6 + Mono ~$113 + partner/Paystack rails ~$40–115 + Langfuse/Grafana ~$30–90 + Doppler $0 + app host ~$50 = **~$400–650/mo ≈ $1.30–2.20/shop/mo (≈ ₦1,700–2,900)**. At 1,000 shops: **~$900–1,600/mo ≈ under $1.60/shop** — WhatsApp templates + Mono accounts dominate; everything else is noise. **Who pays:** brands/distributors per verified shop (contract from proof #1); shops pay flat ₦2–5k for pay-confirm wedge; wholesaler funds credit + first loss.
+**Cost controls (non-negotiable):** `send_gate` (no marketing-category sends, ever); utility-in-window first (free); 60%+ chats at Tier 0 (no AI); cheap-model pre-filter before frontier vision; photo-hash cache 7d; R2 not S3; tail-sample traces; per-shop daily AI budget + summary-mode fallback; volume-tier review quarterly (rates drift — re-pin Meta/Google/Mono/Photon cards in CI).
 
 ---
 

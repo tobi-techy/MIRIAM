@@ -372,7 +372,7 @@ def plain_month_lines(money_plan: dict[str, Any]) -> list[str]:
         lines.append(
             f"You take home {_amt(income, currency)}. "
             f"About {_amt(fixed, currency)} has to go out. "
-            f"That leaves {_amt(left, currency)}."
+            f"Before the plan does anything, that leaves {_amt(left, currency)}."
         )
     else:
         lines.append(f"About {_amt(fixed, currency)} has to go out.")
@@ -395,7 +395,7 @@ def plain_month_lines(money_plan: dict[str, Any]) -> list[str]:
     if guilt > 0:
         tail.append(f"You can spend {_amt(guilt, currency)} on anything you want.")
     elif income is not None:
-        tail.append("Nothing is left to spend freely this month.")
+        tail.append("After the plan, nothing is left to spend freely this month.")
     if invest > 0:
         tail.append(
             "The stock money buys the Rail Stock Sleeve: tokenized Apple, Nvidia, and Tesla."
@@ -403,6 +403,32 @@ def plain_month_lines(money_plan: dict[str, Any]) -> list[str]:
     else:
         tail.append("Nothing goes to stocks yet.")
     lines.append(" ".join(tail))
+    return lines
+
+
+def plan_receipt_lines(money_plan: dict[str, Any]) -> list[str]:
+    """The two numbers that matter after consent: what goes out, what is saved.
+
+    Deliberately shorter than ``plain_month_lines``. After "Locked in." the user
+    has already read the month once, so re-sending the whole plan reads as a
+    glitch rather than a receipt.
+    """
+    currency = str(money_plan.get("currency") or "NGN")
+    cash = money_plan.get("cashflow") or {}
+    income = _dec(money_plan.get("monthly_take_home"))
+    fixed = _dec(cash.get("fixed"))
+    savings = _dec(cash.get("savings"))
+    lines: list[str] = []
+    if fixed is not None and fixed > 0:
+        if income is not None and income > 0:
+            lines.append(
+                f"You take home {_amt(income, currency)}. "
+                f"About {_amt(fixed, currency)} has to go out."
+            )
+        else:
+            lines.append(f"About {_amt(fixed, currency)} has to go out.")
+    if savings is not None and savings > 0:
+        lines.append(f"This month {_amt(savings, currency)} goes to the buffer.")
     return lines
 
 

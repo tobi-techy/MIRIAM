@@ -163,10 +163,12 @@ class Settings(BaseSettings):
     AGENT_MAX_TOKENS_PER_TURN: int = Field(default=12000)
     AGENT_MAX_COST_USD_PER_TURN: float = Field(default=0.05)
     AGENT_WALL_CLOCK_S: float = Field(default=30.0)
-    # Privacy-first default: strip deterministic card/NIN/credential values
-    # before the request. The local PII short-circuit still refuses obvious
-    # secrets before TypeSafe is called, so this does not disable the guard.
-    # Set to false only for a deliberate evaluation that needs raw text.
+    # Whether TypeSafe's ingress `exposes_pii` question sees the user's raw
+    # turn text. Privacy-first default: strip deterministic card/NIN/credential
+    # values before the request. The local PII short-circuit still refuses
+    # obvious secrets before TypeSafe is called, so this does not disable the
+    # guard. Set to false only for a deliberate evaluation that needs raw text,
+    # in which case the `exposes_pii` question is at full reach.
     TYPESAFE_REDACT_USER_TEXT: bool = Field(default=True)
 
     # Proactive analyst (24/7 money watch + private outreach). The Go reacher

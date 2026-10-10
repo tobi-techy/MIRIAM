@@ -134,6 +134,7 @@ All in Go, through the existing ledger (balanced entries, hash chain, idempotenc
 ## 11. Unit economics + eval gates (from the doc, enforced in code)
 
 - Watcher ≤$0.0005/check; analyst only on candidate; per-retailer AI+WhatsApp cost metered against revenue/retailer (proof #6). Extend `AGENT_MAX_COST_USD_PER_TURN` with a merchant-watch budget and alert when cost/active-retailer exceeds the pilot's price.
+- Full stack + live cost card (all rates verified 2 Oct 2026) lives in the master guide Part 13: pilot 300 shops ≈ **$400–650/mo ($1.30–2.20/shop/mo)**; 1,000 shops ≈ **$900–1,600/mo**. WhatsApp templates + Mono accounts dominate; re-pin Meta/Google/Mono/Photon cards quarterly in CI.
 - Eval gates before any figure ships: accountant-signed test set (doc's keep); ±15% reconciliation gate (proof #3); vision photo-bench per market; outcome-log audit (every naira traceable to ledger entries); grounding tests extended to merchant figures (no invented prices — analyst prompt already forbids invented numbers; add street-band sourcing rule).
 - Anti-gaming (Lagos seat): photos/SMS alone are not verified data — every sale reconciles to delivery records + wallet/bank alerts; merchants gaming intake within a quarter is assumed, reconciliation is the answer.
 

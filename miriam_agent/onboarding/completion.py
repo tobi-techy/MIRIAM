@@ -6,7 +6,7 @@ def automated_completion_text(state: Any) -> str:
     """Receipt after consent_yes: plain sentences, and no line for a fact she never asked."""
     money_plan = getattr(state, "money_plan", None) or {}
     if money_plan:
-        from miriam_agent.onboarding.money_bridge import plain_month_lines
+        from miriam_agent.onboarding.money_bridge import plan_receipt_lines
 
         cashflow = money_plan.get("cashflow") or {}
         learned = getattr(state, "learned", None) or {}
@@ -16,7 +16,8 @@ def automated_completion_text(state: Any) -> str:
         except (TypeError, ValueError):
             fixed_amount = 0
         lines = ["Locked in.", ""]
-        lines.extend(plain_month_lines(money_plan))
+        # A short receipt, not the whole plan again: the user has just read it.
+        lines.extend(plan_receipt_lines(money_plan))
         if not costs_known and fixed_amount == 0:
             lines.append(
                 "I still do not know what has to go out each month, so this is a "

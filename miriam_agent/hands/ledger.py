@@ -484,13 +484,9 @@ class RedisLedgerStore:
 
     async def _client(self) -> Any:
         if self._redis is None:
-            import redis.asyncio as aioredis
+            from miriam_agent.core.redis_client import build_redis_client
 
-            from miriam_agent.config.settings import get_settings
-
-            self._redis = aioredis.from_url(
-                self.redis_url or get_settings().REDIS_URL, decode_responses=True
-            )
+            self._redis = build_redis_client(self.redis_url)
         return self._redis
 
     def _degrade(self, exc: Exception) -> None:
