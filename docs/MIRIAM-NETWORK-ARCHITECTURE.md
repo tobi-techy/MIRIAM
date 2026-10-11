@@ -23,26 +23,23 @@ Claims about an external provider are marked **[ext]** and were checked against 
 Four things in the brief could not be confirmed against the code, and one conflicts with a test.
 They are flagged here, not resolved silently:
 
-1. **Audit fail-open vs fail-closed. CONFLICT.** The brief (Section 8) requires a fail-closed audit
-   write. The existing test `tests/test_money_layers_route_live.py:448`
-   `test_a_failing_audit_sink_never_breaks_a_settled_turn` asserts the opposite: its docstring says
-   "Audit is fail-open: an outage degrades the paper trail, not the turn." The brief itself asks me
-   to check this (Section 9, item 2). These two positions cannot both be true. See Appendix A row C6
-   and Open Question Q1. I did not pick a side.
-2. **`eval/capabilities.json` does not exist in this repo.** `ls eval/` shows only
-   `hallucination_cases.py`, `memory_eval.py`, `typesafe_deep_eval.py`, `typesafe_results.json`.
-   The brief's "124-capability catalog" is not present here.
-3. **`capability-gate.patch` is not present.** Searched `/`, `/workspace/work/miriam/`; not found.
-   So the gate cannot be applied from this environment.
-4. **No `payment_references` table exists in either repo.** Grep for `payment_reference` and
-   `payload_hash` across MIRIAM and RAIL_BACKEND found only: docs (`MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md:281`
-   proposes `webhook_inbox(... payload_hash ...)`; `MIRIAM-MASTER-GUIDE-SIMPLE.md:262,315` propose
-   `sale_payment_refs` and the same `webhook_inbox`) and unrelated hits (investment `payload_hash`
-   confirmation in `RAIL_BACKEND/internal/domain/services/investment/execution_service.go`,
-   `migrations/081_create_device_bound_sessions.up.sql:52`). The brief's claim that "the
-   `payment_references` table is never written and its unique key includes `payload_hash`" is
-   therefore **[unverified]** here: the table is not in this codebase, only proposed in docs. See
-   Open Question Q2.
+1. **Audit fail-open vs fail-closed. RESOLVED (Q1).** The brief required a fail-closed audit write;
+   the test `tests/test_money_layers_route_live.py:448`
+   (`test_a_failing_audit_sink_never_breaks_a_settled_turn`) asserted the opposite. Q1 splits the
+   policy by sink: the durable money audit row is fail-closed in the settlement transaction, and
+   secondary sinks are fail-open via the outbox. The test is rewritten in P0-2. See Appendix A row C6.
+2. **`eval/capabilities.json` is not on this branch, but it exists.** The 124-entry catalog is
+   committed on branch `eval/capability-gate` (`eval/capabilities.json`), from session
+   `70286b98-cfcf-441e-b266-1469c0e18770` (Q3). Recover it from there; do not rebuild it.
+3. **`capability-gate.patch` is not in this working tree.** The gate work is on `eval/capability-gate`;
+   apply it from that branch (Q3). It cannot be applied from this checkout as is.
+4. **`payment_references` exists, but not on this branch and not wired (Q2).** `PaymentReference` is
+   at `miriam_agent/database/models.py:265` on `m0/stop-the-bleeding` / `fix/audit-fail-closed`
+   (commit `f99eb6a`, PR #30), with the Alembic baseline at `alembic/versions/001_baseline.py`. Its
+   unique key is `(channel, sender_handle, amount_minor, reference, payload_hash)`, so the
+   `payload_hash` claim is confirmed: two wordings of one transfer become two rows. **Nothing writes
+   the table**; production still dedupes on `inflow_id_for_alert` text hashes (`orchestrator.py:1059`,
+   used at `api/spectrum.py:497`). **None of this is merged into this checkout (`d8d79f8`).**
 
 I did **not** run the test suite: `timeout` is unavailable on this macOS shell and a `uv run pytest`
 invocation exceeded the 60s tool budget before returning. The three failing tests named in the brief
@@ -398,8 +395,12 @@ they owe. A leak or a fake record would end trust at once.
 ### 9.4 Integrity, audit, secrets
 
 - Append-only, **hash-chained** ledger and audit log. Corrections are new entries, never edits.
-- **Audit write policy: see Open Question Q1.** The brief asks for fail-closed; an existing test
-  asserts fail-open. This doc records the conflict and does not silently choose.
+- **Audit write policy (resolved, Q1).** The durable money audit row is **fail-closed**: written in
+  the same DB transaction as the settlement, so if it cannot be written nothing settles (return 5xx
+  and the webhook retries, with idempotency stopping a double count). Secondary sinks (OTel, Langfuse,
+  analytics) are **fail-open**, retried through the outbox. The stale test
+  `tests/test_money_layers_route_live.py:448` still asserts fail-open and is rewritten in P0-2
+  (`docs/P0-PLAN.md`).
 - Idempotency keys on every write from the bridge, dashboard and API.
 - Every credit decision stores its inputs, policy version and result, so it can be replayed.
 - Webhook signature checks (Meta, bank feed, bridge HMAC). A **missing secret means fail at boot**.
@@ -470,9 +471,9 @@ Each phase ships **behind the capability gate** with its own evals.
 ## 12. Evals and the deploy gate
 
 - The capability catalog (`eval/capabilities.json`) lists capabilities with scenarios, pass rules and
-  targets. **The catalog is not present in this repo (Section 0, item 2).** This task adds the new
-  tenancy, consent, integrity and computer entries to a new `eval/capabilities.json`; the base 124
-  entries must be recovered from wherever the patch lived.
+  targets. The 124-entry base catalog is on branch `eval/capability-gate` (Q3); this work adds the
+  tenancy, consent, integrity and computer entries, to be **merged** into that file (dedupe by id,
+  keep the branch entry on conflict), not to replace it.
 - The capability gate runs the tests behind every proven capability on each change. **Trust areas**
   (payments, credit, stock, sales, cash, safety) must pass **100%**. **Quality areas** must pass
   **90%**.
@@ -508,8 +509,8 @@ affected doc also carries a "Superseded by" banner near its top.
 | C2 | `MIRIAM-SME-PIVOT-PRD.md` §6; `MIRIAM-WORKFLOW-SPECS.md` | Loan packs, credit scoring, lender referral **explicitly outside v1** | Credit is **P3**, still outside the initial pilot. "No, but can see how it could" is deferred, not deleted. |
 | C3 | `MIRIAM-SME-PIVOT-PRD.md` §1; `MIRIAM-MASTER-GUIDE-SIMPLE.md` | Single distributor, 5 shops, one route | Two-sided: 20 to 30 shops, **one shop one book**, many distributors **connect**. Payer is still the distributor. |
 | C4 | `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md` §7.2; TRD §6 | Org model `merchant_orgs`, `org_members`, roles | Adopt the fuller model: `org`, `member`, `shop_profile`, `connection`, `consent`, `access_log`, RLS keyed on `org`. |
-| C5 | `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md:281`; `MIRIAM-MASTER-GUIDE-SIMPLE.md:262,315` | Dedupe on `webhook_inbox.payload_hash`; `sale_payment_refs` | `payment_reference` unique on `(channel, sender, amount_minor, reference)`. Never on a raw text hash. **[unverified] against code (Section 0, item 4).** |
-| C6 | `tests/test_money_layers_route_live.py:448`; brief Section 8 | Test asserts **fail-open** audit; brief demands **fail-closed** | **Open (Q1).** The network doc records both and does not choose. |
+| C5 | `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md:281`; `MIRIAM-MASTER-GUIDE-SIMPLE.md:262,315` | Dedupe on `webhook_inbox.payload_hash`; `sale_payment_refs` | **Verified against code (Q2).** `PaymentReference` exists on `m0/stop-the-bleeding` (`models.py:265`, `alembic/versions/001_baseline.py`), but its unique key still includes `payload_hash` and **no flow writes the table**. Target key is `(channel, sender_handle, amount_minor, reference)`; see P0-4. |
+| C6 | `tests/test_money_layers_route_live.py:448`; brief Section 8 | Test asserts **fail-open** audit; brief demands **fail-closed** | **Resolved (Q1).** Split by sink: the durable money audit row is fail-closed in the settlement transaction; secondary sinks are fail-open via the outbox. Rewrite the test (P0-2). |
 | C7 | `MIRIAM-WORKFLOW-SPECS.md` WF-2 | Buckets `matched / unpaid / needs_review`; says "verified sales" | Status vocabulary is **Reported, Matched, Confirmed, Unmatched, Needs review**; never "verified sales" without evidence. |
 | C8 | `MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md` §1, §3, §7 | One machine per business; iMessage-first framing; distributor dashboard unnamed | Confirmed shape, two edits: **WhatsApp primary**, and computers are **workers not storage**, one per distributor plus pooled shop browsers. |
 | C9 | `MIRIAM-AGENT-INFRASTRUCTURE-AND-SKILLS-ARCHITECTURE.md` §6 | Skills proposed, mostly for the old single-distributor flows | Skills remain valid; add tenancy/consent-aware skills. No money authority changes. |
@@ -518,7 +519,14 @@ affected doc also carries a "Superseded by" banner near its top.
 
 ---
 
-## Appendix B. Open questions (only the owner can answer)
+## Appendix B. Resolved decisions (11 Oct 2026)
 
-See the numbered list delivered with the P0 plan. The blocking ones for P0 are Q1 (audit policy) and
-Q2 (payment dedupe source of truth).
+Q1 to Q10 are answered by the owner. The full text is in `MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md` §8
+(Resolved decisions). In brief: Q1 audit split by sink; Q2 `PaymentReference` exists on
+`m0/stop-the-bleeding` but is unwritten and keys on `payload_hash`; Q3 the gate and catalog are on
+`eval/capability-gate`; Q4 Meta Cloud API via Photon; Q5 Maritime Startups applied 11 Oct 2026,
+Starter stands if declined; Q6 and Q7 go to counsel; Q8 reuse the migration 081 pattern, keyed on
+member plus the WhatsApp identity signal; Q9 the first distributor to agree; Q10 likely a controller
+of major importance, register before onboarding.
+
+Section 10 (data location) remains **[unverified]** pending the Maritime processing agreement (Q5).

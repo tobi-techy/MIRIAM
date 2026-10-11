@@ -31,58 +31,64 @@ quoted verbatim.
 
 ---
 
-## P0-2. Fix the CI failures, and resolve the audit policy conflict
+## P0-2. Fix the CI failures, and rewrite the audit test for the split policy
 
-**Why:** The gate cannot block deploys while main is red. The second test is also a policy conflict:
-it asserts **[fail-open] audit** while `MIRIAM-NETWORK-ARCHITECTURE.md` §9.4 asks for **fail-closed**.
+**Why:** The gate cannot block deploys while main is red. Q1 is now answered, so the audit test is no
+longer a policy question, only a rewrite. The network doc §9.4 and the always-on doc §4 split the
+policy by sink: the durable money audit row is fail-closed in the settlement transaction, and
+secondary sinks are fail-open via the outbox.
 
 **Do:**
 1. Fix `test_blob_ratchet` by registering or splitting whatever grew past its recorded size.
 2. Fix `test_service_records_conductor_and_present_traces`.
-3. For the audit test: **do not flip it silently.** Get the answer to Open Question Q1 first, then
-   either keep fail-open (and amend the network doc) or change the policy to fail-closed (and change
-   the test with a documented reason).
+3. **Rewrite `tests/test_money_layers_route_live.py:448`**
+   (`test_a_failing_audit_sink_never_breaks_a_settled_turn`) to assert the split: a broken durable
+   store means no receipt and a retry (nothing settles), while a broken secondary sink (OTel,
+   Langfuse, analytics) still settles.
 
 **Acceptance criteria:** `pytest tests/architecture tests/test_trace.py tests/test_money_layers_route_live.py -q`
-is green, and the audit policy is stated in one place with a test that matches it.
-**Tests that prove it:** the three test files above; a new test asserting the chosen audit policy
-under a failing sink.
-**Decision needed:** Q1.
+is green, and two tests pin the split: one for the durable store (no receipt, retry) and one for a
+secondary sink (settles).
+**Tests that prove it:** the three files above, plus the two split tests.
+**Decision needed:** none (Q1 answered).
 
 ---
 
-## P0-3. Recover the capability gate and the 124-capability catalog
+## P0-3. Recover the capability gate from eval/capability-gate, merge the new entries
 
-**Why:** `eval/capabilities.json` and `capability-gate.patch` are not in this repo. A gate that does
-not exist cannot block anything.
+**Why:** The gate and the 124-entry catalog are on branch `eval/capability-gate` (session
+`70286b98`, Q3), not in this checkout. The gate cannot block anything until it is applied here.
 
 **Do:**
-1. Retrieve `capability-gate.patch` from where it was produced. Apply it in a branch.
-2. Merge the base 124 capabilities with the new entries in `eval/capabilities.json` (created by this
-   task).
+1. Recover the gate from `eval/capability-gate` and apply it with `git am`.
+2. **Merge** the 15 new entries in the working `eval/capabilities.json` into the branch's 124-entry
+   file. **Do not overwrite it.** Dedupe by `id`, and on a conflict keep the branch's entry.
 3. Wire the gate into CI so trust areas must pass 100 percent and quality areas 90 percent, and it
    **blocks** the merge when red.
 
 **Acceptance criteria:** A deliberately broken trust-area capability fails CI and blocks the merge.
-The catalog loads and reports counts by area.
+The merged catalog loads and reports counts by area, with no duplicate ids.
 **Tests that prove it:** a `ci`-level test that injects a failing capability and expects a non-zero
 exit; a catalog-parse test asserting every entry has id, area, trust, scenario, pass_rule, target,
-status.
+status, and that ids are unique.
 **Depends on:** P0-2 (gate cannot block while main is red).
 
 ---
 
-## P0-4. Real payment dedupe
+## P0-4. Real payment dedupe (table exists, work is not done)
 
-**Why:** Duplicate protection is incomplete. The brief says production relies on normalized alert-text
-hashes **[unverified: no `payment_references` table found in either repo]**. Nothing may be called a
-verified payment until this is closed.
+**Why:** The table exists but is unfinished. `PaymentReference` on `m0/stop-the-bleeding` keys on
+`(channel, sender_handle, amount_minor, reference, payload_hash)`, so two wordings of one transfer
+become two rows, and production still dedupes on `inflow_id_for_alert` text hashes instead of the
+table (**Q2**: the table is not written by any flow). Nothing may be called a verified payment until
+this ships.
 
 **Do:**
-1. Create the `payment_reference` entity with `channel, sender, amount_minor, reference` and a
-   **unique** constraint on exactly those four. Never on a raw text hash.
+1. Add a migration that makes the unique key **exactly**
+   `(channel, sender_handle, amount_minor, reference)`, keeping `payload_hash` as a plain column.
 2. Make the verified-credit flow write a `payment_reference` row.
 3. Make the inflow path idempotent on that key.
+4. Prove webhook replay is idempotent.
 
 **Acceptance criteria:** A replayed webhook produces exactly one inflow row; two different references
 from the same sender for the same amount produce two rows; no code path computes a payment identity
@@ -156,10 +162,14 @@ status vocabulary and the `payment_reference` dedupe from P0-4.
 
 ## P0 exit bar
 
-- CI green (P0-1, P0-2).
-- Capability gate blocks a broken trust capability (P0-3).
-- Payment dedupe proven; no "verified" claim elsewhere depends on a text hash (P0-4).
+- CI green (P0-1, P0-2, including the rewritten split-audit test).
+- Capability gate merged from `eval/capability-gate` and blocking a broken trust capability (P0-3).
+- Payment dedupe done: key exactly `(channel, sender_handle, amount_minor, reference)`, the table
+  written by the verified-credit flow, and webhook replay proven idempotent; no "verified" claim
+  elsewhere depends on a text hash (P0-4).
 - No secret literals tracked; scanner live (P0-5).
 - WhatsApp verification started, signatures enforced (P0-6).
 - One-distributor reconciliation plus reminders demo green on WhatsApp (P0-7).
-- Q1 (audit policy) and Q2 (dedupe source of truth) answered.
+- Policy questions answered (Q1: the audit split; Q2: the table exists but is unwritten). Work still
+  open: rewrite the audit test (P0-2), merge the gate (P0-3), ship the dedupe migration and wire the
+  flow (P0-4).
