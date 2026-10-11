@@ -1,5 +1,10 @@
 # Miriam SME Pivot — Product Requirements Document (PRD)
 
+> **SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** Conflicts: §1 and §6 say
+> iMessage-first with WhatsApp deferred (now WhatsApp primary, iMessage secondary, C1); §6 lists
+> credit as outside v1 (now credit is P3, C2); §1 models one distributor and five shops (now one
+> shop one book, many distributors connect, 20 to 30 shops, C3). History retained below.
+
 **Date:** 3 Oct 2026 · **Status:** Draft for approval · **MVP target:** 11 Oct 2026
 **Linear project:** Miriam SME Pivot — MVP (11 Oct) · **Owner:** Tobiloba
 **Channel decision (3 Oct):** iMessage-first for v1 — Meta business approval is blocked, so WhatsApp is deferred post-MVP. iMessage already works two ways (Mac line + Photon cloud) and carries the v1 reminder.

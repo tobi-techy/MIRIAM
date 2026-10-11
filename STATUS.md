@@ -1,5 +1,9 @@
 # STATUS: Miriam money path
 
+> **PARTLY SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** The money-path wiring
+> table is unchanged and remains authoritative. The network doc adds tenancy, consent and computer
+> rows that do not appear here (C10). Retained below.
+
 Last verified: 2026-09-21. Run the gates with:
 `uv run python -m pytest tests/test_hands_layer.py tests/test_orchestrator_layer.py tests/test_money_response_contract.py`
 

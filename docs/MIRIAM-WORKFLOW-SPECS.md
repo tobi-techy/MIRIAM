@@ -1,5 +1,10 @@
 # Miriam SME Pivot — Workflow Specifications (v1: 3 complete workflows)
 
+> **SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** Conflicts: WF-2 bucket
+> vocabulary (`matched / unpaid / needs_review`) becomes **Reported, Matched, Confirmed, Unmatched,
+> Needs review**, and "verified sales" is banned without evidence (C7); the iMessage-first framing
+> becomes WhatsApp-primary (C1). History retained below.
+
 **Date:** 3 Oct 2026 · **Status:** Draft for approval · **MVP target:** 11 Oct 2026
 **Companions:** `MIRIAM-SME-PIVOT-PRD.md` (the why + scope) · `MIRIAM-MASTER-GUIDE-SIMPLE.md` (plain-English front door)
 **Channel decision (3 Oct):** iMessage-first for v1 — Meta business approval is blocked, WhatsApp deferred post-MVP. iMessage already works two ways (Mac line + Photon cloud) with a 5,000/day pacer, debounce + durable spool, and per-sender threads. No templates, no 24h-window clock, no per-message Meta cost in v1 — those return with the WhatsApp build.

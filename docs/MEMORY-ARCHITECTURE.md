@@ -1,5 +1,9 @@
 # Miriam Memory — Per-Person Architecture
 
+> **PARTLY SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** The per-person container
+> model and the "facts, never balances" rule are kept. What changes: memory must be scoped by
+> `org`/`connection` for the two-sided product, and balances remain banned (C11). History retained below.
+
 Status: implemented.
 Scope: how long-term memory is scoped, written, grounded, and read, and why one
 person must end up with **one connected memory**, not several clusters.

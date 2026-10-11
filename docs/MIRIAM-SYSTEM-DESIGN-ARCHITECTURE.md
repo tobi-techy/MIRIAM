@@ -1,5 +1,10 @@
 # MIRIAM Merchant System Design — Architecture Document
 
+> **SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** Conflicts: §7.2 schema deltas are
+> replaced by the network entities (C4); the `webhook_inbox(payload_hash)` dedupe at line 281 is
+> replaced by `payment_reference` unique on `(channel, sender, amount_minor, reference)` (C5). History
+> retained below.
+
 **Date:** 1 October 2026 · **Status:** Draft for review · **Companion:** `docs/MIRIAM-SME-PIVOT-TECHNICAL-REQUIREMENTS.md` (the TRD — product requirements, market case, §§14–16 research synthesis)
 
 **What this doc is:** the build blueprint. Current-state mapping of both codebases → unified gap register → target architecture with flow diagrams → schema deltas → WhatsApp delivery design → ingestion/trust pipeline → cost/latency → observability/eval → security/compliance → tool choices → 90-day sequence → avoid list → open decisions.

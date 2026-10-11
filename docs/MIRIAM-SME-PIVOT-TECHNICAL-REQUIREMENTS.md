@@ -1,5 +1,9 @@
 # Miriam SME Pivot — Technical Requirements Document
 
+> **SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** Conflicts: the §6 org model
+> (`merchant_orgs`, `org_members`) is replaced by `org`, `member`, `shop_profile`, `connection`,
+> `consent`, `access_log` with RLS (C4); channel choice (C1); credit scope (C2). History retained below.
+
 **Date:** 1 October 2026 · **Status:** Draft for review · **Decision log (owner-resolved 1 Oct 2026):** customer = all SME tiers via one wholesaler route (micro + trading SME now; 10–100 staff payroll/tax Phase 2) · pilot routes = two FMCG/provisions wholesalers with tight weekly runs — Oshodi + Mushin (locked 1 Oct 2026) · payer = wholesaler per verified shop (funds stock credit + takes first loss; no external lender for pilot) · channel = photon.codes for WhatsApp + iMessage · shop money = one static NGN account per shop, matched by sender + amount · camera = full till (phased de-risk, see §5) · eval = Langfuse self-hosted · scheduler = Postgres cron now, Temporal only if needed · vision = Google Document AI + frontier VLM, 60-photo bench, single EU region
 
 This doc proves the read of the mentor's market case, states what exists in both codebases today, and specs what to build for an always-on agent that earns the outcomes in the doc. §§14–16 fold in deep research (30 Sep 2026) on LangChain fit, top-lab trust tactics, and trust-critical data pipelines. Money figures in USD at ₦1,330/$ unless stated. Opinions marked as such.

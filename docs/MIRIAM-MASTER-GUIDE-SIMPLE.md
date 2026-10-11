@@ -1,5 +1,9 @@
 # Miriam Merchant Agent — The One Big Simple Guide
 
+> **SUPERSEDED (11 Oct 2026) by `MIRIAM-NETWORK-ARCHITECTURE.md`.** Conflicts: the schema migration
+> table (lines 262, 315) uses the old `merchant_orgs`/`sale_payment_refs`/`payload_hash` model (C4,
+> C5); channel ordering (C1). History retained below.
+
 **Date:** 1 October 2026 · **Status:** Draft for you to read and approve
 **Replaces flipping between:** `MIRIAM-SME-PIVOT-TECHNICAL-REQUIREMENTS.md` (the TRD) + `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md` (the system design) — everything from both is in here, rewritten in plain language.
 
