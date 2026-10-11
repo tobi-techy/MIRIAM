@@ -121,6 +121,31 @@ jobs:
           pip install uv
           uv lock --check
 
+  capability-gate:
+    # Runs the evidence behind every capability eval/capabilities.json claims
+    # as proven, and holds when an area drops below its bar in
+    # eval/capability_policy.py (trust areas: 100%). Deploys must require it.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d388a127769a75162d762 # v4.7.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Capability gate
+        run: python -m eval.capability_catalog
+        env:
+          PYTHONPATH: miriam_agent
+
   security-scan:
     runs-on: ubuntu-latest
     permissions:

@@ -1003,6 +1003,25 @@ def looks_like_inflow_alert(text: str) -> bool:
 
 # The classifier reads the user's text only. It never calls a model: which layer
 # owns a turn must not be a judgement a model can be talked out of.
+def classify_turn_with_nl(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
+    """Route money intents on deterministic hands/nl.py verdict (G21).
+
+    Falls back to money-turn routing when the nl parser produces a structured
+    action. Low-confidence/None returns ``agent`` so judgment asks rather than
+    silently dropping a Pidgin/photo-caption sale.
+    """
+    if has_confirm_id:
+        return "orchestrator"
+    try:
+        from miriam_agent.hands.nl import parse_transfer_utterance
+
+        if parse_transfer_utterance(text) is not None:
+            return "orchestrator"
+    except Exception:
+        pass
+    return classify_turn(text, has_confirm_id=has_confirm_id)
+
+
 def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
     """Decide whether a turn is a money turn.
 
