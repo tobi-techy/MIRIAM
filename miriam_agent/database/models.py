@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import JSON as SQLAlchemyJSON
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -258,6 +259,40 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+
+class PaymentReference(Base):
+    """Dedupe key for inbound payments: sender+amount+ref+channel hash (G23).
+
+    Pasted "alert" text no longer hashes the whole sentence; inbound money
+    dedupes on (channel, sender_handle, amount_minor, reference, payload_hash).
+    The raw payload is retained for dispute replay, but matching is on the
+    five structured columns with a unique index.
+    """
+
+    __tablename__ = "payment_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel",
+            "sender_handle",
+            "amount_minor",
+            "reference",
+            "payload_hash",
+            name="uq_payment_ref_dedupe",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    sender_handle: Mapped[str] = mapped_column(String, nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reference: Mapped[str] = mapped_column(String, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="reported")  # reported/unmatched until settlement-finality
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
 class MoneyExecution(Base):

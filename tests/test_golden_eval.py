@@ -109,6 +109,7 @@ class TestIdempotency:
             description="c",
             args_schema={"type": "object", "properties": {}},
             handler=_count,
+            is_mutation=True,
         )
         r1 = await reg.execute("count_tool", {}, context={"user_id": "u"})
         r2 = await reg.execute("count_tool", {}, context={"user_id": "u"})

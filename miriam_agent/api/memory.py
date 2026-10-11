@@ -126,9 +126,12 @@ async def forget_fact(
             "candidates": len(candidates),
             "preview": preview,
         }
-    applied = await supermemory_memory.forget_exact(
-        tag, query, reason=body.reason
-    )
+    # Scope deletion to previewed candidates to avoid drift between preview and apply
+    preview = await supermemory_memory.forget(tag, query=query, dry_run=True, reason=body.reason)
+    candidates = (preview or {}).get("candidates") or []
+    if not candidates:
+        return {"enabled": True, "dry_run": False, "applied": {"deleted": 0, "detail": "no candidates for query"}}
+    applied = await supermemory_memory.forget_exact(tag, query, reason=body.reason)
     return {"enabled": True, "dry_run": False, "applied": applied}
 
 

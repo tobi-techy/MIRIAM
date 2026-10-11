@@ -31,6 +31,7 @@ of a balance, and this was the wrong one.
 
 import json
 import logging
+import asyncio
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -251,12 +252,20 @@ class Agent:
             llm_messages = list(messages) + llm_extra
 
             schemas = self.registry.llm_schemas()
-            response = await self.provider.complete(
-                messages=llm_messages,
-                tools=schemas,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-            )
+            remaining = max(0.0, wall_s - (time.monotonic() - started))
+            # Wall-clock cap via wait_for so a stuck provider doesn't spin past the budget.
+            try:
+                response = await asyncio.wait_for(
+                    self.provider.complete(
+                        messages=llm_messages,
+                        tools=schemas,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                    ),
+                    timeout=remaining if remaining > 0 else None,
+                )
+            except asyncio.TimeoutError:
+                return self._decorate(_abort_result(conv_id, "wall_clock"))
             try:
                 usage = response.usage or {}
                 used_tokens += int(usage.get("total_tokens", 0))
