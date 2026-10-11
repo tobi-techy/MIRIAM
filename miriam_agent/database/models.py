@@ -262,12 +262,14 @@ class AuditLog(Base):
 
 
 class PaymentReference(Base):
-    """Dedupe key for inbound payments: sender+amount+ref+channel hash (G23).
+    """Dedupe key for inbound payments: channel+sender+amount+ref (G23).
 
-    Pasted "alert" text no longer hashes the whole sentence; inbound money
-    dedupes on (channel, sender_handle, amount_minor, reference, payload_hash).
-    The raw payload is retained for dispute replay, but matching is on the
-    five structured columns with a unique index.
+    Inbound money dedupes on the four structured columns
+    (channel, sender_handle, amount_minor, reference) with a unique index.
+    The raw payload and its hash are retained for dispute replay, but they are
+    deliberately NOT part of the key: two wordings of one transfer must
+    collide, and two different transfers that share a sender and amount must
+    not.
     """
 
     __tablename__ = "payment_references"
@@ -277,7 +279,6 @@ class PaymentReference(Base):
             "sender_handle",
             "amount_minor",
             "reference",
-            "payload_hash",
             name="uq_payment_ref_dedupe",
         ),
     )

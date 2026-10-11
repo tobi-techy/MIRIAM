@@ -255,18 +255,26 @@ def test_service_records_conductor_and_present_traces(monkeypatch):
         trace=trace,
     )
     modes = [r.mode for r in trace.records]
-    assert modes.count("conductor") == 3  # opener, facts, present-intent
+    assert modes.count("conductor") == 3
+    # opener, present-intent, plan_consent follow-up
     assert modes.count("present") == 1
     conductor = [r for r in trace.records if r.mode == "conductor"]
     expected = driver.prompt_version("conductor")
     assert all(r.prompt_version == expected for r in conductor)
     assert all(r.violations == [] for r in trace.records)
-    latest = trace.records[-1]
-    assert latest.mode == "present"
-    assert latest.stage == "plan_consent"
-    assert latest.intent == "present_plan"
-    assert latest.clamped is False
-    assert "4000" in latest.grounded
+    present = [r for r in trace.records if r.mode == "present"]
+    assert len(present) == 1
+    reveal = present[0]
+    assert reveal.stage == "plan_consent"
+    assert reveal.intent == "present_plan"
+    assert reveal.clamped is False
+    assert reveal.prompt_version == driver.prompt_version("present")
+    # Grounded against the deterministic plan that produced the reveal: every
+    # figure in the shown text must appear in this grounding.
+    shown = reveal.reply or ""
+    grounding = reveal.grounded or ""
+    assert shown, "the traced reveal must carry the exact text shown"
+    assert grounding.startswith("{") and json.loads(grounding)["diagnostic_state"]
 
 
 def test_service_trace_marks_clamped_drift(monkeypatch):

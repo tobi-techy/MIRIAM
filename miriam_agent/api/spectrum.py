@@ -497,6 +497,8 @@ async def spectrum_chat(
             payment_id=chatmod.inflow_id_for_alert(text),
             amount=chatmod._alert_amount(text),
             source_raw=text,
+            channel="chat_synth",
+            reference=chatmod.inflow_id_for_alert(text),
         )
     elif classify_turn(text) == "orchestrator":
         if wallet_address:
