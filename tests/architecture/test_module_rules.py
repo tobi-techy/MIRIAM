@@ -193,7 +193,9 @@ REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/integrations/go_client.py": 1266,
     "miriam_agent/integrations/supermemory_client.py": 829,
     "miriam_agent/safety/validator.py": 848,
-    "miriam_agent/onboarding/driver.py": 747,
+    # prompts.py holds the conductor/present prompts (moved out of driver.py,
+    # which fell from 799 to ~550); the trace hashes are unchanged.
+    "miriam_agent/onboarding/driver.py": 551,
     "miriam_agent/financial/diagnosis.py": 715,
 }
 

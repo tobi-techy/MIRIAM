@@ -1843,9 +1843,11 @@
       "does": "Every change is logged and can't fail quietly",
       "priority": "P0",
       "phase": "pilot",
-      "status": "unproven",
-      "evidence": [],
-      "gap": "orchestrator.handle() is fail-closed on audit (G25), but no passing test proves it. tests/test_money_layers_route_live.py::test_a_failing_audit_sink_never_breaks_a_settled_turn still asserts the old fail-open behaviour and fails on main.",
+      "status": "partial",
+      "evidence": [
+        "tests/test_money_layers_route_live.py::test_a_failing_audit_sink_fails_the_turn_closed_with_a_503"
+      ],
+      "gap": "Proven that a dead audit store withholds the success narration (503, no receipt). Not yet proven: retries land the durable row, and the local AuditLog rows on the utterance path reach the durable sink.",
       "eval": {
         "scenario": "Audit store is down",
         "expected": "Miriam stops writing and tells owner",

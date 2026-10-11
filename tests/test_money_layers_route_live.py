@@ -445,8 +445,13 @@ def test_every_receipt_reaches_the_durable_audit_sink(monkeypatch):
     assert seen == [(USER_ID, "inflow_split")]
 
 
-def test_a_failing_audit_sink_never_breaks_a_settled_turn(monkeypatch):
-    """Audit is fail-open: an outage degrades the paper trail, not the turn."""
+def test_a_failing_audit_sink_fails_the_turn_closed_with_a_503(monkeypatch):
+    """Audit is fail-closed (G25): a dead audit store withholds the success narration.
+
+    The settled movement stays in the ledger, but the caller gets 503
+    (retryable) with no receipt, so the rail retries instead of reading a
+    false "done" for money with no durable audit row.
+    """
     ledger = _ledger(spendable="0", rent_required="150000")
 
     async def _broken_sink(event: Any, result: Any) -> None:
@@ -456,8 +461,9 @@ def test_a_failing_audit_sink_never_breaks_a_settled_turn(monkeypatch):
     client = TestClient(app, raise_server_exceptions=False)
     response = _inflow_post(client)
 
-    assert response.status_code == 200, response.text
-    assert response.json()["receipt"]["action"] == "inflow_split"
+    assert response.status_code == 503, response.text
+    assert "durable audit unavailable" in response.json()["detail"]
+    assert "receipt" not in response.json()
 
 
 def _inflow_post(client: TestClient) -> Any:

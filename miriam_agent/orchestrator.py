@@ -143,8 +143,9 @@ class Orchestrator(
         self.card_channels = tuple(card_channels)
         # Durable audit sink, injected by the API layer (which owns Postgres).
         # Called with the event and the finished TurnResult for every turn
-        # that produced a receipt. Fail-open by contract: an audit outage is
-        # logged, never allowed to break a settled money turn.
+        # that produced a receipt. Fail-closed by contract (G25): an audit
+        # outage is raised as unavailable, never allowed to pass as a
+        # settled money turn with no durable row.
         self.audit_sink = audit_sink
         # Exactly-once journal for the transfer path (Postgres in production,
         # process-local default inside execute_transfer when None). Wired by
