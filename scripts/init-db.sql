@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS payment_references (
     raw_payload    TEXT NOT NULL,
     status         VARCHAR NOT NULL DEFAULT 'reported',
     created_at     TIMESTAMP WITHOUT TIME ZONE DEFAULT (now() AT TIME ZONE 'utc'),
-    CONSTRAINT uq_payment_ref_dedupe UNIQUE (channel, sender_handle, amount_minor, reference, payload_hash)
+    CONSTRAINT uq_payment_ref_dedupe UNIQUE (channel, sender_handle, amount_minor, reference)
 );
 -- Trust rails (A-M): durable exactly-once journal (mirrors MoneyExecution model).
 CREATE TABLE IF NOT EXISTS money_executions (

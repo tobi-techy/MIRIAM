@@ -58,6 +58,13 @@ from miriam_agent.hands.orders import (
     parse_order_utterance,
     parse_rebalance_utterance,
 )
+from miriam_agent.hands.payment_refs import (
+    PaymentRefKey,
+    PaymentRefStore,
+    amount_to_minor,
+    inflow_id_for_payment,
+    payload_hash,
+)
 from miriam_agent.hands.save_rule import (
     parse_save_rule_utterance,
     save_rule_binding,
@@ -122,6 +129,7 @@ class Orchestrator(
         cards_enabled: bool = False,
         card_channels: tuple[str, ...] | list[str] = ("imessage",),
         journal: Any | None = None,
+        payment_refs: PaymentRefStore | None = None,
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -151,6 +159,10 @@ class Orchestrator(
         # process-local default inside execute_transfer when None). Wired by
         # the API layer, which owns Postgres; tests leave it None.
         self.journal = journal
+        # Durable dedupe for inbound payments (G23/C052). When None the inflow
+        # path keeps the legacy behaviour (ledger idempotency only). Wired by
+        # the API layer, which owns Postgres; tests inject the in-memory store.
+        self.payment_refs = payment_refs
 
     # -- the door ---------------------------------------------------------
 
@@ -245,12 +257,21 @@ class Orchestrator(
         payment_id: str,
         amount: Decimal,
         source_raw: str = "",
+        *,
+        channel: str = "",
+        sender_handle: str = "",
+        reference: str = "",
     ) -> TurnResult:
         """Handle money arriving. Called by the rail webhook; reachable from
         chat only through the demo escape hatch (ALLOW_CHAT_INFLOW_SYNTH).
 
         ``payment_id`` is the rail's id for the payment and doubles as the
         idempotency key, so a webhook that is delivered twice splits once.
+
+        ``channel``/``sender_handle``/``reference`` are the structured payment
+        identity (G23/C052). When a ``reference`` is present the dedupe key is
+        built from those columns, not from ``source_raw``, so the same transfer
+        worded differently still splits once.
         """
         return await self.handle(
             Event(
@@ -259,6 +280,9 @@ class Orchestrator(
                 inflow_id=payment_id,
                 amount=amount,
                 source_raw=source_raw,
+                channel=channel,
+                sender_handle=sender_handle,
+                reference=reference,
             )
         )
 
@@ -275,6 +299,30 @@ class Orchestrator(
             raise ValueError("an inflow event needs an amount")
         audit = AuditLog()
         inflow_id = event.inflow_id or f"inflow_{self.clock().timestamp()}"
+
+        # G23/C052: durable dedupe on the structured key (channel, sender,
+        # amount, reference), never the raw text. The claim row is written
+        # BEFORE the ledger moves; a unique violation means a duplicate, so we
+        # return the original receipt and move nothing.
+        key = PaymentRefKey.of(
+            channel=event.channel or "rail",
+            sender_handle=event.sender_handle,
+            amount_minor=amount_to_minor(event.amount),
+            reference=event.reference,
+        )
+        if key.complete:
+            # The derived id is stable across wordings, so a duplicate resolves
+            # to the same ledger inflow and the ordinary replay finds the
+            # original receipt.
+            inflow_id = inflow_id_for_payment(key)
+            if self.payment_refs is not None:
+                claim = await self.payment_refs.claim(
+                    key=key,
+                    payload_hash=payload_hash(event.source_raw),
+                    raw_payload=event.source_raw,
+                )
+                if claim.duplicate:
+                    return await self._duplicate_inflow(ledger, inflow_id)
 
         # Judgment sees the inflow before it is split, so the classification is
         # made on what arrived rather than on what it became.
@@ -317,6 +365,40 @@ class Orchestrator(
             decision=state.decision,
             receipt=outcome.receipt,
             audit=audit.rows,
+        )
+
+    async def _duplicate_inflow(self, ledger: Ledger, inflow_id: str) -> TurnResult:
+        """A repeat of a payment already recorded. Nothing moves.
+
+        The original receipt is returned when the ledger still holds it. If a
+        racing winner has not saved yet, a replay receipt is returned instead:
+        the caller learns the payment was already recorded, and the ledger
+        still shows exactly one split.
+        """
+        existing = ledger.receipt_for(inflow_id)
+        if existing is not None:
+            receipt = existing.model_copy(update={"idempotent_replay": True})
+        else:
+            receipt = Receipt(
+                id=f"rcpt_duplicate_{inflow_id}",
+                at=self.clock(),
+                status="executed",
+                action="inflow_duplicate",
+                currency=ledger.currency,
+                amount=money(0),
+                sleeve="spendable",
+                idempotency_key=inflow_id,
+                idempotent_replay=True,
+                detail="duplicate payment reference; nothing moved",
+            )
+        state = build_state(ledger=ledger, policy=self.policy, now=self.clock())
+        # Deterministic narration: a duplicate is not a moment for the model to
+        # invent a second arrival. The fixed line states the true thing.
+        return TurnResult(
+            state=state,
+            narration="That payment is already on the books. I did not count it twice.",
+            decision=state.decision,
+            receipt=receipt,
         )
 
     # -- utterance --------------------------------------------------------

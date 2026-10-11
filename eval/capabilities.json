@@ -937,10 +937,13 @@
       "phase": "pilot",
       "status": "partial",
       "evidence": [
-        "tests/test_money_layers_route_live.py::test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once",
-        "tests/test_synth_gate.py::test_inflow_is_text_hash_stable"
+        "tests/test_money_layers_route_live.py::test_same_transfer_worded_differently_splits_once",
+        "tests/test_money_layers_route_live.py::test_same_transfer_from_a_different_screenshot_splits_once",
+        "tests/test_money_layers_route_live.py::test_two_payments_same_sender_and_amount_different_reference_both_count",
+        "tests/test_money_layers_route_live.py::test_concurrent_duplicate_payment_splits_once",
+        "tests/test_money_layers_route_live.py::test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once"
       ],
-      "gap": "Dedupe is a normalised text hash. The payment_references table (uq_payment_ref_dedupe) is never written by any code path, and its key includes payload_hash, so the same transfer worded differently can still count twice. test_patreference_hash_is_structured checks a local helper, not production code.",
+      "gap": "Dedupe now runs on the structured key (channel, sender_handle, amount_minor, reference) written to payment_references before the ledger moves; a unique violation is the duplicate signal, and the original receipt is returned with nothing moved. Still missing: the key fields come from the client, not from reading a real bank screenshot (C048), and the Postgres store path is only exercised through the in-memory store in tests.",
       "eval": {
         "scenario": "Same alert sent twice",
         "expected": "Second one rejected with note",

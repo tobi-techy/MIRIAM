@@ -168,6 +168,25 @@ def _get_or_build_journal():
     return _journal_singleton
 
 
+_payment_refs_singleton: Any | None = None
+
+
+def _get_or_build_payment_refs():
+    """Process-wide Postgres payment-reference store, built lazily.
+
+    Same shape as the journal: construction never touches the network, and the
+    first ``claim()`` opens the connection. If Postgres is down the claim
+    raises, the inflow path refuses fail-closed, and the rail retries rather
+    than double-counting.
+    """
+    global _payment_refs_singleton
+    if _payment_refs_singleton is None:
+        from miriam_agent.hands.payment_refs import PostgresPaymentRefStore
+
+        _payment_refs_singleton = PostgresPaymentRefStore(get_settings().DATABASE_URL)
+    return _payment_refs_singleton
+
+
 def _orchestrator_for(token: str) -> Orchestrator:
     """The money entrypoint for one request.
 
@@ -188,6 +207,7 @@ def _orchestrator_for(token: str) -> Orchestrator:
         go_token=token,
         audit_sink=_persist_money_audit,
         journal=_get_or_build_journal(),
+        payment_refs=_get_or_build_payment_refs(),
         cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
         card_channels=tuple(channels) if channels else ("imessage",),
     )
@@ -318,7 +338,9 @@ async def _run_money_turn(
         try:
             if confirm_id:
                 return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-            if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
+            if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(
+                message
+            ):
                 # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
                 # stable id derived from the alert so a re-paste cannot split twice.
                 # Off by default and refused in production entirely — chat text is
@@ -328,6 +350,8 @@ async def _run_money_turn(
                     payment_id=inflow_id_for_alert(message),
                     amount=_alert_amount(message),
                     source_raw=message,
+                    channel="chat_synth",
+                    reference=inflow_id_for_alert(message),
                 )
             return await orchestrator.handle_utterance(user.id, message)
         except LedgerConflictError as exc:
@@ -994,6 +1018,14 @@ async def money_inflow(
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
     source_raw = str(request.get("source_raw") or "")
+    # Structured payment identity (G23/C052). When ``reference`` is present the
+    # dedupe key is (channel, sender, amount, reference), so the same transfer
+    # worded differently, or sent as a different screenshot, still counts once.
+    channel = str(request.get("channel") or "").strip()
+    sender_handle = str(
+        request.get("sender") or request.get("sender_handle") or ""
+    ).strip()
+    reference = str(request.get("reference") or "").strip()
     if not payment_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1030,6 +1062,9 @@ async def money_inflow(
             payment_id=payment_id,
             amount=parsed_amount,
             source_raw=source_raw,
+            channel=channel,
+            sender_handle=sender_handle,
+            reference=reference,
         )
     except InsufficientState as exc:
         # The ledger cannot answer for this user yet. Refuse rather than guess.
