@@ -3,11 +3,10 @@
 **Date:** 11 Oct 2026 · **Status:** CANONICAL. Supersedes conflicting sections of the earlier
 pivot docs (see Appendix A). **Owner:** Rail Technology Concepts Ltd. **Author:** lead architect.
 
-**Companions (do not delete, some sections superseded):** `MIRIAM-SME-PIVOT-PRD.md`,
-`MIRIAM-SME-PIVOT-TECHNICAL-REQUIREMENTS.md`, `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md`,
-`MIRIAM-WORKFLOW-SPECS.md`, `MIRIAM-AGENT-INFRASTRUCTURE-AND-SKILLS-ARCHITECTURE.md`,
-`MEMORY-ARCHITECTURE.md`, `MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md`, `STATUS.md`,
-`Miriam-Distributor-Network-Design.pdf` (draft v0.2, this doc supersedes it).
+**Companions:** `MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md` (agent and compute) · `docs/P0-PLAN.md`
+(build order). The earlier pivot docs and the network PDF draft are removed as separate files; git
+history retains them. Earlier documents referenced in Appendix A are cited by name only, as
+historical record.
 
 **Evidence discipline.** Claims about this repo were checked by reading files, cited inline.
 Claims about an external provider are marked **[ext]** and were checked against its live docs on

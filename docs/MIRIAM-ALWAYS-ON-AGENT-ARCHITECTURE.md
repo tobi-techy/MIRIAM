@@ -4,9 +4,8 @@
 > canonical network doc. See §9 for non-goals and §8 for resolved decisions.
 
 **Date:** 11 Oct 2026 · **Status:** LOCKED, canonical agent architecture for the new product build · **Author:** architecture review
-**Companions:** `MIRIAM-NETWORK-ARCHITECTURE.md` (canonical) · `docs/P0-PLAN.md` (build order)
-· `MIRIAM-SME-PIVOT-PRD.md` · `MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md` · `MIRIAM-WORKFLOW-SPECS.md`
-· `MIRIAM-AGENT-INFRASTRUCTURE-AND-SKILLS-ARCHITECTURE.md` · `MEMORY-ARCHITECTURE.md` · `STATUS.md`
+**Companions:** `MIRIAM-NETWORK-ARCHITECTURE.md` (canonical) · `docs/P0-PLAN.md` (build order).
+The earlier pivot docs are removed as separate files; git history retains them.
 
 **Sources for §2:** `Merit-Systems/OpenInstinct` (repo tree and README, Oct 2026) and `maritime.sh`
 (`/agents.md`, `/docs/build`, `/docs/computers`, Oct 2026). Fit analysis, not vendored code.
