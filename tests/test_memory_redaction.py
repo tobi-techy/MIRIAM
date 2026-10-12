@@ -12,9 +12,7 @@ choke point every surface (web, money, onboarding, spectrum) goes through.
 
 from __future__ import annotations
 
-from miriam_agent.api import chat
 from miriam_agent.conversational.redact import redact_money_figures
-
 
 # ---------------------------------------------------------------------------
 # The redactor

@@ -56,6 +56,12 @@ from miriam_agent.onboarding.completion import (
     draft_completion_text,
     resume_payload,
 )
+from miriam_agent.onboarding.contracts import (
+    ConversationState,
+    GoalMeta,
+    MoneyMomentMeta,
+    Plan,
+)
 from miriam_agent.onboarding.money_bridge import (
     absorb_reply,
     build_money_plan_dict,
@@ -68,15 +74,9 @@ from miriam_agent.onboarding.money_bridge import (
     next_unasked_gap,
     pay_rhythm_known,
     plan_bubbles,
-    reply_has_money_fact,
     remember_poll,
     render_money_plan_text,
-)
-from miriam_agent.onboarding.contracts import (
-    ConversationState,
-    GoalMeta,
-    MoneyMomentMeta,
-    Plan,
+    reply_has_money_fact,
 )
 from miriam_agent.onboarding.quality import EvalMeta, evaluate_reply, hard_violations
 from miriam_agent.onboarding.state import (
@@ -266,6 +266,7 @@ def _confirms_readback(text: str) -> bool:
     if _is_short_yes(raw):
         return True
     return bool(_READBACK_YES.match(raw))
+
 
 # Phrases that restart an already-finished/abandoned interview. Deliberately
 # narrow: post-completion casual chit-chat ("let's go", "try again") must never
@@ -684,7 +685,14 @@ class OnboardingService:
                 lowered = text.casefold()
                 if any(
                     word in lowered
-                    for word in ("earn", "income", "salary", "take home", "take-home", "comes in")
+                    for word in (
+                        "earn",
+                        "income",
+                        "salary",
+                        "take home",
+                        "take-home",
+                        "comes in",
+                    )
                 ):
                     title = gap_question(["income_amount"])
                 absorb_reply(state, text, poll_title=title)
@@ -716,7 +724,11 @@ class OnboardingService:
                 state.awaiting_fact_confirm = True
                 await self._state_store.save_state(user.id, state)
                 return self._turn(fact_readback(state), stage=state.stage)
-            if not ready_now and "income_amount" not in missing_now and reply_has_money_fact(text):
+            if (
+                not ready_now
+                and "income_amount" not in missing_now
+                and reply_has_money_fact(text)
+            ):
                 gap_key = next_unasked_gap(state, missing_now)
                 if gap_key:
                     return await self._ask_gap(user.id, state, gap_key)
@@ -731,7 +743,11 @@ class OnboardingService:
             and state.interview_turns >= self._settings.ONBOARDING_MAX_QUESTIONS
         ):
             _ready, _missing = money_readiness(state)
-            gap_key = "" if cap_should_present(state, text) or _ready else next_unasked_gap(state, _missing)
+            gap_key = (
+                ""
+                if cap_should_present(state, text) or _ready
+                else next_unasked_gap(state, _missing)
+            )
             if gap_key:
                 question = gap_question([gap_key])
                 taps = list(gap_taps([gap_key]))
@@ -802,7 +818,7 @@ class OnboardingService:
         if ready and state.stage == STAGE_INTERVIEW:
             return (
                 "You already hold enough numbers for a real savings plan "
-                "(income captured). Stop exploring: intent \"present_plan\" now "
+                '(income captured). Stop exploring: intent "present_plan" now '
                 "so the user gets amounts, not more questions."
             )
         if state.stage != STAGE_INTERVIEW or state.interview_turns < max(cap - 2, 0):
@@ -1394,7 +1410,11 @@ class OnboardingService:
         main, extras = bubble_sets(reply)
         poll = None
         taps = _taps_for_reply(reply, list(outcome.suggested))
-        if taps and state is not None and _same_poll(state, (main or reply).strip(), taps):
+        if (
+            taps
+            and state is not None
+            and _same_poll(state, (main or reply).strip(), taps)
+        ):
             # The same poll on a new bubble is how the chat fills with repeats.
             taps = []
         if taps:
@@ -1593,10 +1613,6 @@ class OnboardingService:
             logger.warning("deterministic plan failed contract validation: %s", exc)
             return plan
 
-
-
-
-
     async def _present_plan(
         self,
         user_id: str,
@@ -1644,8 +1660,8 @@ class OnboardingService:
                 }
                 _cf = state.money_plan.get("cashflow") or {}
                 remember_extra["cashflow_split"] = {
-                    k: str(_cf.get(k)) for k in
-                    ("fixed", "debt", "savings", "investments", "guilt_free")
+                    k: str(_cf.get(k))
+                    for k in ("fixed", "debt", "savings", "investments", "guilt_free")
                     if _cf.get(k) is not None
                 }
                 remember_extra["automation_rules"] = list(
@@ -1677,7 +1693,9 @@ class OnboardingService:
         if state.money_plan:
             try:
                 await self._memory.add_message(
-                    conversation_id, "assistant", render_money_plan_text(state.money_plan)
+                    conversation_id,
+                    "assistant",
+                    render_money_plan_text(state.money_plan),
                 )
             except Exception:
                 pass
@@ -1688,7 +1706,9 @@ class OnboardingService:
 
             take_home = _dec(state.money_plan.get("monthly_take_home"))
         if state.money_plan and take_home is not None and take_home > 0:
-            parts = [clean_text(part).strip() for part in plan_bubbles(state.money_plan)]
+            parts = [
+                clean_text(part).strip() for part in plan_bubbles(state.money_plan)
+            ]
             parts = [part for part in parts if part]
             # Traced as a present turn: the trace records every plan
             # presentation, and the deterministic bubbles are shown verbatim,
@@ -1709,7 +1729,11 @@ class OnboardingService:
             )
             return OnboardingTurn(
                 took_over=True,
-                response=parts[0] if parts else "Want me to lock this in, or change a number?",
+                response=(
+                    parts[0]
+                    if parts
+                    else "Want me to lock this in, or change a number?"
+                ),
                 conversation_id=conversation_id,
                 stage=state.stage,
                 messages=parts[1:3],
@@ -1933,7 +1957,8 @@ class OnboardingService:
             conversation_id=conversation_id,
             stage=STAGE_COMPLETE,
             completed=True,
-            automated=True, name=state.name,
+            automated=True,
+            name=state.name,
         )
 
     async def _complete_draft(
@@ -2244,9 +2269,19 @@ class OnboardingService:
                         "confidence": state.money_plan.get("confidence"),
                     }
                     completed_meta["cashflow_split"] = {
-                        k: str(_cf.get(k)) for k in ("fixed", "debt", "savings", "investments", "guilt_free") if _cf.get(k) is not None
+                        k: str(_cf.get(k))
+                        for k in (
+                            "fixed",
+                            "debt",
+                            "savings",
+                            "investments",
+                            "guilt_free",
+                        )
+                        if _cf.get(k) is not None
                     }
-                    completed_meta["automation_rules"] = list(state.money_plan.get("automation_rules") or [])[:5]
+                    completed_meta["automation_rules"] = list(
+                        state.money_plan.get("automation_rules") or []
+                    )[:5]
                 except Exception:
                     pass
             await self._memory.store_memory(

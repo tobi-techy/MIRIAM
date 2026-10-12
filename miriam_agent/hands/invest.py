@@ -272,7 +272,9 @@ async def _fund_existing(
         )
     _enrollment_pre, funding = _extract_funding(funded)
     if str(funding.get("status") or "").upper() == "FAILED":
-        reason = funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
+        reason = (
+            funding.get("failure_reason") or funding.get("FailureReason") or "unknown"
+        )
         return reject(
             ["FUNDING_FAILED"],
             f"the portfolio is enrolled but funding failed ({reason}); nothing moved",
@@ -285,7 +287,9 @@ async def _fund_existing(
     )
     try:
         ledger.debit(INVEST_SLEEVE, amount)
-    except Exception as exc:  # noqa: BLE001 - remote moved, local refused: diverge loudly
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - remote moved, local refused: diverge loudly
         logger.error(
             "invest top-up diverged: Go funded %s but stash debit refused (%s)",
             topup_key,
@@ -463,9 +467,7 @@ async def prepare_allocate(
             replay = prior_topup.model_copy(update={"idempotent_replay": True})
             card = _needs_review_card(
                 amount=(
-                    prior_topup.amount
-                    if prior_topup.amount is not None
-                    else amount
+                    prior_topup.amount if prior_topup.amount is not None else amount
                 ),
                 currency=ledger.currency,
                 strategy_id=prior_topup.strategy_id,
@@ -837,7 +839,9 @@ async def settle_allocate(
 
     try:
         ledger.debit(INVEST_SLEEVE, amount)
-    except Exception as exc:  # noqa: BLE001 - remote moved, local refused: diverge loudly
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - remote moved, local refused: diverge loudly
         logger.error(
             "invest settle diverged: Go funded flow %s but stash debit refused (%s)",
             flow_id,

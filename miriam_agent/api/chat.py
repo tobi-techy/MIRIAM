@@ -123,7 +123,7 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
         try:
             audit = await get_audit_system().__anext__()
             if audit is None:
-                # Transient unavailability (DB not yet ready); retry rather than fail-closed immediately
+                # Transient unavailability (DB not ready): retry, not fail-closed.
                 raise RuntimeError("audit system unavailable (transient)")
             await audit.log_money_movement(
                 user_id=event.user_id,
@@ -146,7 +146,6 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
     # already holds the receipt and the outbox will retry, but the caller
     # gets a 503 to retry rather than a false "done".
     raise last_exc if last_exc is not None else RuntimeError("audit persist failed")
-
 
 
 _journal_singleton: Any | None = None

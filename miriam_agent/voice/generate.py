@@ -229,7 +229,8 @@ def _funding_line(state: HandlerState, execution: Any) -> str:
         pay_amount = _get("amount") or amount
         who = f" for {recipient}" if recipient else ""
         return (
-            f"Airbills {category} of {pay_amount} NGN{who}{network}.{ref}{status}{charged}"
+            f"Airbills {category} of {pay_amount} NGN{who}{network}."
+            f"{ref}{status}{charged}"
         )
     if execution.action == "onramp_initiate":
         to = f" to {_get('recipient')}" if _get("recipient") else ""

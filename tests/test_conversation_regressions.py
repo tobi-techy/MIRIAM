@@ -9,9 +9,10 @@ Three defects were visible in a real onboarding + funding conversation:
 See the diagnosis notes: the read-back guard checked ``facts_confirmed`` but not
 ``awaiting_fact_confirm``, so a redelivered turn re-sent the same sentence.
 """
+
 from __future__ import annotations
 
-from test_onboarding import _run, _service, _user, FakeProvider
+from test_onboarding import FakeProvider, _run, _service, _user
 
 
 def _heard(turn) -> str:
@@ -78,7 +79,10 @@ def test_completion_receipt_does_not_replay_the_whole_plan():
 
     state = OnboardingState(
         {
-            "learned": {"income": "I earn 500k every month", "fixed": "rent and food take 350k"},
+            "learned": {
+                "income": "I earn 500k every month",
+                "fixed": "rent and food take 350k",
+            },
             "goal": "build buffer",
             "interview_turns": 4,
             "stage": "plan_consent",

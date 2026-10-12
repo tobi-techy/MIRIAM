@@ -1382,9 +1382,7 @@ def build_tool_registry() -> Any:
     rbac.register_tool_permissions(
         {
             tool.name: (
-                "execute"
-                if (tool.is_mutation or tool.requires_approval)
-                else "read"
+                "execute" if (tool.is_mutation or tool.requires_approval) else "read"
             )
             for tool in registry
         }

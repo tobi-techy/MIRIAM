@@ -1088,7 +1088,9 @@ def test_cap_reads_the_salary_answer_instead_of_repeating_the_poll(monkeypatch):
         assert "is that right?" in heard
         locked = _run(service.handle_turn(user, message="Okay"))
         assert states.data["u-1"].get("stage") == "plan_consent"
-        assert locked.poll is None or "Build my savings plan" not in (locked.poll or {}).get("options", [])
+        assert locked.poll is None or "Build my savings plan" not in (
+            locked.poll or {}
+        ).get("options", [])
     finally:
         monkeypatch.setattr(settings, "ONBOARDING_MAX_QUESTIONS", original)
 

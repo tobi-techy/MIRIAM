@@ -14,6 +14,7 @@ with "Authentication required", which the ledger reports to the user as a plain
 refusal ("I could not complete that. Try again.") with nothing in the message to
 say why.
 """
+
 from __future__ import annotations
 
 import logging

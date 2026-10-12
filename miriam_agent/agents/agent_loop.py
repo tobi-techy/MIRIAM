@@ -29,9 +29,9 @@ and replayed Go confirmation tokens. All of that is gone: there were two writers
 of a balance, and this was the wrong one.
 """
 
+import asyncio
 import json
 import logging
-import asyncio
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -127,6 +127,7 @@ def _abort_result(conv_id: str, budget: str) -> "AgentRunResult":
         conversation_id=conv_id,
         tool_calls=[],
     )
+
 
 # The refusal a model gets when it proposes a tool it cannot have. It is a tool
 # result rather than an error so the model can answer the user normally.
@@ -253,7 +254,7 @@ class Agent:
 
             schemas = self.registry.llm_schemas()
             remaining = max(0.0, wall_s - (time.monotonic() - started))
-            # Wall-clock cap via wait_for so a stuck provider doesn't spin past the budget.
+            # Wall-clock cap via wait_for: a stuck provider cannot pass the budget.
             try:
                 response = await asyncio.wait_for(
                     self.provider.complete(
@@ -264,7 +265,7 @@ class Agent:
                     ),
                     timeout=remaining if remaining > 0 else None,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return self._decorate(_abort_result(conv_id, "wall_clock"))
             try:
                 usage = response.usage or {}

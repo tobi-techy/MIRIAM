@@ -7,6 +7,7 @@ Two concrete failure modes are pinned here:
 * redis-py defaults ``health_check_interval`` to 0, so an idle-closed Upstash
   socket raises on the next command instead of being recycled.
 """
+
 from __future__ import annotations
 
 import pytest

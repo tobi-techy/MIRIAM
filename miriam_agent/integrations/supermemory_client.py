@@ -407,9 +407,7 @@ class SupermemoryClient:
         """Permanently delete one document (no recovery)."""
         return await self._delete(f"/v3/documents/{doc_id}")
 
-    async def get_processing_documents(
-        self, view: str = "active"
-    ) -> dict[str, Any]:
+    async def get_processing_documents(self, view: str = "active") -> dict[str, Any]:
         """Live in-flight queue (view=active|pending|all; all includes failed)."""
         data = await self._get(f"/v3/documents/processing?view={view}")
         if not data:
@@ -691,9 +689,7 @@ class SupermemoryClient:
     # Container lifecycle + GDPR (/docs/concepts/container-tags)
     # ------------------------------------------------------------------
 
-    async def get_profile_buckets(
-        self, container_tag: str
-    ) -> list[dict[str, Any]]:
+    async def get_profile_buckets(self, container_tag: str) -> list[dict[str, Any]]:
         """Effective bucket definitions for a tag (org merged with space).
 
         POST /v4/profile/buckets → [{key, description}]. Empty on failure.
@@ -703,9 +699,7 @@ class SupermemoryClient:
             return []
         return data.get("buckets") or []
 
-    async def get_container_settings(
-        self, container_tag: str
-    ) -> dict[str, Any] | None:
+    async def get_container_settings(self, container_tag: str) -> dict[str, Any] | None:
         """Read a tag's settings (name, entityContext, space profileBuckets)."""
         return await self._get(f"/v3/container-tags/{container_tag}")
 
@@ -879,9 +873,7 @@ def _flat_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, (str, int, float, bool)):
             out[key] = value
         elif (
-            isinstance(value, list)
-            and value
-            and all(isinstance(v, str) for v in value)
+            isinstance(value, list) and value and all(isinstance(v, str) for v in value)
         ):
             out[key] = value
     return out

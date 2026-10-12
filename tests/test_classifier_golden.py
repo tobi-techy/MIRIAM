@@ -15,7 +15,10 @@ def _must_route(text: str) -> None:
     # catalog parser (M2), so they are not claimed as money turns in M0.
     from miriam_agent.hands.nl import parse_transfer_utterance
 
-    routed = classify_turn(text) == "orchestrator" or parse_transfer_utterance(text) is not None
+    routed = (
+        classify_turn(text) == "orchestrator"
+        or parse_transfer_utterance(text) is not None
+    )
     assert routed or classify_turn_with_nl(text) == "orchestrator", repr(text)
 
 
@@ -37,7 +40,7 @@ def test_pidgin_money_routes():
 
 
 def test_typos_and_case_routes():
-    # SND is a typo (not in _SEND_WORDS); documents the boundary — not claimed as M0 fix.
+    # SND is a typo (not in _SEND_WORDS); documents the boundary, not an M0 fix.
     assert parse_transfer_utterance("SND 5000 to Tunde") is None
     for s in [
         "transfer 10,000 to my guy",
@@ -58,7 +61,7 @@ def test_hausa_yoruba_igbo_keywords_with_amount_routes():
 
 
 def test_photo_caption_sales_route():
-    # "sold 12 Indomie" needs a merchant catalog/SKU parser (M2); not a money turn in M0.
+    # "sold 12 Indomie" needs a merchant/SKU parser (M2); not a money turn in M0.
     # The money verb still routes.
     assert classify_turn("sold 12 Indomie 500 each") == "agent"
     assert classify_turn("photo: 14 cartons Peak milk") == "agent"
@@ -70,7 +73,9 @@ def test_photo_caption_sales_route():
 
 def test_otp_and_confirm_routes():
     assert classify_turn("  4821  ") == "orchestrator"
-    assert classify_turn("confirm abc123") == "agent"  # no confirm_id flag here; orchestrator path is API-level
+    assert (
+        classify_turn("confirm abc123") == "agent"
+    )  # no confirm_id flag here; orchestrator path is API-level
     # confirm_id flag forces orchestrator regardless of text
     assert classify_turn("anything", has_confirm_id=True) == "orchestrator"
 

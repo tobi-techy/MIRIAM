@@ -200,8 +200,8 @@ class Orchestrator(
                 getattr(result.receipt, "id", "?"),
                 exc,
             )
-            # Only surface as LedgerUnavailable when money actually moved; pure audit/journal
-            # races without a receipt are not money-unavailable and should not trigger 503 retry storms.
+            # Only surface LedgerUnavailable when money moved; pure audit/journal races
+            # without a receipt are not money-unavailable; no 503 retry storm.
             if getattr(result, "receipt", None) is not None:
                 raise _LU(f"durable audit unavailable: {exc}") from exc
             raise

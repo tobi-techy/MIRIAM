@@ -292,7 +292,9 @@ class PaymentReference(Base):
     reference: Mapped[str] = mapped_column(String, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String, nullable=False)
     raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="reported")  # reported/unmatched until settlement-finality
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="reported"
+    )  # reported/unmatched until settlement-finality
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
