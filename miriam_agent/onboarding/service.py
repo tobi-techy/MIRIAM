@@ -1690,6 +1690,23 @@ class OnboardingService:
         if state.money_plan and take_home is not None and take_home > 0:
             parts = [clean_text(part).strip() for part in plan_bubbles(state.money_plan)]
             parts = [part for part in parts if part]
+            # Traced as a present turn: the trace records every plan
+            # presentation, and the deterministic bubbles are shown verbatim,
+            # so the drift tooling sees exactly what the user saw.
+            await self._trace_turn(
+                user_id,
+                state,
+                driver.DriverOutcome(
+                    reply=parts[0] if parts else "",
+                    intent="present_plan",
+                ),
+                mode="present",
+                stage=state.stage,
+                prompt_version=driver.prompt_version("present"),
+                grounded_extra=json.dumps(plan),
+                violations=[],
+                clamped=False,
+            )
             return OnboardingTurn(
                 took_over=True,
                 response=parts[0] if parts else "Want me to lock this in, or change a number?",
