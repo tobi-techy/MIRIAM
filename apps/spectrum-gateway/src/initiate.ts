@@ -7,16 +7,24 @@
 import { Spectrum, text } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
-const to = process.argv[2];
-const body = process.argv.slice(3).join(" ") || "Miriam here — reply to test the line.";
+const to = process.argv.at(2);
+const body =
+  process.argv.slice(3).join(" ") || "Miriam here — reply to test the line.";
 if (!to) {
   console.error("usage: bun src/initiate.ts <phone-or-email> [message]");
   process.exit(1);
 }
 
+const projectId = process.env.SPECTRUM_PROJECT_ID;
+const projectSecret = process.env.SPECTRUM_PROJECT_SECRET;
+if (!projectId || !projectSecret) {
+  console.error("SPECTRUM_PROJECT_ID and SPECTRUM_PROJECT_SECRET must be set");
+  process.exit(1);
+}
+
 const spec = await Spectrum({
-  projectId: process.env.SPECTRUM_PROJECT_ID!,
-  projectSecret: process.env.SPECTRUM_PROJECT_SECRET!,
+  projectId,
+  projectSecret,
   providers: [imessage.config()],
 });
 
