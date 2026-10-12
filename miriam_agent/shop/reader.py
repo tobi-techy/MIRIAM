@@ -95,18 +95,6 @@ class Verification(_Strict):
     corrections: list[CellCorrection] = Field(default_factory=list)
 
 
-class PageKind(_Strict):
-    """What one page is, when Go could not say.
-
-    Only asked for when the caller hands over an explicit ``unknown_image``
-    hint: Go's classifier is the authority whenever it has an opinion, so this
-    never overrules a page Go already named.
-    """
-
-    kind: str = ""
-    confidence: float = 0.0
-
-
 _EXTRACT_SYSTEM = (
     "You read a Nigerian shop document from an image. Copy exactly what is "
     "written. Do not calculate, correct or tidy any number: if the book says "
@@ -119,6 +107,15 @@ _EXTRACT_SYSTEM = (
     "the new number rather than choosing one. Mark a cell unclear by naming it "
     "in that row's `unclear` list and lower the row `confidence` (0 to 1). "
     "Capture margin notes and any free-text comment as raw text in `notes`. "
+    "A cell the page does not have stays null. If a stock-book block of rows "
+    "has no opening balance column, every opening in that block is null: never "
+    "copy quantity received, sold or left into opening, and never infer an "
+    "opening from the other columns or from the row above. A value you were not "
+    "shown is a value you do not have. "
+    "When a page carries more than one block, month or date range, put that "
+    "block's label on every row of it in `block` (for example October, or "
+    "01/11-29/11), and name every period the page covers in `date` (for example "
+    "October and November 2025). "
     "Return only JSON that matches the schema."
 )
 
@@ -127,55 +124,11 @@ _VERIFY_SYSTEM = (
     "cells that differ from the image, each as a `path` and a corrected "
     "`value`. A path names one cell, for example rows[2].left or "
     "lines[0].line_total_naira. Do not restate matching values, do not explain "
-    "and do not calculate. If every value matches, return an empty list."
+    "and do not calculate. A cell that holds a number the page does not have — "
+    "an opening balance in a block with no opening column — is corrected with "
+    "an empty value, which clears it. If every value matches, return an empty "
+    "list."
 )
-
-
-_CLASSIFY_SYSTEM = (
-    "You are shown one page from a Nigerian shop. Say which of these it is: "
-    "stock_book, invoice, delivery_note, receipt, bank_statement, other. "
-    "A stock_book is the shop's own record: rows of items with opening, "
-    "supplied, sold, left and a price. An invoice or delivery_note comes from a "
-    "supplier and lists what was supplied with amounts and often a subtotal. A "
-    "receipt is proof of one payment. A bank_statement is a bank's own list of "
-    "transactions. Answer with the kind only, and a confidence from 0 to 1."
-)
-
-
-def _classify_messages(prepared: PreparedDocument, caption: str) -> list[ChatMessage]:
-    context = _context_block(prepared, caption)
-    user = "What kind of page is this?"
-    if context:
-        user = f"{user}\n\n{context}"
-    return [
-        ChatMessage(role="system", content=_CLASSIFY_SYSTEM),
-        ChatMessage(role="user", content=user, images=_data_urls(prepared)),
-    ]
-
-
-async def classify_page(
-    prepared: PreparedDocument,
-    *,
-    caption: str = "",
-    provider: LLMAPIProvider | None = None,
-    tier: str = "small",
-) -> tuple[str, float]:
-    """Ask one model call what the page is. Used only for an unknown page.
-
-    Cheap on purpose: it runs before a read, and only when the caller has said
-    it has no classification of its own. A failure here is not an error the
-    owner hears about: the caller keeps its fail-closed answer.
-    """
-    provider = provider or get_llmapi_provider(_model_for(tier))
-    messages = _classify_messages(prepared, caption)
-    response = await provider.complete_structured(
-        messages,
-        PageKind,
-        reasoning_effort=_effort_for(tier),
-        max_tokens=200,
-    )
-    page_kind = PageKind.model_validate_json(response.content)
-    return page_kind.kind.strip().lower(), float(page_kind.confidence or 0.0)
 
 
 def _data_urls(prepared: PreparedDocument) -> list[str]:
@@ -327,7 +280,9 @@ def _disagreement(
     """A question, when the two passes read one cell as two different figures."""
     first = _value_at(original, keys)
     first_digits, second_digits = _digits(first), _digits(corrected)
-    if not first_digits or first_digits == second_digits:
+    # A cleared cell carries no figure to disagree about: "the page has no such
+    # cell" is a correction, not a second reading of the same numbers.
+    if not first_digits or not second_digits or first_digits == second_digits:
         return None
     # Smallest first, the way "is it 9 or 29?" reads.
     order = sorted((first_digits, second_digits), key=int)
@@ -380,12 +335,22 @@ def _leaf_annotation(model: type[BaseModel], keys: list[str | int]) -> Any:
     return _unwrap_annotation(annotation)
 
 
+# What a verify pass writes when the page has no such cell at all: a column the
+# block does not carry, or a line the owner never filled. Clearing is the only
+# correction that can remove an invented figure.
+_CLEAR_MARKERS = {"", "-", "null", "none", "blank", "empty", "n/a", "na"}
+
+
 def _coerce_value_for_field(
     model: type[BaseModel], keys: list[str | int], value: Any
 ) -> Any:
     """Keep the correction the same JSON type the field it names expects."""
     leaf = _leaf_annotation(model, keys)
     text = value if isinstance(value, str) else str(value)
+    if text.strip().lower() in _CLEAR_MARKERS:
+        # None is the clear. A field that cannot be null then fails validation,
+        # so the correction is dropped rather than inventing a value.
+        return None
     if leaf is str:
         # A crossed-out "27" is text, not a count. Coercing it to int is what
         # made the corrected extraction fail validation.
@@ -450,7 +415,7 @@ async def _one_read(
         verification = Verification()
 
     original = extraction.model_dump()
-    candidates: list[tuple[list[str | int], Any, str]] = []
+    candidates: list[tuple[list[str | int], Any, str]] = []  # path, value, text
     for correction in verification.corrections:
         keys = _split_path(correction.path)
         if not keys or not _path_exists(original, keys):
@@ -501,6 +466,8 @@ async def _one_read(
     # is not a fact. It is carried out as a question and the reply withholds it.
     found: list[Disagreement] = []
     for keys, value, path in applied:
+        if value is None:
+            flags.append(f"verify cleared {path}: the page has no such cell")
         item = _disagreement(original, keys, value, path)
         if item is None:
             continue
@@ -663,13 +630,11 @@ async def read_document(
 __all__ = [
     "CellCorrection",
     "Disagreement",
-    "PageKind",
     "ReadBudget",
     "ReadCapExceeded",
     "ReadFailed",
     "ReadResult",
     "Verification",
-    "classify_page",
     "read_document",
     "read_on_tier",
     "schema_for_kind",

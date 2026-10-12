@@ -258,3 +258,76 @@ __all__ = [
     "provider_factory",
     "wigmore_invoice",
 ]
+
+
+def ada_stock_book(**overrides: Any) -> StockBook:
+    """The page off Ada's counter, read live from an iPhone photo.
+
+    Two blocks on one page: October (left) has an opening balance column and
+    every row adds up; November (right, 01/11-29/11) has no opening column at
+    all, so its openings are null and the checks carry October's closing forward
+    by code. The numbers are the ones the live read produced: the reader copied
+    "quantity received" into opening and flagged all ten November rows, which is
+    the failure this page now guards.
+    """
+    october = [
+        ("Indomie (Curry)", 50, 20, 10, 60),
+        ("Peak Milk (500g)", 30, 50, 20, 60),
+        ("Golden Morn", 40, 30, 15, 55),
+        ("Eva Water (75cl)", 100, 100, 40, 160),
+        ("Milo (400g)", 20, 30, 10, 40),
+        ("Soya Beans", 200, 50, 30, 220),
+        ("Tomato Paste", 60, 40, 25, 75),
+        ("Dan-Q Noodles", 35, 25, 15, 45),
+        ("Peak Milk (1L)", 25, 40, 20, 45),
+        ("Dettol (750ml)", 15, 20, 8, 27),
+        ("Sunlight Soap", 50, 60, 30, 80),
+        ("Lux Soap", 40, 50, 20, 70),
+        ("Nescafe (200g)", 10, 15, 5, 20),
+        ("Maggi Cubes", 80, 100, 60, 120),
+    ]
+    # November carries no opening column: supplied, sold and the book's closing.
+    november = [
+        ("Indomie (Chicken)", 30, 10, 80),
+        ("Peak Milk (500g)", 40, 20, 80),
+        ("Golden Morn", 20, 10, 65),
+        ("Eva Water (75cl)", 80, 30, 190),
+        ("Milo (400g)", 25, 10, 50),
+        ("Soya Beans", 150, 40, 330),
+        ("Tomato Paste", 50, 20, 105),
+        ("Dan-Q Noodles", 40, 20, 65),
+        ("Peak Milk (1L)", 30, 15, 60),
+        ("Dettol (750ml)", 20, 10, 37),
+    ]
+    rows = [
+        StockRow(
+            item=item,
+            block="October",
+            opening=opening,
+            supplied=supplied,
+            sold=sold,
+            left=left,
+            confidence=0.95,
+        )
+        for item, opening, supplied, sold, left in october
+    ]
+    rows += [
+        StockRow(
+            item=item,
+            block="November",
+            opening=None,
+            supplied=supplied,
+            sold=sold,
+            left=left,
+            confidence=0.95,
+        )
+        for item, supplied, sold, left in november
+    ]
+    data: dict[str, Any] = {
+        "shop": "Ada's General Trading",
+        "date": "October and November 2025",
+        "rows": rows,
+        "notes": ["Restock Milo and Dettol next week."],
+    }
+    data.update(overrides)
+    return StockBook.model_validate(data)

@@ -114,11 +114,17 @@ async def test_the_reply_states_the_gap_once_not_twice() -> None:
 
 
 async def test_a_question_in_the_reply_does_not_end_with_two_periods() -> None:
+    """A question keeps its one question mark: the template must not tack a
+    second full stop onto it."""
     book = mama_tobi_book()
-    book.rows[0].left = 99  # the row no longer adds up
+    # An item the page never opened: no opening balance anywhere for it, so the
+    # row cannot be checked and is asked about instead of accused.
+    book.rows[0].item = "Sunlight Soap"
+    book.rows[0].opening = None
     result = await read_stock(book=book)
-    assert "check the numbers, they do not add up." in result.reply_text
+    assert "What did you start with for Sunlight Soap?" in result.reply_text
     assert ".." not in result.reply_text
+    assert "?." not in result.reply_text
 
 
 async def test_invoice_reply_prints_discount_and_payment_without_a_minus() -> None:

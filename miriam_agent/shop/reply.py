@@ -64,16 +64,34 @@ def _note_line(note: NoteEvaluation) -> str:
     return f"I did not understand this note: {note.text}"
 
 
+def _missing_opening_question(item: str, block: str) -> str:
+    """Ask for the one number the page did not carry, in the period's own words.
+
+    A row with no opening balance is a gap in the record, not a mistake in it:
+    the owner is asked to fill the gap, and nothing is guessed in the meantime.
+    """
+    period = block.strip()
+    if period:
+        return f"What did you start {period} with for {item}?"
+    return f"What did you start with for {item}?"
+
+
 def _questions(
     *,
     low_confidence: list[str],
-    failed_rows: list[tuple[str, str]],
+    missing_opening: list[tuple[str, str]],
     unclear: list[str],
     needs_amount: list[str],
 ) -> list[str]:
+    """Only cells we could not read or were never shown.
+
+    A row that does not add up is already stated in its own section: repeating
+    "check the numbers" under Please confirm says the same thing twice, which is
+    what the owner asked us to stop doing.
+    """
     out: list[str] = []
-    for item, cells in failed_rows:
-        out.append(f"{item}: check the numbers, they do not add up")
+    for item, block in missing_opening:
+        out.append(_missing_opening_question(item, block))
     for item in low_confidence:
         out.append(f"{item}: I am not sure I read that row right, please confirm")
     for entry in unclear:
@@ -245,9 +263,15 @@ def stock_book_reply(
     if note_lines:
         sections.append("\n".join(["Notes from your page:"] + note_lines))
 
+    blocks = {
+        (row.item.strip() or f"row {idx}"): row.block
+        for idx, row in enumerate(book.rows, start=1)
+    }
     questions = _questions(
         low_confidence=report.low_confidence,
-        failed_rows=failed_rows,
+        missing_opening=[
+            (item, blocks.get(item, "")) for item in report.missing_opening
+        ],
         unclear=report.unclear,
         needs_amount=[n.text for n in notes if n.needs_amount],
     )

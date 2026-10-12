@@ -33,6 +33,7 @@ from miriam_agent.shop.checks import (
     check_supplier_document,
     checks_as_state,
 )
+from miriam_agent.shop.classify import classify_page
 from miriam_agent.shop.notes import (
     NoteEvaluation,
     classify_and_parse,
@@ -44,7 +45,6 @@ from miriam_agent.shop.reader import (
     ReadCapExceeded,
     ReadFailed,
     ReadResult,
-    classify_page,
     read_document,
 )
 from miriam_agent.shop.router import (

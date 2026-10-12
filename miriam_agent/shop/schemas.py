@@ -119,6 +119,13 @@ class CrossedOut(_Strict):
 
 class StockRow(_Strict):
     item: str = ""
+    # The block, month or date range this row sits under, when the page holds
+    # more than one ("October", "01/11-29/11"). Empty on a single-block page.
+    # The checks use it to ask the owner about the right period, and the reply
+    # to name every period the page covers.
+    block: str = ""
+    # Null when the page has no opening figure for this row. A missing opening
+    # is never filled in: an invented opening is an invented failure.
     opening: int | None = None
     supplied: int | None = None
     sold: int | None = None

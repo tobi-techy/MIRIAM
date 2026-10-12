@@ -50,6 +50,9 @@ class StockBookReport:
     crossed_out: list[str] = field(default_factory=list)
     unclear: list[str] = field(default_factory=list)
     low_confidence: list[str] = field(default_factory=list)
+    # Rows the page left without an opening balance and no earlier row of the
+    # same item to carry one from. Not failures: questions.
+    missing_opening: list[str] = field(default_factory=list)
     rows_failing: int = 0
     flags: list[str] = field(default_factory=list)
 
@@ -91,6 +94,20 @@ def _row_cell_unclear(row: StockRow, cell: str) -> bool:
     return cell in {u.strip().lower() for u in row.unclear}
 
 
+def _norm_item(item: str) -> str:
+    return " ".join(item.split()).casefold()
+
+
+def same_item(a: str, b: str) -> bool:
+    """Item names match on case and spacing only.
+
+    "Indomie (Chicken)" must never match "Indomie (Curry)": a carried opening
+    from a different pack size is a made-up number with extra steps, which is
+    exactly the failure this rule exists to prevent.
+    """
+    return _norm_item(a) == _norm_item(b)
+
+
 def check_stock_book(book: StockBook) -> StockBookReport:
     """Opening + supplied - sold = left per row, and sold x price vs the total."""
     checks: list[Check] = []
@@ -99,17 +116,25 @@ def check_stock_book(book: StockBook) -> StockBookReport:
     crossed_out: list[str] = []
     unclear: list[str] = []
     low_confidence: list[str] = []
+    missing_opening: list[str] = []
     rows_failing = 0
+    # Closing balances already read on this page, by item. A row with no opening
+    # balance takes the latest earlier closing of the *same* item: the page's own
+    # record carried forward by code, never by the model.
+    earlier_closing: dict[str, int] = {}
 
     for idx, row in enumerate(book.rows, start=1):
         label = row.item.strip() or f"row {idx}"
+        opening = row.opening
+        if opening is None and row.left is not None:
+            opening = earlier_closing.get(_norm_item(label))
         if (
-            row.opening is not None
+            opening is not None
             and row.supplied is not None
             and row.sold is not None
             and row.left is not None
         ):
-            expected = row.opening + row.supplied - row.sold
+            expected = opening + row.supplied - row.sold
             ok = expected == row.left
             checks.append(
                 Check(
@@ -118,13 +143,22 @@ def check_stock_book(book: StockBook) -> StockBookReport:
                     message=(
                         ""
                         if ok
-                        else f"{row.opening} + {row.supplied} - {row.sold} "
+                        else f"{opening} + {row.supplied} - {row.sold} "
                         f"= {expected}, book says {row.left}"
                     ),
                 )
             )
             if not ok:
                 rows_failing += 1
+        elif row.opening is None and (
+            row.supplied is not None or row.sold is not None or row.left is not None
+        ):
+            # No opening on the page and no earlier row of this item to carry
+            # one from, so the arithmetic cannot be checked at all. The row is
+            # not wrong, it is unanswerable, and it becomes a question.
+            missing_opening.append(label)
+        if row.opening is not None and row.left is not None:
+            earlier_closing[_norm_item(label)] = row.left
         if row.price_naira is not None and row.sold is not None:
             price = Decimal(row.price_naira)
             sales = amount_to_minor(row.price_naira) * row.sold
@@ -187,10 +221,13 @@ def check_stock_book(book: StockBook) -> StockBookReport:
         flags.append("unclear cells")
     if low_confidence:
         flags.append("low confidence rows")
+    if missing_opening:
+        flags.append(f"{len(missing_opening)} row(s) with no opening balance")
 
     return StockBookReport(
         checks=checks,
         item_sales=item_sales,
+        missing_opening=missing_opening,
         computed_total_minor=computed_total_minor,
         written_total_minor=written_total_minor,
         gap_minor=gap_minor,

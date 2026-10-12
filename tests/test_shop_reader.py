@@ -12,12 +12,12 @@ from PIL import Image
 from shop_fakes import FakeProvider, mama_tobi_book, provider_factory, wigmore_invoice
 
 from miriam_agent.shop import preprocess
+from miriam_agent.shop.classify import classify_page
 from miriam_agent.shop.reader import (
     ReadBudget,
     ReadCapExceeded,
     ReadFailed,
     _leaf_annotation,
-    classify_page,
     read_document,
     read_on_tier,
 )
@@ -389,3 +389,34 @@ async def test_classify_page_normalises_what_the_model_wrote(prepared) -> None:
     kind, _ = await classify_page(prepared, provider=provider)
 
     assert kind == "stock_book"
+
+
+async def test_the_verify_pass_can_clear_a_cell_the_page_does_not_have(
+    prepared,
+) -> None:
+    """A live read off Ada's counter: November has no opening column, so the
+    extractor copied quantity received into opening, and every November row was
+    then reported as not adding up. A copy cannot be asked for as a figure — the
+    only correction that removes it is a clear.
+    """
+    book = mama_tobi_book()
+    book.rows[0].opening = 30
+    book.rows[0].supplied = 30
+    provider = FakeProvider(
+        [payload(book)],
+        verify={"corrections": [{"path": "rows[0].opening", "value": ""}]},
+    )
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider
+    )
+    assert isinstance(extraction, StockBook)
+    assert extraction.rows[0].opening is None
+    assert "verify cleared rows[0].opening: the page has no such cell" in flags
+    # A cleared cell is never carried out as a disagreement question.
+    assert not [f for f in flags if "disagrees on" in f]
+
+
+def test_the_verify_prompt_says_an_absent_column_is_cleared() -> None:
+    from miriam_agent.shop.reader import _VERIFY_SYSTEM
+
+    assert "is corrected with an empty value, which clears it" in _VERIFY_SYSTEM
