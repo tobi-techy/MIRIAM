@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -355,3 +356,97 @@ class ToolUsage(Base):
     result: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
     execution_time: Mapped[float] = mapped_column(Float, nullable=False)  # in seconds
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class ShopDocument(Base):
+    """One read shop document (stock book, invoice, delivery note).
+
+    The row keeps the raw extraction JSON beside the checked reply so a
+    disagreement can be replayed, plus the sha256 that makes a resend
+    idempotent on (user_id, sha256).
+    """
+
+    __tablename__ = "shop_documents"
+    __table_args__ = (
+        UniqueConstraint("user_id", "sha256", name="uq_shop_doc_user_sha"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    message_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    doc_type: Mapped[str] = mapped_column(String, nullable=False)
+    trust_label: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    mime: Mapped[str] = mapped_column(String, nullable=False, default="")
+    model_path: Mapped[list[Any]] = mapped_column(SQLAlchemyJSON, default=list)
+    models_used: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
+    jev_decision: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
+    flags: Mapped[list[Any]] = mapped_column(SQLAlchemyJSON, default=list)
+    prompt_version: Mapped[str] = mapped_column(String, nullable=False, default="")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reply_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    raw_extraction: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class ShopStockBookRow(Base):
+    """One item row of a saved stock book."""
+
+    __tablename__ = "shop_stock_book_rows"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    document_id: Mapped[str] = mapped_column(
+        String, ForeignKey("shop_documents.id"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    item: Mapped[str] = mapped_column(String, nullable=False, default="")
+    opening: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supplied: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    left: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_naira: Mapped[str | None] = mapped_column(String, nullable=True)
+    crossed_out_old: Mapped[str | None] = mapped_column(String, nullable=True)
+    crossed_out_new: Mapped[str | None] = mapped_column(String, nullable=True)
+    unclear: Mapped[list[Any]] = mapped_column(SQLAlchemyJSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+
+class ShopInvoiceLine(Base):
+    """One line of a saved supplier invoice or delivery note."""
+
+    __tablename__ = "shop_invoice_lines"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    document_id: Mapped[str] = mapped_column(
+        String, ForeignKey("shop_documents.id"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    item: Mapped[str] = mapped_column(String, nullable=False, default="")
+    qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit_price_naira: Mapped[str | None] = mapped_column(String, nullable=True)
+    line_total_naira: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class ShopNote(Base):
+    """One classified note from a saved stock book."""
+
+    __tablename__ = "shop_notes"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    document_id: Mapped[str] = mapped_column(
+        String, ForeignKey("shop_documents.id"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="other")
+    party: Mapped[str] = mapped_column(String, nullable=False, default="")
+    amount_naira: Mapped[str | None] = mapped_column(String, nullable=True)
+    due: Mapped[str | None] = mapped_column(String, nullable=True)
