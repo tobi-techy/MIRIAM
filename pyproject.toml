@@ -53,6 +53,11 @@ dependencies = [
     "matplotlib>=3.11.2",
     "alembic>=1.13.0",
     "pillow>=12.3.0",
+    # Shop reading: rasterise PDF pages for vision and convert phone HEIC
+    # photos. Both ship binary wheels, so there is no system poppler or
+    # libheif dependency to install at deploy time.
+    "pypdfium2>=4.30.0",
+    "pillow-heif>=0.18.0",
 ]
 
 [project.optional-dependencies]
