@@ -17,6 +17,7 @@ from miriam_agent.shop.reader import (
     ReadCapExceeded,
     ReadFailed,
     _leaf_annotation,
+    classify_page,
     read_document,
     read_on_tier,
 )
@@ -363,3 +364,28 @@ async def test_a_cell_the_first_pass_left_empty_is_not_a_disagreement(
     assert isinstance(extraction, StockBook)
     assert extraction.rows[0].left == 9
     assert disagreements == []
+
+
+async def test_classify_page_asks_the_model_with_the_page_itself(prepared) -> None:
+    """The unknown-page call is a real vision call: the page goes with it."""
+    provider = FakeProvider([json.dumps({"kind": "stock_book", "confidence": 0.8})])
+
+    kind, confidence = await classify_page(
+        prepared, caption="my stock book", provider=provider
+    )
+
+    assert kind == "stock_book"
+    assert confidence == pytest.approx(0.8)
+    assert provider.images
+    assert provider.images[0][0].startswith("data:image/png;base64,")
+    assert provider.schemas[0] == "PageKind"
+    assert "my stock book" in provider.messages[0][1].content
+
+
+async def test_classify_page_normalises_what_the_model_wrote(prepared) -> None:
+    """A model that answers " Stock_Book " still names the kind."""
+    provider = FakeProvider([json.dumps({"kind": " STOCK_BOOK ", "confidence": 1})])
+
+    kind, _ = await classify_page(prepared, provider=provider)
+
+    assert kind == "stock_book"

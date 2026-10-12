@@ -134,6 +134,8 @@ class FakeProvider:
         self.verify_calls = 0
         self.schemas: list[str] = []
         self.images: list[list[str] | None] = []
+        # The prompts, so a test can assert what the model was asked.
+        self.messages: list[list[Any]] = []
 
     async def complete_structured(
         self,
@@ -145,6 +147,7 @@ class FakeProvider:
         temperature: float | None = None,
     ) -> LLMResponse:
         self.schemas.append(schema_model.__name__)
+        self.messages.append(list(messages))
         for message in messages:
             images = getattr(message, "images", None)
             if images:

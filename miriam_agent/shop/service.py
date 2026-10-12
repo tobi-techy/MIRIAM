@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import base64
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+from pydantic import ValidationError
 
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import AgentError, ConfigurationError
@@ -42,6 +44,7 @@ from miriam_agent.shop.reader import (
     ReadCapExceeded,
     ReadFailed,
     ReadResult,
+    classify_page,
     read_document,
 )
 from miriam_agent.shop.router import (
@@ -66,6 +69,12 @@ _SELF_READ_KINDS = {
     DocType.INVOICE.value,
     DocType.DELIVERY_NOTE.value,
 }
+
+# Go's own word for "I could not classify this page, you decide". A photo of a
+# handwritten book whose text no OCR pass could read arrives like this: without
+# it the reader would fail closed and the owner would be told Miriam cannot look
+# at photos, which is no longer true.
+UNKNOWN_IMAGE_HINT = "unknown_image"
 
 _STOCK_CELLS = ("opening", "supplied", "sold", "left", "price_naira")
 _LINE_CELLS = ("qty", "unit_price_naira", "line_total_naira")
@@ -124,6 +133,8 @@ async def read_shop_document(
             model_path=list(existing.model_path),
         )
 
+    _hint = (doc_hint or "").strip().lower()
+    classify_flags: list[str] = []
     tier = await decide_starting_tier(
         prepared.facts,
         caption=caption,
@@ -143,6 +154,31 @@ async def read_shop_document(
             "degraded": tier.degraded,
         },
     )
+
+    if tier.doc_kind not in _SELF_READ_KINDS and _hint == UNKNOWN_IMAGE_HINT:
+        # Go has no classification and said so. One cheap model call decides the
+        # kind before any read, and only the reader's own kinds are read: a
+        # receipt or a statement still leaves with an empty reply.
+        kind, confidence = await _classify_unknown_page(
+            prepared, caption=caption, provider_factory=provider_factory
+        )
+        if kind:
+            # The reader's own answer replaces "Go does not know". Only its
+            # kinds are read; a receipt or a statement keeps the empty reply Go
+            # already answers with, but the kind travels so the log says what
+            # the page turned out to be.
+            tier = replace(
+                tier,
+                doc_kind=kind,
+                tier=TIER_BIG,
+                confidence=confidence,
+                reason=f"page kind from the reader ({kind})",
+                degraded=True,
+            )
+            if kind in _SELF_READ_KINDS:
+                classify_flags.append(f"page classified by the reader: {kind}")
+            else:
+                classify_flags.append(f"page classified by the reader as {kind}")
 
     if tier.doc_kind not in _SELF_READ_KINDS:
         # A receipt, statement or unknown page is not ours to answer: Go keeps
@@ -171,7 +207,7 @@ async def read_shop_document(
         raise ReadFailed(reply_mod.retake_reply()) from e
 
     model_path = list(read.model_path)
-    flags = list(read.flags)
+    flags = list(read.flags) + classify_flags
     degraded = read.degraded or tier.degraded
 
     if tier.doc_kind == DocType.STOCK_BOOK.value:
@@ -410,6 +446,27 @@ async def _classify_notes(
             continue
         evaluations.append(await classify_and_parse(line, judge=judge))
     return evaluations
+
+
+async def _classify_unknown_page(
+    prepared: Any,
+    *,
+    caption: str,
+    provider_factory: Any = None,
+) -> tuple[str, float]:
+    """Ask the model what a page is, for a page Go could not classify.
+
+    Fail closed: no answer, no read. The caller keeps its existing answer for
+    that page, which is what a photo nobody can read has always got.
+    """
+    provider = provider_factory("small") if provider_factory is not None else None
+    try:
+        return await classify_page(prepared, caption=caption, provider=provider)
+    except (AgentError, ConfigurationError, ValidationError) as e:
+        # An unusable answer is not a read: a gateway that ignores the schema
+        # leaves the page exactly where it was, declined.
+        logger.warning("page classification failed, declining the page: %s", e)
+        return "", 0.0
 
 
 def _note_rows(notes: list[NoteEvaluation]) -> list[dict[str, Any]]:

@@ -547,3 +547,112 @@ async def test_a_note_that_only_repeats_the_written_total_is_dropped() -> None:
     # The written total appears once, in the gap section, not twice.
     assert result.reply_text.count("₦254,400") == 1
     assert "N150,000" not in result.reply_text
+
+
+async def test_an_unknown_image_is_classified_by_the_reader() -> None:
+    """A handwritten page whose text no OCR pass could read arrives as
+    unknown_image. Go has no opinion, so one cheap call decides the kind and the
+    page is read as a stock book — the figures the owner gets are checked the
+    same way as any other book."""
+    provider = FakeProvider(
+        [
+            json.dumps({"kind": "stock_book", "confidence": 0.9}),
+            payload(mama_tobi_book()),
+        ]
+    )
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=InMemoryShopDocumentStore(),
+        judge=FakeJudge(tier_unavailable=True, note_unavailable=True),
+        provider_factory=provider_factory(provider),
+        doc_hint="unknown_image",
+    )
+
+    assert result.doc_type == "stock_book"
+    assert "Total from your prices: ₦286,300" in result.reply_text
+    assert "page classified by the reader: stock_book" in result.flags
+
+
+async def test_an_unknown_image_the_reader_calls_a_receipt_is_declined() -> None:
+    """The reader must not turn a receipt into a stock book just because Go
+    handed it over: it says receipt and returns no figures at all, so Go keeps
+    its existing receipt answer for the photo."""
+    provider = FakeProvider([json.dumps({"kind": "receipt", "confidence": 0.95})])
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=InMemoryShopDocumentStore(),
+        judge=FakeJudge(tier_unavailable=True, note_unavailable=True),
+        provider_factory=provider_factory(provider),
+        doc_hint="unknown_image",
+    )
+
+    assert result.reply_text == ""
+    assert result.doc_type == "receipt"
+    assert "not a shop document (receipt)" in result.flags
+
+
+async def test_an_unknown_image_that_cannot_be_classified_fails_closed() -> None:
+    """No classification, no read: no figures, nothing stored, and the flag says
+    why. A model failure must never be answered with a guess."""
+    provider = FakeProvider([], fail=True)
+    store = InMemoryShopDocumentStore()
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=store,
+        judge=FakeJudge(tier_unavailable=True, note_unavailable=True),
+        provider_factory=provider_factory(provider),
+        doc_hint="unknown_image",
+    )
+
+    assert result.reply_text == ""
+    # Nothing was classified and nothing was read: the hint travels back as it
+    # came, with the reason the page was declined.
+    assert result.doc_type == "unknown_image"
+    assert any("not a shop document" in f for f in result.flags)
+    assert store._by_sha == {}
+
+
+async def test_a_classification_that_is_not_a_kind_declines_the_page() -> None:
+    """A gateway that ignores the schema answers in prose. That is not a kind,
+    so the page is declined exactly as if the call had failed — never read on
+    the strength of an answer nobody could parse."""
+    provider = FakeProvider(["Looks like a stock book to me!"])
+    store = InMemoryShopDocumentStore()
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=store,
+        judge=FakeJudge(tier_unavailable=True, note_unavailable=True),
+        provider_factory=provider_factory(provider),
+        doc_hint="unknown_image",
+    )
+
+    assert result.reply_text == ""
+    assert result.doc_type == "unknown_image"
+    assert store._by_sha == {}
+
+
+async def test_a_hint_go_already_classified_never_pays_for_a_classification() -> None:
+    """Go's classifier is the authority. A stock-book hint means no classify
+    call at all, however the page arrived."""
+    provider = FakeProvider([payload(mama_tobi_book())])
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=InMemoryShopDocumentStore(),
+        judge=FakeJudge(doc_kind="stock_book", note_unavailable=True),
+        provider_factory=provider_factory(provider),
+        doc_hint="stock_book",
+    )
+
+    assert result.doc_type == "stock_book"
+    assert provider.extract_calls == 1  # the read only: no classification pass
+    assert not any("classified by the reader" in f for f in result.flags)

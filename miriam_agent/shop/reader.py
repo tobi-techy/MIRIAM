@@ -95,6 +95,18 @@ class Verification(_Strict):
     corrections: list[CellCorrection] = Field(default_factory=list)
 
 
+class PageKind(_Strict):
+    """What one page is, when Go could not say.
+
+    Only asked for when the caller hands over an explicit ``unknown_image``
+    hint: Go's classifier is the authority whenever it has an opinion, so this
+    never overrules a page Go already named.
+    """
+
+    kind: str = ""
+    confidence: float = 0.0
+
+
 _EXTRACT_SYSTEM = (
     "You read a Nigerian shop document from an image. Copy exactly what is "
     "written. Do not calculate, correct or tidy any number: if the book says "
@@ -117,6 +129,53 @@ _VERIFY_SYSTEM = (
     "lines[0].line_total_naira. Do not restate matching values, do not explain "
     "and do not calculate. If every value matches, return an empty list."
 )
+
+
+_CLASSIFY_SYSTEM = (
+    "You are shown one page from a Nigerian shop. Say which of these it is: "
+    "stock_book, invoice, delivery_note, receipt, bank_statement, other. "
+    "A stock_book is the shop's own record: rows of items with opening, "
+    "supplied, sold, left and a price. An invoice or delivery_note comes from a "
+    "supplier and lists what was supplied with amounts and often a subtotal. A "
+    "receipt is proof of one payment. A bank_statement is a bank's own list of "
+    "transactions. Answer with the kind only, and a confidence from 0 to 1."
+)
+
+
+def _classify_messages(prepared: PreparedDocument, caption: str) -> list[ChatMessage]:
+    context = _context_block(prepared, caption)
+    user = "What kind of page is this?"
+    if context:
+        user = f"{user}\n\n{context}"
+    return [
+        ChatMessage(role="system", content=_CLASSIFY_SYSTEM),
+        ChatMessage(role="user", content=user, images=_data_urls(prepared)),
+    ]
+
+
+async def classify_page(
+    prepared: PreparedDocument,
+    *,
+    caption: str = "",
+    provider: LLMAPIProvider | None = None,
+    tier: str = "small",
+) -> tuple[str, float]:
+    """Ask one model call what the page is. Used only for an unknown page.
+
+    Cheap on purpose: it runs before a read, and only when the caller has said
+    it has no classification of its own. A failure here is not an error the
+    owner hears about: the caller keeps its fail-closed answer.
+    """
+    provider = provider or get_llmapi_provider(_model_for(tier))
+    messages = _classify_messages(prepared, caption)
+    response = await provider.complete_structured(
+        messages,
+        PageKind,
+        reasoning_effort=_effort_for(tier),
+        max_tokens=200,
+    )
+    page_kind = PageKind.model_validate_json(response.content)
+    return page_kind.kind.strip().lower(), float(page_kind.confidence or 0.0)
 
 
 def _data_urls(prepared: PreparedDocument) -> list[str]:
@@ -604,11 +663,13 @@ async def read_document(
 __all__ = [
     "CellCorrection",
     "Disagreement",
+    "PageKind",
     "ReadBudget",
     "ReadCapExceeded",
     "ReadFailed",
     "ReadResult",
     "Verification",
+    "classify_page",
     "read_document",
     "read_on_tier",
     "schema_for_kind",
