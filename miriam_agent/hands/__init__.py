@@ -62,11 +62,6 @@ from miriam_agent.hands.limits import (
     reserved_outbound,
     settled_outbound_today,
 )
-from miriam_agent.hands.rebalance import (
-    prepare_pause,
-    prepare_rebalance,
-    prepare_resume,
-)
 from miriam_agent.hands.orders import (
     ORDER_SLEEVE,
     ORDER_TTL_MINUTES,
@@ -77,6 +72,11 @@ from miriam_agent.hands.orders import (
     prepare_set_allocation,
     settle_order,
     settle_set_allocation,
+)
+from miriam_agent.hands.rebalance import (
+    prepare_pause,
+    prepare_rebalance,
+    prepare_resume,
 )
 from miriam_agent.hands.split import SplitOutcome, split_inflow, split_parts
 from miriam_agent.hands.state import (

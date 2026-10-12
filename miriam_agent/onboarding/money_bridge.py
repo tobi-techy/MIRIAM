@@ -1,8 +1,11 @@
 """Deterministic bridge: conversational onboarding state -> real money plan."""
+
 from __future__ import annotations
+
 import logging
 import re
 from typing import Any
+
 logger = logging.getLogger(__name__)
 
 # The interview is three facts. Anything else waits until the plan exists.
@@ -28,16 +31,41 @@ _PLAN_NOW = (
 # Explicit pay-rhythm phrases only. A bare "month" is a time word ("maybe a
 # month of runway") and must not be stored as a salary cadence.
 _CADENCE_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("biweekly", ("biweekly", "bi-weekly", "every two weeks", "every 2 weeks", "twice a month", "fortnight", "fortnightly")),
+    (
+        "biweekly",
+        (
+            "biweekly",
+            "bi-weekly",
+            "every two weeks",
+            "every 2 weeks",
+            "twice a month",
+            "fortnight",
+            "fortnightly",
+        ),
+    ),
     ("weekly", ("weekly", "every week", "each week", "per week", "once a week")),
-    ("monthly", ("monthly", "every month", "each month", "per month", "once a month", "end of the month")),
-    ("irregular", ("irregular", "not fixed", "whenever it comes", "whenever i get paid")),
+    (
+        "monthly",
+        (
+            "monthly",
+            "every month",
+            "each month",
+            "per month",
+            "once a month",
+            "end of the month",
+        ),
+    ),
+    (
+        "irregular",
+        ("irregular", "not fixed", "whenever it comes", "whenever i get paid"),
+    ),
 )
 _GOAL_REPLY = re.compile(
     r"\b(invest|investment|grow|growing|save|saving|savings|buffer|stocks?)\b",
     re.IGNORECASE,
 )
 _CHOICE_INDEX = re.compile(r"^[1-4]$")
+
 
 def _explicit_cadence(state: Any) -> bool:
     """True when pay rhythm was answered, or the income sentence already named it."""
@@ -78,6 +106,7 @@ def money_readiness(state: Any) -> tuple[bool, list[str]]:
         missing = []
     return ready, missing
 
+
 def build_money_plan_dict(state: Any) -> dict[str, Any] | None:
     try:
         from miriam_agent.money.intake import from_onboarding_state
@@ -89,6 +118,7 @@ def build_money_plan_dict(state: Any) -> dict[str, Any] | None:
     except Exception:
         logger.warning("money pipeline build failed", exc_info=True)
         return None
+
 
 def gap_question(missing: list[str]) -> str:
     question = GAP_QUESTIONS[-1][1]
@@ -121,7 +151,7 @@ def wants_plan(text: str) -> bool:
 
 
 def cap_should_present(state: Any, text: str) -> bool:
-    """At the question cap: show the plan unless one foundational gap is still unasked."""
+    """At the cap: show the plan unless a foundational gap is unasked."""
     ready, missing = money_readiness(state)
     if ready or wants_plan(text):
         return True
@@ -146,7 +176,9 @@ def mark_gap_asked(state: Any, key: str) -> None:
 
 def remember_poll(state: Any, title: str, options: list[str] | tuple[str, ...]) -> None:
     state.last_poll_title = (title or "").strip()
-    state.last_poll_options = [str(item).strip() for item in options if str(item).strip()]
+    state.last_poll_options = [
+        str(item).strip() for item in options if str(item).strip()
+    ]
 
 
 def _cadence_in(text: str) -> str:
@@ -238,8 +270,14 @@ def absorb_reply(state: Any, text: str, *, poll_title: str = "") -> None:
     if "essential_expenses" in facts or (gap == "fixed_costs" and spoke_amount):
         learned["fixed"] = spoken.strip()[:400]
     goal = str(getattr(state, "goal", "") or "")
-    if not goal and _GOAL_REPLY.search(spoken) and amount_in(spoken) is None and not cadence:
+    if (
+        not goal
+        and _GOAL_REPLY.search(spoken)
+        and amount_in(spoken) is None
+        and not cadence
+    ):
         state.goal = spoken.strip()[:120]
+
 
 _RHYTHM_SENTENCE = {
     "weekly": "It arrives every week.",
@@ -258,7 +296,9 @@ def pay_rhythm_known(state: Any) -> bool:
     learned = getattr(state, "learned", None) or {}
     if not isinstance(learned, dict):
         return False
-    return bool(str(learned.get("pay_rhythm") or learned.get("income_frequency") or "").strip())
+    return bool(
+        str(learned.get("pay_rhythm") or learned.get("income_frequency") or "").strip()
+    )
 
 
 def _dec(value: Any) -> Any:
@@ -319,7 +359,8 @@ def fact_readback(state: Any) -> str:
     raw_income = str(learned.get("income") or "").casefold()
     if "or less" in raw_income or "under " in raw_income:
         income_sentence = (
-            f"You said {income} or less. I will use {income} unless you tell me it is lower."
+            f"You said {income} or less. I will use {income} "
+            "unless you tell me it is lower."
         )
     elif any(word in raw_income for word in ("about", "around", "roughly", "maybe")):
         income_sentence = f"I will use about {income} a month."
@@ -335,7 +376,10 @@ def fact_readback(state: Any) -> str:
         fixed_sentence = f"About {_amt(intake.monthly_fixed, currency)} has to go out."
     if name:
         income_sentence = income_sentence[0].lower() + income_sentence[1:]
-        return f"{name}, {income_sentence} {rhythm_sentence} {fixed_sentence} Is that right?"
+        return (
+            f"{name}, {income_sentence} {rhythm_sentence} {fixed_sentence} "
+            "Is that right?"
+        )
     return f"{income_sentence} {rhythm_sentence} {fixed_sentence} Is that right?"
 
 
@@ -398,7 +442,8 @@ def plain_month_lines(money_plan: dict[str, Any]) -> list[str]:
         tail.append("After the plan, nothing is left to spend freely this month.")
     if invest > 0:
         tail.append(
-            "The stock money buys the Rail Stock Sleeve: tokenized Apple, Nvidia, and Tesla."
+            "The stock money buys the Rail Stock Sleeve: tokenized Apple, "
+            "Nvidia, and Tesla."
         )
     else:
         tail.append("Nothing goes to stocks yet.")
@@ -433,7 +478,7 @@ def plan_receipt_lines(money_plan: dict[str, Any]) -> list[str]:
 
 
 def plan_bubbles(money_plan: dict[str, Any]) -> list[str]:
-    """At most three short texts. The last one always asks to lock or change a number."""
+    """At most three short texts. The last one asks to lock or change a number."""
     lines = plain_month_lines(money_plan)
     question = "Want me to lock this in, or change a number?"
     if not lines:

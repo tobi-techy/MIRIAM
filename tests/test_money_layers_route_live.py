@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 from layer_fakes import FakeProvider, jev, judge_of
 
+from miriam_agent.agents.agent_loop import Agent
 from miriam_agent.api import chat, dependencies
 from miriam_agent.api.main import app
 from miriam_agent.config.settings import get_settings
@@ -128,6 +129,15 @@ def _wire(
         ),
     )
     monkeypatch.setattr(chat, "_orchestrator_for", lambda token: orchestrator)
+
+    # Answerable turns go to the general agent, whose LLM provider is built from
+    # the environment. Point that agent at the same fake provider so a non-money
+    # message ("yes, do it") is answered without a live key or the network.
+    monkeypatch.setattr(
+        chat,
+        "_build_agent",
+        lambda registry: Agent(registry=registry, provider=FakeProvider("Noted.")),
+    )
 
     user = User()
     user.id = USER_ID

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -17,6 +16,7 @@ from miriam_agent.database.models import Base  # noqa: E402
 
 target_metadata = Base.metadata
 
+
 # Alembic is offline/online against DATABASE_URL; prefer the app settings
 # so production credentials are not duplicated in alembic.ini.
 def _db_url() -> str:
@@ -25,9 +25,12 @@ def _db_url() -> str:
         # Use app settings if ini still has the default driver:///.
         try:
             from miriam_agent.config.settings import get_settings
+
             raw = get_settings().DATABASE_URL
             # Alembic needs a sync driver, not asyncpg.
-            return raw.replace("+asyncpg", "").replace("postgresql+asyncpg://", "postgresql://")
+            return raw.replace("+asyncpg", "").replace(
+                "postgresql+asyncpg://", "postgresql://"
+            )
         except Exception:
             pass
     raw = url.replace("+asyncpg", "")

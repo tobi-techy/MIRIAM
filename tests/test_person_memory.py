@@ -310,13 +310,11 @@ class TestChatIngest:
         assert chat._scrub_money_numbers("send 200k to Femi") == (
             "send [amount] to Femi"
         )
-        assert "[amount]" in chat._scrub_money_numbers(
-            "Your balance is ₦1,234,567.89"
+        assert "[amount]" in chat._scrub_money_numbers("Your balance is ₦1,234,567.89")
+        assert (
+            any(ch.isdigit() for ch in chat._scrub_money_numbers("put 30 into stocks"))
+            is False
         )
-        assert any(
-            ch.isdigit()
-            for ch in chat._scrub_money_numbers("put 30 into stocks")
-        ) is False
 
     def test_money_summary_carries_no_numbers(self):
         from miriam_agent.api import chat
@@ -381,22 +379,28 @@ class TestMemoryCorrectionSurface:
 
         mem = _FakeCorrectionMemory()
         user = _user()
-        assert _run(
-            memapi.remember_fact(
-                memapi.RememberRequest(content="I bank with Kuda"),
-                user,
-                mem,
-            )
-        )["stored"] is True
-        assert _run(
-            memapi.correct_fact(
-                memapi.CorrectRequest(
-                    query="I bank with GTB", new_content="I bank with Kuda"
-                ),
-                user,
-                mem,
-            )
-        )["updated"] is True
+        assert (
+            _run(
+                memapi.remember_fact(
+                    memapi.RememberRequest(content="I bank with Kuda"),
+                    user,
+                    mem,
+                )
+            )["stored"]
+            is True
+        )
+        assert (
+            _run(
+                memapi.correct_fact(
+                    memapi.CorrectRequest(
+                        query="I bank with GTB", new_content="I bank with Kuda"
+                    ),
+                    user,
+                    mem,
+                )
+            )["updated"]
+            is True
+        )
         preview = _run(
             memapi.forget_fact(
                 memapi.ForgetRequest(query="GTB", dry_run=True), user, mem
@@ -413,9 +417,10 @@ class TestMemoryCorrectionSurface:
         assert "forget-preview" in kinds and "forget-apply" in kinds
         # Apply is bound to the previewed ids via forget_exact, never a
         # re-run of the semantic match.
-        assert mem.calls[[c[0] for c in mem.calls].index("forget-apply")][
-            0
-        ] == "forget-apply"
+        assert (
+            mem.calls[[c[0] for c in mem.calls].index("forget-apply")][0]
+            == "forget-apply"
+        )
 
     def test_inferred_review_and_validation(self):
         from miriam_agent.api import memory as memapi
@@ -444,11 +449,12 @@ class TestMemoryCorrectionSurface:
             enabled = False
 
         user = _user()
-        assert _run(
-            memapi.remember_fact(
-                memapi.RememberRequest(content="x"), user, _Off()
-            )
-        )["enabled"] is False
+        assert (
+            _run(
+                memapi.remember_fact(memapi.RememberRequest(content="x"), user, _Off())
+            )["enabled"]
+            is False
+        )
 
 
 # ---------------------------------------------------------------------------

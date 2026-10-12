@@ -1,19 +1,22 @@
 """Baseline: all tables from models.py as create_all.
 
 Revision ID: 001
-Revises: 
+Revises:
 Create Date: 2026-10-01
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision = "001"
 down_revision = None
 branch_labels = None
 depends_on = None
+
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -49,7 +52,12 @@ def upgrade() -> None:
     op.create_table(
         "messages",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("conversation_id", sa.String(), sa.ForeignKey("conversations.id"), nullable=False),
+        sa.Column(
+            "conversation_id",
+            sa.String(),
+            sa.ForeignKey("conversations.id"),
+            nullable=False,
+        ),
         sa.Column("role", sa.String(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("metadata", JSONB(), nullable=True),
@@ -81,7 +89,12 @@ def upgrade() -> None:
     op.create_table(
         "transactions",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("financial_profile_id", sa.String(), sa.ForeignKey("financial_profiles.id"), nullable=False),
+        sa.Column(
+            "financial_profile_id",
+            sa.String(),
+            sa.ForeignKey("financial_profiles.id"),
+            nullable=False,
+        ),
         sa.Column("amount", sa.Float(), nullable=False),
         sa.Column("description", sa.String(), nullable=False),
         sa.Column("category", sa.String(), nullable=False),
@@ -93,7 +106,12 @@ def upgrade() -> None:
     op.create_table(
         "investments",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("financial_profile_id", sa.String(), sa.ForeignKey("financial_profiles.id"), nullable=False),
+        sa.Column(
+            "financial_profile_id",
+            sa.String(),
+            sa.ForeignKey("financial_profiles.id"),
+            nullable=False,
+        ),
         sa.Column("symbol", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("quantity", sa.Float(), nullable=False),
@@ -106,7 +124,12 @@ def upgrade() -> None:
     op.create_table(
         "budgets",
         sa.Column("id", sa.String(), primary_key=True),
-        sa.Column("financial_profile_id", sa.String(), sa.ForeignKey("financial_profiles.id"), nullable=False),
+        sa.Column(
+            "financial_profile_id",
+            sa.String(),
+            sa.ForeignKey("financial_profiles.id"),
+            nullable=False,
+        ),
         sa.Column("category", sa.String(), nullable=False),
         sa.Column("monthly_limit", sa.Float(), nullable=False),
         sa.Column("current_spend", sa.Float(), nullable=True),
@@ -143,7 +166,14 @@ def upgrade() -> None:
         sa.Column("raw_payload", sa.Text(), nullable=False),
         sa.Column("status", sa.String(), nullable=False, server_default="reported"),
         sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.UniqueConstraint("channel", "sender_handle", "amount_minor", "reference", "payload_hash", name="uq_payment_ref_dedupe"),
+        sa.UniqueConstraint(
+            "channel",
+            "sender_handle",
+            "amount_minor",
+            "reference",
+            "payload_hash",
+            name="uq_payment_ref_dedupe",
+        ),
     )
     op.create_table(
         "money_executions",
@@ -171,9 +201,23 @@ def upgrade() -> None:
         ("tool_usage", "user_id"),
     ]:
         op.create_index(f"ix_{tbl}_{col}", tbl, [col])
-    # Vector extension handled externally; embedding remains JSON until pgvector is wired.
+    # Vector extension is external; embedding stays JSON until pgvector is wired.
+
 
 def downgrade() -> None:
-    for tbl in ["money_executions","payment_references","tool_usage","audit_logs","budgets","investments","transactions","financial_profiles","memory_entries","messages","conversations","channel_identities","users"]:
+    for tbl in [
+        "money_executions",
+        "payment_references",
+        "tool_usage",
+        "audit_logs",
+        "budgets",
+        "investments",
+        "transactions",
+        "financial_profiles",
+        "memory_entries",
+        "messages",
+        "conversations",
+        "channel_identities",
+        "users",
+    ]:
         op.drop_table(tbl)
-

@@ -243,8 +243,8 @@ def _execution_model() -> str:
             "allowed, and the user taps a confirmation to settle it. An order is "
             "an allocation shift that converges on the next rebalance -- it "
             "carries no price guarantee, so never promise a fill price. Never "
-            "promise a movement is done, and never say \"sent\", \"paid\", "
-            "\"moved\" or \"done\" about money: only a receipt from the ledger "
+            'promise a movement is done, and never say "sent", "paid", '
+            '"moved" or "done" about money: only a receipt from the ledger '
             "means anything moved.",
             '- Never ask "Want me to...?" in chat. State the plan as fact and let '
             "the confirmation handle the ask.",

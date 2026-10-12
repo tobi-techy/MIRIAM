@@ -127,9 +127,9 @@ def test_airtime_is_an_airbills_bill_not_an_onramp():
 
 
 def test_airtime_confirm_pays_through_airbills(monkeypatch):
-    import miriam_agent.integrations.go_client as gc
     from layer_fakes import jev, judge_of
 
+    import miriam_agent.integrations.go_client as gc
     from miriam_agent.hands.ledger import InMemoryLedgerStore, money, new_ledger
     from miriam_agent.orchestrator import Event, Orchestrator
 
