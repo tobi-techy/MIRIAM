@@ -15,7 +15,7 @@ from miriam_agent.shop.checks import (
     StockBookReport,
     naira,
 )
-from miriam_agent.shop.notes import NoteEvaluation
+from miriam_agent.shop.notes import NoteEvaluation, is_blank_note
 from miriam_agent.shop.schemas import NoteKind, StockBook, SupplierDocument
 
 TRUST_SELF_REPORTED = "self_reported"
@@ -140,11 +140,13 @@ def stock_book_reply(
     if report.crossed_out:
         lines.append("Crossed out: " + _short_join(report.crossed_out) + ".")
 
-    understood = [_note_line(n) for n in notes if not n.unclassified]
+    understood = [
+        _note_line(n) for n in notes if not n.unclassified and not is_blank_note(n.text)
+    ]
     if understood:
         lines.append("Notes: " + _short_join(understood, limit=6) + ".")
     for note in notes:
-        if note.unclassified:
+        if note.unclassified and not is_blank_note(note.text):
             lines.append(f"I could not classify one note: {note.text}")
 
     questions = _questions(

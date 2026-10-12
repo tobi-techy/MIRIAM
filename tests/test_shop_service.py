@@ -72,6 +72,46 @@ async def test_stock_book_reply_reports_the_checked_numbers() -> None:
     assert result.confidence == pytest.approx(0.95)
 
 
+async def test_a_separator_in_notes_never_becomes_a_reply_line() -> None:
+    """A live read of the Mama Tobi page answered with "I could not classify one
+    note: —  ''  —": the page's dashed rule, read as a note and shown back as a
+    line about nothing. It is dropped before the reply is built, while the notes
+    the owner actually wrote still surface."""
+    book = mama_tobi_book(
+        notes=[
+            "—  ''  —",
+            "Mrs Bisi owes 3,200",
+            "   ",
+            "Paid Wigmore N150,000 transfer",
+        ]
+    )
+    result = await read_stock(
+        book=book,
+        judge=FakeJudge(
+            doc_kind="stock_book", difficulty="easy", note_unavailable=True
+        ),
+    )
+
+    assert "—" not in result.reply_text
+    assert "'" not in result.reply_text
+    # Every "could not classify" line names something the owner wrote.
+    note_lines = [
+        line
+        for line in result.reply_text.splitlines()
+        if line.startswith("I could not classify one note:")
+    ]
+    for line in note_lines:
+        assert line.removeprefix("I could not classify one note:").strip()
+    # The two notes the owner actually wrote are still surfaced verbatim.
+    assert "I could not classify one note: Mrs Bisi owes 3,200" in result.reply_text
+    assert (
+        "I could not classify one note: Paid Wigmore N150,000 transfer"
+        in result.reply_text
+    )
+    # And no note row is stored for a separator.
+    assert result.reply_text.count("I could not classify one note") == 2
+
+
 async def test_the_reply_states_the_gap_once_not_twice() -> None:
     """The check message and the "You wrote ... Gap ..." line said the same three
     figures in one reply. A live read showed it; the owner should see it once."""

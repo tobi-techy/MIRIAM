@@ -113,6 +113,21 @@ def parse_due(text: str) -> str | None:
     return match.group(1).lower()
 
 
+# Anything that is only punctuation, a rule, or space. A dashed line across the
+# page arrives as a "note" made of these; nobody wrote it and it means nothing.
+_SEPARATOR_ONLY = re.compile(r"[\s\-–—…_=~.·•*+|/\\:;,\"'`()\[\]{}<>“”‘’]+")
+
+
+def is_blank_note(text: str) -> bool:
+    """True when a "note" carries no words at all.
+
+    Empty, or nothing but separators and punctuation. A ruled or dashed line on
+    the page reaches the reader as exactly that ("— '' —"), and showing it back
+    as an unclassified note makes the owner read a line about nothing.
+    """
+    return not _SEPARATOR_ONLY.sub("", text or "")
+
+
 def _clean_party(raw: str) -> str:
     raw = raw.strip().strip(",.;:-")
     raw = re.sub(r"^(and|minus|plus|for|to)\s+", "", raw, flags=re.IGNORECASE)
@@ -212,6 +227,7 @@ __all__ = [
     "NoteEvaluation",
     "NoteParse",
     "classify_and_parse",
+    "is_blank_note",
     "parse_amount",
     "parse_amounts",
     "parse_due",

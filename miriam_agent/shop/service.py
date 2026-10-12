@@ -31,7 +31,11 @@ from miriam_agent.shop.checks import (
     check_supplier_document,
     checks_as_state,
 )
-from miriam_agent.shop.notes import NoteEvaluation, classify_and_parse
+from miriam_agent.shop.notes import (
+    NoteEvaluation,
+    classify_and_parse,
+    is_blank_note,
+)
 from miriam_agent.shop.preprocess import prepare
 from miriam_agent.shop.reader import (
     ReadBudget,
@@ -399,6 +403,11 @@ async def _classify_notes(
 ) -> list[NoteEvaluation]:
     evaluations: list[NoteEvaluation] = []
     for line in raw_notes:
+        # A separator the reader mistook for a note is not a note. Dropped here
+        # it costs no judgment call, leaves no row, raises no flag, and never
+        # reaches the reply as "I could not classify one note: — '' —".
+        if is_blank_note(line):
+            continue
         evaluations.append(await classify_and_parse(line, judge=judge))
     return evaluations
 

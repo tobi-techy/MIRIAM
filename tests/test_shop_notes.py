@@ -6,6 +6,7 @@ from shop_fakes import FakeJudge
 
 from miriam_agent.shop.notes import (
     classify_and_parse,
+    is_blank_note,
     parse_amount,
     parse_amounts,
     parse_due,
@@ -99,3 +100,34 @@ async def test_note_kind_not_in_the_catalog_is_treated_as_unclassified() -> None
     evaluation = await classify_and_parse("Random line", judge=judge)
     assert evaluation.kind is NoteKind.OTHER
     assert evaluation.unclassified is True
+
+
+def test_a_separator_is_not_a_note() -> None:
+    """The Mama Tobi page's dashed rule came back as a note: three unclassified
+    notes, one of them "—  ''  —". A line made of separators is not something the
+    owner wrote, and it must never be shown back as a note."""
+    for blank in (
+        "—  ''  —",
+        "",
+        "   ",
+        "-----",
+        "_______",
+        "- - - - -",
+        "···",
+        "____________  ''  ____________",
+        "| | |",
+        "~~~",
+        "…",
+    ):
+        assert is_blank_note(blank), f"{blank!r} is a separator, not a note"
+
+
+def test_real_notes_are_not_blank() -> None:
+    for real in (
+        "Mrs Bisi owes 3,200",
+        "Paid Wigmore N150,000 transfer",
+        "20 cartons returned",
+        "10/10/26",
+        "Emeka paid 4,500",
+    ):
+        assert not is_blank_note(real), f"{real!r} is a real note"
