@@ -174,7 +174,7 @@ def diagnose(
     reference: CountryReference,
     status: ReferenceStatus | None = None,
 ) -> Diagnosis:
-    """Classify the primary money problem (``MONEY-RULES.md`` §4).
+    """Classify the primary money problem.
 
     First match wins, in the order of :data:`schema.PROBLEM_TYPES`. Returns the
     blunt sentence, the evidence behind it, and a confidence that falls whenever
@@ -456,7 +456,7 @@ def diagnose(
 
 
 # The order rules are tried in. Kept next to the return sites so a reader can
-# see the priority in one place (``MONEY-RULES.md`` §4).
+# see the priority in one place.
 _ORDER: tuple[str, ...] = (
     "data_gap",
     "cashflow_bleed",

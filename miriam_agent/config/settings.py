@@ -244,7 +244,7 @@ class Settings(BaseSettings):
     # boundary was the server's local zone, so cap resets moved with whatever
     # machine ran the process; it is now pinned to the product's home market.
     MONEY_DAY_TIMEZONE: str = Field(default="Africa/Lagos")
-    # Debt triage bands (MONEY-RULES.md §3). APR >= fire is attacked; APR in the
+    # Debt triage bands. APR >= fire is attacked; APR in the
     # judgment band is compared against the local risk-free rate from
     # money/reference.py; below that, debt is kept.
     MONEY_DEBT_FIRE_APR_PCT: float = Field(default=15.0)

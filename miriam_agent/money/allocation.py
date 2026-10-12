@@ -1,8 +1,8 @@
 """Stage 4 — the 70/30 book on investable surplus, and the overrides.
 
 David Bach's 70/30 is a durable default, not a law. This engine applies it and
-then bends it for horizon and capacity, in the precedence order of
-``MONEY-RULES.md`` ``R-BACH-2`` (first matching row wins):
+then bends it for horizon and capacity, in the precedence order of ``R-BACH-2``
+(first matching row wins):
 
     gated by safety            -> no book at all
     horizon < 3 years          -> cash-like only, not a market sleeve
