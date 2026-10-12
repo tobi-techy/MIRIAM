@@ -1,6 +1,6 @@
 """The 9-way diagnosis classifier, one case per problem type.
 
-The ordering is the brief's own enumeration (``MONEY-RULES.md`` §4) and the
+The ordering is the brief's own enumeration and the
 tie-breaks matter as much as the individual rules: a bleed outranks everything,
 and a missing buffer outranks expensive debt because the buffer is what stops
 the next shock becoming new debt.

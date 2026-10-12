@@ -1,7 +1,7 @@
 """Memory-quality golden set: retrieval stays correct, numbers stay out.
 
 Offline by design so CI runs it without a SUPERMEMORY_API_KEY. Each case
-pins one load-bearing invariant from docs/MEMORY-ARCHITECTURE.md:
+pins one load-bearing invariant from the memory model:
 
 1. Money ingest carries no numbers (user text scrubbed, assistant side is
    a de-identified action/status summary, never the narration).

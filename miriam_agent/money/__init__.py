@@ -5,8 +5,8 @@ Deterministic by construction. Python computes every number; the LLM layer in
 ``agent.py`` only writes prose about numbers it was handed, and is clamped if it
 tries to introduce one.
 
-Rules live in ``docs/MONEY-RULES.md``; the output contract lives in
-``docs/MONEY-PLAN-CONTRACT.md``. Scope: read, diagnose, recommend. Money movement
+The rules and the output contract live in this package. Scope: read, diagnose,
+recommend. Money movement
 belongs to RAIL_BACKEND, and enrollment is user-signed and two-stage.
 """
 

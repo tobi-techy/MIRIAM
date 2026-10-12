@@ -1,6 +1,6 @@
 # MIRIAM Architecture Contract (RAI-114)
 
-Reference: `docs/P1-BLUEPRINT.md` (canonical design), `miriam_agent/observability/correlation.py` (trace id), `miriam_agent/onboarding/trace.py` (turn records), `miriam_agent/agents/agent_loop.py` (orchestrator), `miriam_agent/tools/definitions.py` (tool registry), `miriam_agent/safety/audit.py` (audit), `miriam_agent/api/main.py` (channel adapter).
+Reference: `docs/MIRIAM-NETWORK-ARCHITECTURE.md` (canonical design), `miriam_agent/observability/correlation.py` (trace id), `miriam_agent/onboarding/trace.py` (turn records), `miriam_agent/agents/agent_loop.py` (orchestrator), `miriam_agent/tools/definitions.py` (tool registry), `miriam_agent/safety/audit.py` (audit), `miriam_agent/api/main.py` (channel adapter).
 
 ## 1. Role mapping
 
@@ -306,7 +306,7 @@ This contract is backed by:
 
 - The issue `RAI‑114` title “Create Miriam architecture contract and Python module boundaries.”
 - The existing module structure already reflects a clear separation (agent/orchestrator, onboarding, proactive, etc.).
-- The existing design docs (`docs/ADVISER-ARCHITECTURE.md`, `docs/P1-BLUEPRINT.md`) define the trust model, playbooks, and noise gate that enforce the layering.
+- The canonical design docs (`docs/MIRIAM-NETWORK-ARCHITECTURE.md`, `docs/MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md`) define the trust model, playbooks, and noise gate that enforce the layering.
 
 All existing code remains untouched except for the three grandfathered violations, the trace-id plumbing, and CI tooling additions. No breaking changes to public APIs.
 
