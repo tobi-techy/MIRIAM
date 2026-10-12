@@ -58,7 +58,9 @@ class CoolingDownError(MiriamError):
     generic failure.
     """
 
-    def __init__(self, message: str = "strategy is cooling down", retry_after: int | None = None):
+    def __init__(
+        self, message: str = "strategy is cooling down", retry_after: int | None = None
+    ):
         super().__init__(message, {"retry_after": retry_after})
         self.retry_after = retry_after
 

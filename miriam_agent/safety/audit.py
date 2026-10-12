@@ -28,13 +28,9 @@ class AuditSystem:
 
     async def initialize(self):
         """Initialize the audit database connection."""
-        # Create async engine
         self.engine = create_async_engine(self.database_url)
-
-        # Create tables
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-
         # Create async session factory
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False

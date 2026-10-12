@@ -1,9 +1,12 @@
 """Stateless completion copy: consent receipts and plan resumption."""
+
 from __future__ import annotations
+
 from typing import Any
 
+
 def automated_completion_text(state: Any) -> str:
-    """Receipt after consent_yes: plain sentences, and no line for a fact she never asked."""
+    """Receipt after consent_yes: plain sentences; no line for an unasked fact."""
     money_plan = getattr(state, "money_plan", None) or {}
     if money_plan:
         from miriam_agent.onboarding.money_bridge import plan_receipt_lines
@@ -24,7 +27,8 @@ def automated_completion_text(state: Any) -> str:
                 "placeholder and nothing is invested."
             )
         lines.append(
-            "When pay arrives, the bills come out first, then the buffer. You still decide."
+            "When pay arrives, the bills come out first, then the buffer. "
+            "You still decide."
         )
         return "\n".join(lines).strip()
     plank = getattr(state, "plan", None) or {}
@@ -32,8 +36,12 @@ def automated_completion_text(state: Any) -> str:
     body = "E don set - this is now how I work for you:\n"
     for b in bullets:
         body += f"\u2022 {b} first\n"
-    body += "\nI keep an eye on it and bring things up when they deserve attention. You stay the one who decides."
+    body += (
+        "\nI keep an eye on it and bring things up when they deserve attention. "
+        "You stay the one who decides."
+    )
     return body
+
 
 def draft_completion_text() -> str:
     return (
@@ -41,15 +49,19 @@ def draft_completion_text() -> str:
         "You do not need to do this again."
     )
 
+
 def resume_payload(state: Any) -> dict[str, Any]:
     """Resume payload: where the user stands, what's missing, next step."""
     from miriam_agent.onboarding.money_bridge import money_readiness
     from miriam_agent.onboarding.state import STAGE_COMPLETE
+
     ready, missing = money_readiness(state)
     money_plan = getattr(state, "money_plan", None) or {}
     stage = getattr(state, "stage", "")
     if stage == STAGE_COMPLETE:
-        nxt = "onboarding complete — ask for the plan, an adjustment, or a fresh check-in"
+        nxt = (
+            "onboarding complete — ask for the plan, an adjustment, or a fresh check-in"
+        )
     elif money_plan:
         nxt = "review the savings split and lock it in, or adjust it"
     elif missing == ["income_amount"] or (not missing and not ready):
@@ -67,4 +79,11 @@ def resume_payload(state: Any) -> dict[str, Any]:
         completed.append("numbers_captured")
     if money_plan:
         completed.append("plan_presented")
-    return {"current_stage": stage, "completed_stages": completed, "unresolved": list(missing), "money_ready": bool(ready), "has_money_plan": bool(money_plan), "next_recommended_step": nxt}
+    return {
+        "current_stage": stage,
+        "completed_stages": completed,
+        "unresolved": list(missing),
+        "money_ready": bool(ready),
+        "has_money_plan": bool(money_plan),
+        "next_recommended_step": nxt,
+    }

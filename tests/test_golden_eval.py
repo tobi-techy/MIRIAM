@@ -95,7 +95,6 @@ class TestIdempotency:
         assert k1 == k2
 
     async def test_execute_dedupes(self):
-        import asyncio
 
         reg = _registry_with_read()
         calls = []
@@ -109,6 +108,7 @@ class TestIdempotency:
             description="c",
             args_schema={"type": "object", "properties": {}},
             handler=_count,
+            is_mutation=True,
         )
         r1 = await reg.execute("count_tool", {}, context={"user_id": "u"})
         r2 = await reg.execute("count_tool", {}, context={"user_id": "u"})
@@ -235,7 +235,12 @@ class TestArchitectureContracts:
         import pathlib
 
         src = pathlib.Path("miriam_agent/agents/agent_loop.py").read_text()
-        for token in ["_budgets", "wall_clock", "AGENT_MAX_COST_USD_PER_TURN", "_abort_result"]:
+        for token in [
+            "_budgets",
+            "wall_clock",
+            "AGENT_MAX_COST_USD_PER_TURN",
+            "_abort_result",
+        ]:
             assert token in src, f"missing {token}"
 
     def test_settings_has_budgets(self):

@@ -58,6 +58,12 @@ class Event(BaseModel):
     inflow_id: str = ""
     amount: Decimal | None = None
     source_raw: str = ""
+    # Structured payment identity for dedupe (G23/C052). Together with
+    # ``channel`` these four columns decide "same payment"; the raw payload
+    # above is never keyed. Empty means the caller has no structured reference
+    # and the inflow falls back to ``inflow_id`` alone.
+    sender_handle: str = ""
+    reference: str = ""
     # confirm tap
     confirm_id: str = ""
     # Surface that carried the turn ("imessage", "terminal", ...). Only an

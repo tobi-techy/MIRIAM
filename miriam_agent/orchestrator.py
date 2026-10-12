@@ -27,13 +27,11 @@ Two rules are enforced structurally rather than documented:
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from miriam_agent.hands.audit import AuditLog, Receipt
 from miriam_agent.hands.bills import bill_category, parse_bill_utterance
@@ -57,6 +55,13 @@ from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.orders import (
     parse_order_utterance,
     parse_rebalance_utterance,
+)
+from miriam_agent.hands.payment_refs import (
+    PaymentRefKey,
+    PaymentRefStore,
+    amount_to_minor,
+    inflow_id_for_payment,
+    payload_hash,
 )
 from miriam_agent.hands.save_rule import (
     parse_save_rule_utterance,
@@ -88,6 +93,13 @@ from miriam_agent.hands.transfer import (
 )
 from miriam_agent.judgment.decide import Judge, decide
 from miriam_agent.judgment.schema import Decision
+from miriam_agent.turn_routing import (
+    TurnRoute,
+    classify_turn,
+    classify_turn_with_nl,
+    inflow_id_for_alert,
+    looks_like_inflow_alert,
+)
 from miriam_agent.voice.generate import UNAVAILABLE_LINE, deterministic_message, speak
 from miriam_agent.voice.memory import read_facts
 
@@ -122,6 +134,7 @@ class Orchestrator(
         cards_enabled: bool = False,
         card_channels: tuple[str, ...] | list[str] = ("imessage",),
         journal: Any | None = None,
+        payment_refs: PaymentRefStore | None = None,
     ) -> None:
         self.store = store or InMemoryLedgerStore()
         self.policy = policy or Policy()
@@ -143,13 +156,18 @@ class Orchestrator(
         self.card_channels = tuple(card_channels)
         # Durable audit sink, injected by the API layer (which owns Postgres).
         # Called with the event and the finished TurnResult for every turn
-        # that produced a receipt. Fail-open by contract: an audit outage is
-        # logged, never allowed to break a settled money turn.
+        # that produced a receipt. Fail-closed by contract (G25): an audit
+        # outage is raised as unavailable, never allowed to pass as a
+        # settled money turn with no durable row.
         self.audit_sink = audit_sink
         # Exactly-once journal for the transfer path (Postgres in production,
         # process-local default inside execute_transfer when None). Wired by
         # the API layer, which owns Postgres; tests leave it None.
         self.journal = journal
+        # Durable dedupe for inbound payments (G23/C052). When None the inflow
+        # path keeps the legacy behaviour (ledger idempotency only). Wired by
+        # the API layer, which owns Postgres; tests inject the in-memory store.
+        self.payment_refs = payment_refs
 
     # -- the door ---------------------------------------------------------
 
@@ -172,27 +190,39 @@ class Orchestrator(
             # Face ID provenance rides on the audit rows, never on the
             # decision: the trail shows which factor settled the challenge.
             result = self._tag_provenance(result, event.provenance)
-        await self._emit_audit(event, result)
+        # G25: durable audit write is required. If it fails after retries,
+        # treat as unavailable so the caller retries rather than seeing a
+        # false "done" with settled money but no durable row.
+        try:
+            await self._emit_audit(event, result)
+        except Exception as exc:  # noqa: BLE001
+            # Ledger movement already persisted (Redis); durable audit did not.
+            # Raise as unavailable so API layers return 503 (retryable) not 500.
+            from miriam_agent.hands.ledger import LedgerUnavailable as _LU
+
+            logger.error(
+                "durable audit write failed for receipt %s: %s",
+                getattr(result.receipt, "id", "?"),
+                exc,
+            )
+            # Only surface LedgerUnavailable when money moved; pure audit/journal races
+            # without a receipt are not money-unavailable; no 503 retry storm.
+            if getattr(result, "receipt", None) is not None:
+                raise _LU(f"durable audit unavailable: {exc}") from exc
+            raise
         return result
 
     async def _emit_audit(self, event: Event, result: TurnResult) -> None:
         """Persist what the turn did, via the injected sink.
 
-        Only turns with a receipt are emitted: a receipt is the fact that
-        money was attempted, moved, or refused, and it is what the durable
-        store must show later. The sink is fail-open — the receipt already
-        lives in the ledger, so an audit outage degrades the paper trail
-        without turning a settled turn into an error.
+        Only turns with a receipt are emitted. G25: fail-closed — if the
+        durable write fails after retries, raise so handle() withholds the
+        success narration. The Redis receipt keeps the movement; the caller
+        gets a retryable error instead of a false "done".
         """
         if self.audit_sink is None or result.receipt is None:
             return
-        try:
-            await self.audit_sink(event, result)
-        except Exception:
-            logger.exception(
-                "audit sink failed; receipt %s kept in ledger only",
-                result.receipt.id,
-            )
+        await self.audit_sink(event, result)
 
     async def _dispatch(self, event: Event) -> TurnResult:
         ledger = await self.store.load(event.user_id)
@@ -232,12 +262,21 @@ class Orchestrator(
         payment_id: str,
         amount: Decimal,
         source_raw: str = "",
+        *,
+        channel: str = "",
+        sender_handle: str = "",
+        reference: str = "",
     ) -> TurnResult:
         """Handle money arriving. Called by the rail webhook; reachable from
         chat only through the demo escape hatch (ALLOW_CHAT_INFLOW_SYNTH).
 
         ``payment_id`` is the rail's id for the payment and doubles as the
         idempotency key, so a webhook that is delivered twice splits once.
+
+        ``channel``/``sender_handle``/``reference`` are the structured payment
+        identity (G23/C052). When a ``reference`` is present the dedupe key is
+        built from those columns, not from ``source_raw``, so the same transfer
+        worded differently still splits once.
         """
         return await self.handle(
             Event(
@@ -246,6 +285,9 @@ class Orchestrator(
                 inflow_id=payment_id,
                 amount=amount,
                 source_raw=source_raw,
+                channel=channel,
+                sender_handle=sender_handle,
+                reference=reference,
             )
         )
 
@@ -262,6 +304,30 @@ class Orchestrator(
             raise ValueError("an inflow event needs an amount")
         audit = AuditLog()
         inflow_id = event.inflow_id or f"inflow_{self.clock().timestamp()}"
+
+        # G23/C052: durable dedupe on the structured key (channel, sender,
+        # amount, reference), never the raw text. The claim row is written
+        # BEFORE the ledger moves; a unique violation means a duplicate, so we
+        # return the original receipt and move nothing.
+        key = PaymentRefKey.of(
+            channel=event.channel or "rail",
+            sender_handle=event.sender_handle,
+            amount_minor=amount_to_minor(event.amount),
+            reference=event.reference,
+        )
+        if key.complete:
+            # The derived id is stable across wordings, so a duplicate resolves
+            # to the same ledger inflow and the ordinary replay finds the
+            # original receipt.
+            inflow_id = inflow_id_for_payment(key)
+            if self.payment_refs is not None:
+                claim = await self.payment_refs.claim(
+                    key=key,
+                    payload_hash=payload_hash(event.source_raw),
+                    raw_payload=event.source_raw,
+                )
+                if claim.duplicate:
+                    return await self._duplicate_inflow(ledger, inflow_id)
 
         # Judgment sees the inflow before it is split, so the classification is
         # made on what arrived rather than on what it became.
@@ -304,6 +370,40 @@ class Orchestrator(
             decision=state.decision,
             receipt=outcome.receipt,
             audit=audit.rows,
+        )
+
+    async def _duplicate_inflow(self, ledger: Ledger, inflow_id: str) -> TurnResult:
+        """A repeat of a payment already recorded. Nothing moves.
+
+        The original receipt is returned when the ledger still holds it. If a
+        racing winner has not saved yet, a replay receipt is returned instead:
+        the caller learns the payment was already recorded, and the ledger
+        still shows exactly one split.
+        """
+        existing = ledger.receipt_for(inflow_id)
+        if existing is not None:
+            receipt = existing.model_copy(update={"idempotent_replay": True})
+        else:
+            receipt = Receipt(
+                id=f"rcpt_duplicate_{inflow_id}",
+                at=self.clock(),
+                status="executed",
+                action="inflow_duplicate",
+                currency=ledger.currency,
+                amount=money(0),
+                sleeve="spendable",
+                idempotency_key=inflow_id,
+                idempotent_replay=True,
+                detail="duplicate payment reference; nothing moved",
+            )
+        state = build_state(ledger=ledger, policy=self.policy, now=self.clock())
+        # Deterministic narration: a duplicate is not a moment for the model to
+        # invent a second arrival. The fixed line states the true thing.
+        return TurnResult(
+            state=state,
+            narration="That payment is already on the books. I did not count it twice.",
+            decision=state.decision,
+            receipt=receipt,
         )
 
     # -- utterance --------------------------------------------------------
@@ -877,215 +977,6 @@ class Orchestrator(
 # can never smuggle a figure Voice did not earn from the Go result.
 
 
-# ---------------------------------------------------------------------------
-# Which entrypoint owns this turn
-# ---------------------------------------------------------------------------
-
-TurnRoute = Literal["orchestrator", "agent"]
-
-# Words that ask for money to move. Deliberately the same vocabulary the parser
-# in hands/transfer.py understands, so a turn is never routed here for a phrase
-# the parser would then ignore.
-_MOVE_WORDS = frozenset(
-    {
-        "send",
-        "transfer",
-        "pay",
-        "give",
-        "move",
-        "split",
-        "lock",
-        "unlock",
-        "freeze",
-        "release",
-        "reserve",
-    }
-)
-
-# Words that ask for money to move into the stock sleeve. Deliberately the
-# same vocabulary the parser in hands/invest.py understands, so a turn is
-# never routed here for a phrase the parser would then ignore. Single-name
-# tickers are not here: they are a later verb, not the sleeve.
-_INVEST_WORDS = frozenset({"invest", "stocks", "sleeve"})
-
-# Words that ask for a single-name sleeve transaction or a sleeve rebalance.
-# Deliberately the same vocabulary hands/orders.py understands, so a turn is
-# never routed here for a phrase the parser would then ignore. A bare ticker
-# alone is not enough: the parser needs a side, an amount, and a symbol.
-_ORDER_WORDS = frozenset({"buy", "sell", "long", "short", "trim", "dump"})
-_REBALANCE_WORDS = frozenset({"rebalance", "re-balance", "rebal"})
-_SLEEVE_NOUNS = frozenset({"sleeve", "stocks", "stock", "portfolio"})
-
-# NGN <-> crypto funding. "buy"/"sell" plus a crypto/naira word routes to the
-# orchestrator when an amount is present, mirroring hands/funding.py.
-_FUND_WORDS = frozenset({"buy", "sell"})
-_CRYPTO_WORDS = frozenset(
-    {
-        "bitcoin",
-        "btc",
-        "usdt",
-        "usdc",
-        "crypto",
-        "naira",
-        "ngn",
-        "top up",
-        "top-up",
-        "fund",
-        "add money",
-        "onramp",
-        "offramp",
-        "cash out",
-        "cashout",
-    }
-)
-
-# Frames that ask whether something is affordable. A judgement question, not a
-# statement of fact, so it goes to Judgment rather than to the answer path.
-_AFFORD_FRAMES = (
-    "can i afford",
-    "can i buy",
-    "can i get",
-    "could i afford",
-    "could i buy",
-    "should i buy",
-    "do i have enough",
-    "is it affordable",
-    "afford",
-)
-
-# Track changes. The track is the income split, so changing it is a money
-# decision and never a chat answer.
-_TRACK_FRAMES = (
-    "change my track",
-    "change the track",
-    "set my track",
-    "set the track",
-    "switch to ",
-    "change my split",
-    "update my split",
-    "change my ratios",
-)
-
-# Inflow alerts pasted into chat, e.g. "Credit alert: NGN420,000.00 from ACME".
-# The authoritative inflow path is the rail webhook; this is for a forwarded
-# alert. The derived id is stable, so re-pasting the same alert splits once.
-_INFLOW_FRAMES = (
-    "credit alert",
-    "debit alert",
-    "you received",
-    "you have received",
-    "credited with",
-    "inflow of",
-    "payment received",
-    "salary alert",
-    # Payday language typed by hand. The rail webhook is authoritative for real
-    # money; a pasted "i just got paid 100" splits the same 70/30 book so the
-    # demo loop and manual top-ups behave like the rail.
-    "got paid",
-    "payday",
-)
-
-_AMOUNT_HINT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?", re.UNICODE)
-
-
-def looks_like_inflow_alert(text: str) -> bool:
-    """Whether a message is a forwarded inflow alert rather than an order.
-
-    A message that also names a movement verb is an instruction, not an alert,
-    so it belongs to the utterance path.
-    """
-    lowered = (text or "").casefold()
-    if not any(frame in lowered for frame in _INFLOW_FRAMES):
-        return False
-    words = set(re.findall(r"[a-z']+", lowered))
-    return not (words & _MOVE_WORDS)
-
-
-# The classifier reads the user's text only. It never calls a model: which layer
-# owns a turn must not be a judgement a model can be talked out of.
-def classify_turn_with_nl(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
-    """Route money intents on deterministic hands/nl.py verdict (G21).
-
-    Falls back to money-turn routing when the nl parser produces a structured
-    action. Low-confidence/None returns ``agent`` so judgment asks rather than
-    silently dropping a Pidgin/photo-caption sale.
-    """
-    if has_confirm_id:
-        return "orchestrator"
-    try:
-        from miriam_agent.hands.nl import parse_transfer_utterance
-
-        if parse_transfer_utterance(text) is not None:
-            return "orchestrator"
-    except Exception:
-        pass
-    return classify_turn(text, has_confirm_id=has_confirm_id)
-
-
-def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
-    """Decide whether a turn is a money turn.
-
-    Money turns belong to the orchestrator, where the only path is
-    Hands -> Judgment -> Hands -> Voice. Everything else is answerable and goes
-    to the agent loop, which cannot move money at all.
-    """
-    if has_confirm_id:
-        return "orchestrator"
-
-    lowered = (text or "").strip().casefold()
-    if not lowered:
-        return "agent"
-
-    if any(frame in lowered for frame in _TRACK_FRAMES):
-        return "orchestrator"
-    if any(frame in lowered for frame in _AFFORD_FRAMES):
-        return "orchestrator"
-
-    words = set(re.findall(r"[a-z']+", lowered))
-    has_amount = bool(_AMOUNT_HINT_RE.search(lowered))
-
-    if looks_like_inflow_alert(lowered) and has_amount:
-        return "orchestrator"
-    # A movement verb with an amount is a money turn. A movement verb without one
-    # ("send it to her") is not parseable, so the agent answers it and the user
-    # gets a question instead of a silent no-op.
-    if has_amount and words & _MOVE_WORDS:
-        return "orchestrator"
-    if has_amount and words & _INVEST_WORDS:
-        return "orchestrator"
-    # A buy/sell of a ticker, or a sleeve rebalance, is a money turn. Both need
-    # an amount (or the sleeve word) to be parseable; a bare ticker with no verb
-    # is a question and goes to the agent.
-    if has_amount and ((words & _ORDER_WORDS) and words & _SLEEVE_NOUNS):
-        return "orchestrator"
-    if words & _REBALANCE_WORDS and words & _SLEEVE_NOUNS:
-        return "orchestrator"
-    if "rent" in words and has_amount and words & {"reserve", "protect", "cover"}:
-        return "orchestrator"
-    # NGN <-> crypto funding: buy/sell + crypto/naira word + amount.
-    if (
-        has_amount
-        and words & _FUND_WORDS
-        and (words & _CRYPTO_WORDS or "top up" in lowered or "add money" in lowered)
-    ):
-        return "orchestrator"
-    # A bare OTP (4-8 digits) answers a pending Paj challenge.
-    if re.fullmatch(r"\s*\d{4,8}\s*", text or ""):
-        return "orchestrator"
-    return "agent"
-
-
-def inflow_id_for_alert(text: str) -> str:
-    """A stable id for an inflow alert pasted into chat.
-
-    Two pastes of the same alert must split once, so the id is derived from the
-    alert rather than minted per turn. The rail webhook path uses the rail's own
-    payment id instead.
-    """
-    digest = hashlib.sha256(" ".join((text or "").split()).casefold().encode())
-    return f"alert_{digest.hexdigest()[:16]}"
-
-
 __all__ = [
     "CHALLENGE_TTL_MINUTES",
     "Event",
@@ -1093,6 +984,7 @@ __all__ = [
     "TurnResult",
     "TurnRoute",
     "classify_turn",
+    "classify_turn_with_nl",
     "inflow_id_for_alert",
     "looks_like_inflow_alert",
 ]

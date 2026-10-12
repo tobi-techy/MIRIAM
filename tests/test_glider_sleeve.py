@@ -879,7 +879,9 @@ def test_sleeve_reads_registered_and_writes_are_not() -> None:
 # -- divergence + partial hardening (PR #13 follow-up) ---------------------------
 
 
-async def test_prepare_topup_diverged_parks_and_retap_replays_without_refund(monkeypatch) -> None:
+async def test_prepare_topup_diverged_parks_and_retap_replays_without_refund(
+    monkeypatch,
+) -> None:
     from miriam_agent.hands.ledger import Ledger, LedgerError
 
     store = InMemoryLedgerStore()

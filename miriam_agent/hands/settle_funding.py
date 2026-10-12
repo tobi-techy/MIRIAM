@@ -275,7 +275,7 @@ class FundingSettlementMixin:
             confirm_id=challenge.id,
         )
 
-        def _rejected(reasons: list[str], detail: str) -> Receipt:
+        def _rejected(reasons: list[str], detail: str) -> _Receipt:
             before = sleeves_snapshot(ledger.sleeves)
             receipt = _Receipt(
                 id=f"rcpt_bill_{challenge.id[-8:]}",
@@ -335,7 +335,10 @@ class FundingSettlementMixin:
             if not isinstance(paid, dict) or paid.get("_tool_error"):
                 receipt = _rejected(
                     ["BILL_PAY_FAILED"],
-                    str((paid or {}).get("_tool_error") or "Airbills did not accept the bill"),
+                    str(
+                        (paid or {}).get("_tool_error")
+                        or "Airbills did not accept the bill"
+                    ),
                 )
                 card = None
             else:

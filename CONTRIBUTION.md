@@ -153,6 +153,48 @@ If you have questions about the codebase or need help with your changes:
 3. Ask in the team's communication channel
 4. Refer to the contribution guidelines above
 
+## Spec Change Control
+
+Miriam's behavioral specification is stored in `docs/miriam_spec/` and managed through version 1.2. All spec references in the codebase (e.g., "spec §5", "spec v1.1 §6") point to this canonical document. Changes to the spec require special attention because they affect how the agent behaves, what it can say, and how it makes decisions.
+
+### Editing the Spec
+
+1. **Version Bumps**
+   - Minor changes (typos, clarifications): increase patch (e.g., 1.2 → 1.3)
+   - New sections or behavioral rules: increase minor (e.g., 1.2 → 2.0)
+   - Breaking changes: increase major (e.g., 1.2 → 2.0)
+
+2. **Change Documentation**
+   - Edit `docs/miriam_spec/miriam_spec_vX.Y.md`
+   - Update `docs/miriam_spec/CHANGELOG.md` with:
+     - Clear description of changes
+     - Impact assessment
+     - Required actions for downstream code
+     - Reference to benchmark results
+
+3. **Testing Requirements**
+   - Run the full test suite including:
+     - `make test` or `pytest`
+     - `make lint` and `mypy miriam_agent`
+     - The new spec-gate tests (`tests/test_miriam_spec.py`)
+   - Ensure all 262+ existing tests still pass
+   - Verify that spec examples still validate correctly
+
+4. **Review Process**
+   - Spec changes require a senior engineer review
+   - Changes must be clearly justified with use-case examples
+   - Behavioral impact must be documented
+   - All references to the old version must be updated
+
+### Spec Validation
+
+The CI pipeline now includes a **spec-gate step** that runs:
+- `tests/test_miriam_spec.py` - validates document structure and references
+- `tests/test_spec_examples.py` - validates good/bad example pairs
+- This ensures the spec never drifts from what the code expects
+
+If spec-gate tests fail, PRs cannot be merged until the document is fixed.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.

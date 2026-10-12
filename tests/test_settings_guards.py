@@ -92,7 +92,7 @@ def test_production_uses_go_issuer_and_open_cors_when_unset(monkeypatch):
 
 
 def test_decode_accepts_go_agent_token_when_dashboard_audience_is_set(monkeypatch):
-    """Go mints iss=rail_service and omits aud. A leftover JWT_AUDIENCE must not 401 the chat."""
+    """Go mints iss=rail_service and omits aud; old JWT_AUDIENCE must not 401."""
     import jwt as pyjwt
 
     monkeypatch.setenv("JWT_SECRET", "j" * 40)
@@ -104,7 +104,12 @@ def test_decode_accepts_go_agent_token_when_dashboard_audience_is_set(monkeypatc
     get_settings.cache_clear()
     try:
         token = pyjwt.encode(
-            {"sub": "user-1", "iss": "rail_service", "exp": 9999999999, "token_type": "agent"},
+            {
+                "sub": "user-1",
+                "iss": "rail_service",
+                "exp": 9999999999,
+                "token_type": "agent",
+            },
             "j" * 40,
             algorithm="HS256",
         )

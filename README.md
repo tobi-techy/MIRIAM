@@ -46,3 +46,8 @@ Currently in Phase 1: Production Foundations
 - [ ] Database setup
 - [ ] Vector memory layer
 - [ ] Safety boundaries
+
+## Deployment Targets
+
+MIRIAM Python deploys only via **AtlasFlow** (see `docker-compose.yml`).
+There are no `fly.toml`/`k8s`/`helm`/`terraform` deploy manifests in this repo; RAIL_BACKEND is the only service with archived dead targets. Adding a second deploy target must go through AtlasFlow exclusively.

@@ -309,3 +309,7 @@ This contract is backed by:
 - The canonical design docs (`docs/MIRIAM-NETWORK-ARCHITECTURE.md`, `docs/MIRIAM-ALWAYS-ON-AGENT-ARCHITECTURE.md`) define the trust model, playbooks, and noise gate that enforce the layering.
 
 All existing code remains untouched except for the three grandfathered violations, the trace-id plumbing, and CI tooling additions. No breaking changes to public APIs.
+
+## M0 Addendum (G27)
+
+Database DDL is owned by **Alembic** (`alembic/versions/001_baseline.py`). `Base.metadata.create_all()` remains idempotent for local/dev/tests but must not introduce schema differences outside a migration. CI must fail if `alembic check` or `alembic upgrade --sql` would drift from `models.py`.
