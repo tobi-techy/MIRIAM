@@ -287,8 +287,7 @@
       "status": "partial",
       "evidence": [
         "tests/test_shop_service.py::test_stock_book_reply_reports_the_checked_numbers",
-        "tests/test_shop_endpoint.py::test_read_returns_the_checked_reply",
-        "eval/shop_read_eval.py::live big-and-routed-exact"
+        "tests/test_shop_endpoint.py::test_read_returns_the_checked_reply"
       ],
       "gap": "Live end to end on the one handwritten page in hand: the big and routed reads returned all 7 rows with N286,300 on hand and the N31,900 gap exactly, and the small model matched 2 of 3 pages. No golden set of real pages yet, and one row of that page (a crossed-out Dangote line) is where tiers diverge.",
       "eval": {
