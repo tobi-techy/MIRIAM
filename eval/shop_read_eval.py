@@ -66,10 +66,14 @@ CASES: list[Case] = [
         doc_kind="stock_book",
         expect={
             "doc_type": "stock_book",
+            "rows_read": 7,
             "computed_total": "N286,300",
             "written_total": "N254,400",
             "gap": "N31,900",
-            "rows_failing": 0,
+            # The page really does have one row that does not add up: Dangote
+            # Spag reads 30 + 20 - 22 = 28 with 29 written beside it. A live read
+            # found exactly that, so 1 is the page, not a model error.
+            "rows_failing": 1,
         },
     ),
     Case(
@@ -508,6 +512,29 @@ async def _close_everything() -> None:
     await close_reader_client()
 
 
+def _usable_modes(
+    modes: list[str], *, has_jev_key: bool
+) -> tuple[list[str], list[str]]:
+    """Drop ``routed`` when Jev has no key, instead of the whole run.
+
+    Returns the modes that can run and the reasons the others were dropped, so a
+    missing TypeSafe key costs only the routed column and not the accuracy
+    evidence from small and big.
+    """
+    usable: list[str] = []
+    notes: list[str] = []
+    for mode in modes:
+        if mode == "routed" and not has_jev_key:
+            notes.append(
+                "routed: TYPESAFE_API_KEY is not set, so Jev cannot route. "
+                "Everything else about routed mode is exercised by small and "
+                "big plus the faked-judge tests."
+            )
+            continue
+        usable.append(mode)
+    return usable, notes
+
+
 async def run(modes: list[str], names: list[str] | None) -> int:
     from miriam_agent.config.settings import get_settings
 
@@ -515,8 +542,12 @@ async def run(modes: list[str], names: list[str] | None) -> int:
     if not settings.LLMAPI_API_KEY:
         print("SKIPPED: LLMAPI_API_KEY is not set, so no live read can run.")
         return 0
-    if "routed" in modes and not settings.TYPESAFE_API_KEY:
-        print("SKIPPED: TYPESAFE_API_KEY is not set, so routed mode cannot run.")
+
+    modes, dropped = _usable_modes(modes, has_jev_key=bool(settings.TYPESAFE_API_KEY))
+    for note in dropped:
+        print(f"DROPPED MODE: {note}")
+    if not modes:
+        print("No runnable modes left.")
         return 0
 
     cases = [c for c in CASES if not names or c.name in names]
