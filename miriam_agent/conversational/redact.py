@@ -1,7 +1,8 @@
 """Memory-safe redaction of money figures from assistant output.
 
-Supermemory carries *facts* about a person, never *balances*. A money turn's narration is full of computed
-figures — "you're at ₦720", "sent ₦50,000 to @bisi" — and if those land in the
+Supermemory carries *facts* about a person, never *balances*. A money turn's narration
+is full of computed figures — "you're at ₦720", "sent ₦50,000 to @bisi" — and if those
+land in the
 graph they become durable "facts" that a later turn will quote as *current*,
 violating TRUTH RULE #1 (never state a number you can't point to a fresh source).
 

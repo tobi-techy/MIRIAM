@@ -1,7 +1,8 @@
 """Stage 2 — the safety stack, and the ``investing_allowed`` gate.
 
 This module exists to make one thing impossible: recommending an investment to
-someone who has not earned the right to make one yet. It runs in a fixed order, and the order is not negotiable:
+someone who has not earned the right to make one yet. It runs in a fixed order, and the
+order is not negotiable:
 
     1. stop the bleed          spend > income          -> investing forbidden
     2. build the buffer        1 month if debt is on fire, else 3 (steady) / 6
