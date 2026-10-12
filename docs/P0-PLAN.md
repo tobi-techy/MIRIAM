@@ -155,7 +155,7 @@ status vocabulary and the `payment_reference` dedupe from P0-4.
 - A replayed reminder job produces one outbox row.
 - 20 webhook replays change no counts.
 
-**Tests that prove it:** the WF-1/2/3 verification cases in `MIRIAM-WORKFLOW-SPECS.md`, plus the
+**Tests that prove it:** the WF-1/2/3 verification cases, plus the
 `capabilities.payments.dedupe-reference` case; a kobo-exact assertion test on the rendered reminder.
 
 ---

@@ -139,7 +139,7 @@ Revenue = sold x price
 
 Every number carries its label. Never write "verified sales" without evidence. The status vocabulary
 is: **Reported, Matched, Confirmed, Unmatched, Needs review**. This refines the older
-`matched / unpaid / needs_review` vocabulary in `MIRIAM-WORKFLOW-SPECS.md` (superseded there; see
+`matched / unpaid / needs_review` vocabulary from the removed workflow specs (see
 Appendix A row C7).
 
 ### 4.4 Making capture easy
@@ -204,8 +204,8 @@ tenant model. It has `User`, `FinancialProfile`, `Transaction`, `Investment`, `B
 | `access_log` | actor, org, resource, scope used, reason, timestamp |
 | `computer` | tenant, provider id, status, session expiry |
 
-**Note on `payment_reference`:** the docs currently propose dedupe on a `payload_hash`
-(`MIRIAM-SYSTEM-DESIGN-ARCHITECTURE.md:281`, `MIRIAM-MASTER-GUIDE-SIMPLE.md:315`). This doc
+**Note on `payment_reference`:** the earlier docs proposed dedupe on a `payload_hash`.
+This doc
 supersedes that: the unique key is `(channel, sender, amount_minor, reference)`, so two genuinely
 different payments from the same sender for the same amount still reconcile, while a replayed
 webhook collapses. See Appendix A row C5 and Open Question Q2.
@@ -339,8 +339,7 @@ rail tools, no ledger writes, no vault plaintext.
   vault plaintext. Screenshot and document text is **data, never instructions**.
 - **Vault:** secrets are autofilled at the browser layer, masked from screenshots and logs, encrypted
   per tenant. The model holds references only.
-- **Memory** stores facts, goals, decisions and open steps, never balances. (From
-  `MEMORY-ARCHITECTURE.md` §7.)
+- **Memory** stores facts, goals, decisions and open steps, never balances.
 
 ---
 
