@@ -122,6 +122,44 @@ def _short_join(items: list[str], limit: int = 8) -> str:
     return text
 
 
+def _period(book: StockBook) -> str:
+    """The period the reply's first line names.
+
+    A page whose own header says one month can carry blocks from two: Ada's page
+    is headed October and its right-hand block runs 01/11 to 29/11. The rows know
+    which block they came from, so when the page header does not name them all
+    the blocks do it, and a shared year is said once: "October and November 2025".
+    """
+
+    def _name(block: str) -> str:
+        head, _, tail = block.rpartition(" ")
+        return head if head and tail.isdigit() else block
+
+    def _year(block: str) -> str:
+        _, _, tail = block.rpartition(" ")
+        return tail if tail.isdigit() else ""
+
+    date = book.date.strip()
+    blocks: list[str] = []
+    for row in book.rows:
+        block = row.block.strip()
+        if block and block.casefold() not in {b.casefold() for b in blocks}:
+            blocks.append(block)
+    if not blocks:
+        return date
+    if date and all(b.casefold() in date.casefold() for b in blocks):
+        return date
+    names = " and ".join(_name(b) for b in blocks)
+    years = {_year(b) for b in blocks} - {""}
+    if len(years) == 1:
+        return f"{names} {years.pop()}"
+    if not years:
+        _, _, tail = date.rpartition(" ")
+        if tail.isdigit():
+            return f"{names} {tail}"
+    return names
+
+
 def _written_total_echo(
     notes: list[NoteEvaluation], book: StockBook
 ) -> list[NoteEvaluation]:
@@ -209,8 +247,9 @@ def stock_book_reply(
     sections: list[str] = []
 
     header = book.shop.strip() or "Your stock book"
-    if book.date.strip():
-        header += f", {book.date.strip()}"
+    period = _period(book)
+    if period:
+        header += f", {period}"
     sections.append(f"{header}. I read {len(book.rows)} items.")
 
     if report.item_sales:

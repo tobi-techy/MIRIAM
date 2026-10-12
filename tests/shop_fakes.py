@@ -302,7 +302,7 @@ def ada_stock_book(**overrides: Any) -> StockBook:
     rows = [
         StockRow(
             item=item,
-            block="October",
+            block="October 2025",
             opening=opening,
             supplied=supplied,
             sold=sold,
@@ -314,7 +314,7 @@ def ada_stock_book(**overrides: Any) -> StockBook:
     rows += [
         StockRow(
             item=item,
-            block="November",
+            block="November 2025",
             opening=None,
             supplied=supplied,
             sold=sold,

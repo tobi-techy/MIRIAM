@@ -55,7 +55,7 @@ def test_the_reply_asks_for_the_opening_it_was_never_shown() -> None:
     assert "Ada's General Trading, October and November 2025. I read 24 items." in reply
     assert "Eva Water (75cl) (160 + 80 - 30 = 210, book says 190)." in reply
     assert "Milo (400g) (40 + 25 - 10 = 55, book says 50)." in reply
-    assert "What did you start November with for Indomie (Chicken)?" in reply
+    assert "What did you start November 2025 with for Indomie (Chicken)?" in reply
     # The other eight November rows are not mentioned as failures at all.
     for quiet in ("Peak Milk (500g)", "Golden Morn", "Soya Beans", "Dettol (750ml)"):
         assert f"{quiet} (" not in reply
@@ -67,7 +67,7 @@ def test_a_row_that_does_not_add_up_is_not_confirmed_twice() -> None:
     reply = _reply(ada_stock_book())
     assert "check the numbers, they do not add up" not in reply
     confirm = reply.split("Please confirm:", 1)[1]
-    assert "What did you start November with for Indomie (Chicken)?" in confirm
+    assert "What did you start November 2025 with for Indomie (Chicken)?" in confirm
     assert "Eva Water" not in confirm
     assert "Milo (400g)" not in confirm
 
@@ -126,4 +126,15 @@ def test_the_page_round_trips_through_the_extraction_schema() -> None:
     again = StockBook.model_validate(payload)
     assert len(again.rows) == 24
     assert [r.opening for r in again.rows[14:]] == [None] * 10
-    assert {r.block for r in again.rows} == {"October", "November"}
+    assert {r.block for r in again.rows} == {"October 2025", "November 2025"}
+
+
+def test_the_header_names_every_block_the_page_carries() -> None:
+    """The page's own header says October; its right-hand block runs 01/11 to
+    29/11. The rows know their blocks, so the reply says both, with the shared
+    year named once."""
+    book = ada_stock_book()
+    book.date = "October 2025"
+    assert _reply(book).startswith(
+        "Ada's General Trading, October and November 2025. I read 24 items."
+    )
