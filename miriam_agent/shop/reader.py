@@ -13,12 +13,13 @@ model id is hardcoded here.
 from __future__ import annotations
 
 import base64
+import copy
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from miriam_agent.agents.llm import (
     ChatMessage,
@@ -73,6 +74,20 @@ class CellCorrection(_Strict):
     path: str = ""
     value: str = ""
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _stringify(cls, v: Any) -> Any:
+        """A correction that arrives as a JSON number is still a value.
+
+        Strict ``str`` would reject ``27`` and take the whole verify pass down
+        with it, losing every other correction in the same answer.
+        """
+        if isinstance(v, bool):
+            return str(v).lower()
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
+
 
 class Verification(_Strict):
     corrections: list[CellCorrection] = Field(default_factory=list)
@@ -81,7 +96,10 @@ class Verification(_Strict):
 _EXTRACT_SYSTEM = (
     "You read a Nigerian shop document from an image. Copy exactly what is "
     "written. Do not calculate, correct or tidy any number: if the book says "
-    "N24,800, you write N24,800 even when the multiplication looks wrong. "
+    "N24,800, you write N24,800 even when the multiplication looks wrong, and "
+    "if a line reads 6 x N3,800 with an amount of N24,800 you write 24800 as "
+    "the amount even though you know 6 x 3,800 is 22,800. Never reconcile "
+    "printed arithmetic, and never substitute your own product. "
     "Money is a decimal string in naira with no commas and no currency symbol "
     "(write 9800, not N9,800). Keep any crossed-out value as both the old and "
     "the new number rather than choosing one. Mark a cell unclear by naming it "
@@ -169,6 +187,23 @@ def _split_path(path: str) -> list[str | int] | None:
     return keys
 
 
+def _path_exists(data: Any, keys: list[str | int]) -> bool:
+    """True when the path names a cell that is actually there."""
+    node = data
+    for key in keys:
+        if isinstance(node, dict) and isinstance(key, str):
+            if key not in node:
+                return False
+            node = node[key]
+        elif isinstance(node, list) and isinstance(key, int):
+            if not 0 <= key < len(node):
+                return False
+            node = node[key]
+        else:
+            return False
+    return True
+
+
 def _apply_correction(data: Any, keys: list[str | int], value: str) -> bool:
     """Set one cell. Returns False when the path does not exist."""
     node = data
@@ -185,23 +220,69 @@ def _apply_correction(data: Any, keys: list[str | int], value: str) -> bool:
     return True
 
 
+def _unwrap_annotation(annotation: Any) -> Any:
+    """``list[X]`` / ``dict[str, X]`` / ``X | None`` -> ``X``, recursively."""
+    origin = get_origin(annotation)
+    if origin is None:
+        return annotation
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    if not args:
+        return annotation
+    if origin in (list, set, frozenset, tuple):
+        return _unwrap_annotation(args[0])
+    if origin is dict:
+        return _unwrap_annotation(args[-1])
+    return _unwrap_annotation(args[0]) if len(args) == 1 else args[0]
+
+
+def _leaf_annotation(model: type[BaseModel], keys: list[str | int]) -> Any:
+    """The declared type of the last cell in a path like ``rows[3].crossed_out.new``.
+
+    Walking the path matters: a correction aimed at a nested cell must be
+    coerced by that cell's own type, not by the root model's. Looking ``new`` up
+    on ``StockBook`` finds nothing, which used to fall through to "the value
+    looks numeric, make it an int" and handed ``crossed_out.new`` an int, so
+    pydantic rejected the whole corrected extraction and a real correction was
+    silently dropped.
+    """
+    annotation: Any = model
+    for key in keys:
+        current = _unwrap_annotation(annotation)
+        if not (isinstance(current, type) and issubclass(current, BaseModel)):
+            return current
+        if isinstance(key, int):
+            # An index does not change the item type: list[X] is unwrapped.
+            continue
+        field = current.model_fields.get(str(key))
+        if field is None:
+            return Any
+        annotation = field.annotation
+    return _unwrap_annotation(annotation)
+
+
 def _coerce_value_for_field(
-    model: type[BaseModel], keys: list[str | int], value: str
+    model: type[BaseModel], keys: list[str | int], value: Any
 ) -> Any:
-    """Keep the correction the same JSON type the field expects."""
-    field_name = keys[-1]
-    if isinstance(field_name, str) and field_name in getattr(model, "model_fields", {}):
-        annotation = str(model.model_fields[field_name].annotation)
-        if "int" in annotation and "None" not in annotation:
-            try:
-                return int(value)
-            except ValueError:
-                return value
-    # Numeric-looking strings for optional int cells become ints where the
-    # field allows it; the pydantic re-validation below is the final gate.
-    if re.fullmatch(r"-?\d+", value or ""):
-        return int(value)
-    return value
+    """Keep the correction the same JSON type the field it names expects."""
+    leaf = _leaf_annotation(model, keys)
+    text = value if isinstance(value, str) else str(value)
+    if leaf is str:
+        # A crossed-out "27" is text, not a count. Coercing it to int is what
+        # made the corrected extraction fail validation.
+        return text
+    if leaf is int:
+        try:
+            return int(text.strip())
+        except ValueError:
+            return text
+    if leaf is float:
+        try:
+            return float(text.strip())
+        except ValueError:
+            return text
+    if leaf is bool:
+        return text.strip().lower() in ("true", "yes", "1")
+    return text
 
 
 @dataclass
@@ -233,7 +314,6 @@ async def _one_read(
     model_path.append(f"{tier_label}:verify")
 
     # Pass (b): corrections only where a specific cell is named.
-    corrections_applied = 0
     try:
         verify_messages = _verify_messages(prepared, extraction, caption)
         response = await provider.complete_structured(
@@ -248,22 +328,50 @@ async def _one_read(
         flags.append("verify pass unavailable")
         verification = Verification()
 
-    data = extraction.model_dump()
+    original = extraction.model_dump()
+    candidates: list[tuple[list[str | int], Any, str]] = []
     for correction in verification.corrections:
         keys = _split_path(correction.path)
-        if not keys or not _apply_correction(
-            data, keys, _coerce_value_for_field(schema, keys, correction.value)
-        ):
+        if not keys or not _path_exists(original, keys):
             flags.append(f"verify pointed at an unknown cell: {correction.path}")
             continue
-        corrections_applied += 1
-    if corrections_applied:
-        flags.append(f"verify corrected {corrections_applied} cell(s)")
+        candidates.append(
+            (
+                keys,
+                _coerce_value_for_field(schema, keys, correction.value),
+                correction.path,
+            )
+        )
+
+    if candidates:
+        # The common case: the whole batch is valid, so apply it in one go.
+        batch = copy.deepcopy(original)
+        for keys, value, _ in candidates:
+            _apply_correction(batch, keys, value)
         try:
-            extraction = schema.model_validate(data)
+            extraction = schema.model_validate(batch)
+            flags.append(f"verify corrected {len(candidates)} cell(s)")
         except ValidationError as e:
-            logger.warning("corrected extraction invalid, keeping original: %s", e)
-            flags.append("verify correction rejected by schema")
+            # One correction that cannot be valid must not roll back the rest.
+            # A live read hit exactly this: the verify pass offered "10 ctn" for
+            # an int qty, and every other correction in the same answer was
+            # thrown away with it.
+            logger.warning("verify batch rejected, applying one at a time: %s", e)
+            kept = 0
+            current = copy.deepcopy(original)
+            for keys, value, path in candidates:
+                trial = copy.deepcopy(current)
+                _apply_correction(trial, keys, value)
+                try:
+                    schema.model_validate(trial)
+                except ValidationError:
+                    flags.append(f"verify correction dropped: {path}")
+                    continue
+                current = trial
+                kept += 1
+            extraction = schema.model_validate(current)
+            if kept:
+                flags.append(f"verify corrected {kept} cell(s)")
 
     confidence = _mean_confidence(extraction)
     return extraction, flags, confidence, model_path

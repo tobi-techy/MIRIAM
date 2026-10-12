@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -15,10 +16,11 @@ from miriam_agent.shop.reader import (
     ReadBudget,
     ReadCapExceeded,
     ReadFailed,
+    _leaf_annotation,
     read_document,
     read_on_tier,
 )
-from miriam_agent.shop.schemas import StockBook, SupplierDocument
+from miriam_agent.shop.schemas import CrossedOut, StockBook, SupplierDocument
 
 
 def png_bytes(size: tuple[int, int] = (600, 400)) -> bytes:
@@ -198,3 +200,106 @@ async def test_read_document_does_not_read_a_second_time_after_the_cap(
             provider_factory=provider_factory(small, big),
         )
     assert big.extract_calls == 0
+
+
+def test_leaf_annotation_walks_into_nested_models_and_lists() -> None:
+    assert _leaf_annotation(StockBook, ["rows", 0, "left"]) is int
+    assert _leaf_annotation(StockBook, ["rows", 0, "crossed_out", "new"]) is str
+    assert _leaf_annotation(StockBook, ["written_total_sales_naira"]) is str
+    assert _leaf_annotation(SupplierDocument, ["lines", 2, "qty"]) is int
+    assert _leaf_annotation(StockBook, ["rows", 0, "not_a_field"]) is Any
+
+
+async def test_a_correction_to_a_crossed_out_cell_is_applied_as_text(
+    prepared,
+) -> None:
+    """A live read hit this: "27" became an int and killed the whole correction.
+
+    The verify pass pointed at ``rows[3].crossed_out.new``, the old coercion
+    looked that field up on the root model, found nothing, guessed "int" from the
+    digits, and pydantic then rejected the corrected extraction. The correction
+    was silently dropped.
+    """
+    book = mama_tobi_book()
+    book.rows[0].crossed_out = CrossedOut(old="12", new="13")
+    provider = FakeProvider(
+        [payload(book)],
+        verify={
+            "corrections": [
+                {"path": "rows[0].crossed_out.new", "value": "27"},
+                {"path": "rows[0].sold", "value": "9"},
+            ]
+        },
+    )
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider
+    )
+    assert isinstance(extraction, StockBook)
+    assert extraction.rows[0].crossed_out is not None
+    assert extraction.rows[0].crossed_out.new == "27"
+    assert extraction.rows[0].sold == 9
+    assert "verify corrected 2 cell(s)" in flags
+    assert "verify correction rejected by schema" not in flags
+
+
+async def test_a_correction_value_that_arrives_as_a_json_number_is_accepted(
+    prepared,
+) -> None:
+    book = mama_tobi_book()
+    book.rows[0].crossed_out = CrossedOut(old="12", new="13")
+    provider = FakeProvider(
+        [payload(book)],
+        verify={"corrections": [{"path": "rows[0].crossed_out.new", "value": 27}]},
+    )
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider
+    )
+    assert isinstance(extraction, StockBook)
+    assert extraction.rows[0].crossed_out is not None
+    assert extraction.rows[0].crossed_out.new == "27"
+    assert "verify pass unavailable" not in flags
+    assert "verify corrected 1 cell(s)" in flags
+
+
+async def test_a_numeric_correction_for_a_count_still_becomes_a_number(
+    prepared,
+) -> None:
+    provider = FakeProvider(
+        [payload(mama_tobi_book())],
+        verify={"corrections": [{"path": "rows[1].left", "value": "42"}]},
+    )
+    extraction, _, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider
+    )
+    assert isinstance(extraction, StockBook)
+    assert extraction.rows[1].left == 42
+
+
+async def test_one_bad_correction_does_not_discard_the_others(prepared) -> None:
+    """A live read hit this: the verify pass offered "10 ctn" for an int qty.
+
+    The whole corrected extraction failed validation, so every other correction
+    in the same answer was thrown away too. A bad correction is now dropped on
+    its own, by name, and the good ones survive.
+    """
+    provider = FakeProvider(
+        [payload(mama_tobi_book())],
+        verify={
+            "corrections": [
+                {"path": "rows[0].sold", "value": "10 ctn"},
+                {"path": "rows[1].left", "value": "42"},
+                {"path": "rows[2].price_naira", "value": "1800"},
+            ]
+        },
+    )
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider
+    )
+    assert isinstance(extraction, StockBook)
+    # The two usable corrections landed.
+    assert extraction.rows[1].left == 42
+    assert extraction.rows[2].price_naira == "1800"
+    assert extraction.rows[0].sold == 3  # unchanged, still the read value
+    assert "verify correction dropped: rows[0].sold" in flags
+    assert "verify corrected 2 cell(s)" in flags
+    assert "verify corrected 3 cell(s)" not in flags
