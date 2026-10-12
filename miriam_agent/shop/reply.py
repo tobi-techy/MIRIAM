@@ -64,11 +64,11 @@ def _questions(
 ) -> list[str]:
     out: list[str] = []
     for item, cells in failed_rows:
-        out.append(f"{item}: check the numbers, they do not add up.")
+        out.append(f"{item}: check the numbers, they do not add up")
     for item in low_confidence:
-        out.append(f"{item}: I am not sure I read that row right, please confirm.")
+        out.append(f"{item}: I am not sure I read that row right, please confirm")
     for entry in unclear:
-        out.append(f"{entry}: tell me the value and I will fix it.")
+        out.append(f"{entry}: tell me the value and I will fix it")
     for line in needs_amount:
         out.append(f"How much was this one: {line}?")
     return out
@@ -122,10 +122,14 @@ def stock_book_reply(
             + "."
         )
 
+    # The written/computed gap is already stated above; repeating the check
+    # message would print the same three figures twice in one reply.
     sales_only_failures = [
         c
         for c in report.checks
-        if not c.passed and not c.name.startswith("stock_left:")
+        if not c.passed
+        and not c.name.startswith("stock_left:")
+        and c.name != "written_total_vs_computed"
     ]
     for check in sales_only_failures:
         if check.message:

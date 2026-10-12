@@ -32,6 +32,16 @@ TIER_BIG = "big"
 ROWS_FAILING_ESCALATE = 1
 MISALIGNMENT_ESCALATE = 0.5
 
+# Go classifies first and only sends these three kinds here, so its hint is the
+# routing decision of record. Jev still picks the tier, but it may not route a
+# document out of the feature: on a phone photo of an invoice (no native text to
+# read) it answered "other" with high confidence and the owner got silence.
+_SELF_READ_KINDS = (
+    DocType.STOCK_BOOK.value,
+    DocType.INVOICE.value,
+    DocType.DELIVERY_NOTE.value,
+)
+
 _KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (DocType.STOCK_BOOK.value, ("opening", "supplied", "sold", "left", "stock")),
     (DocType.DELIVERY_NOTE.value, ("delivery note", "waybill", "dn-", "delivered")),
@@ -128,19 +138,30 @@ async def decide_starting_tier(
     confidence = float(judgment.doc_kind.confidence or 0.0)
     probabilities = getattr(judgment.doc_kind, "probabilities", {}) or {}
 
+    overruled = False
+    hint = (doc_hint or "").strip()
+    if hint in _SELF_READ_KINDS and kind not in _SELF_READ_KINDS:
+        logger.info(
+            "jev kind ignored: Go's classifier owns the routing decision",
+            extra={"jev_kind": kind, "go_hint": hint, "confidence": confidence},
+        )
+        kind = hint
+        overruled = True
+
     escalate = difficulty == "hard" or confidence < min_confidence
     tier = TIER_BIG if escalate else TIER_SMALL
-    reason = (
-        f"difficulty={difficulty} confidence={confidence:.2f}"
-        if escalate
-        else f"difficulty={difficulty} confidence={confidence:.2f}"
-    )
+    reason = f"difficulty={difficulty} confidence={confidence:.2f}"
+    if overruled:
+        reason += f" (jev said {judgment.doc_kind.choice}, kept Go hint {hint})"
     return TierDecision(
         tier=tier,
         doc_kind=kind,
         difficulty=difficulty,
         confidence=confidence,
         reason=reason,
+        # Jev disagreed with the classifier of record, so say so and let the
+        # caller escalate rather than trust a cheap read.
+        degraded=overruled,
         probabilities=probabilities,
     )
 

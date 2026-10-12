@@ -53,6 +53,21 @@ def _money_is_decimal_string(v: Any) -> str | None:
     return text
 
 
+def _deduction_is_positive(v: Any) -> str | None:
+    """A discount or a payment the invoice prints as "-2,600" is still 2,600.
+
+    The minus is the invoice column saying "this is subtracted", not a negative
+    amount, and the field name already carries the direction. Keeping the sign
+    made the reply read "Discount -N2,600" and, worse, sent the check to
+    subtotal - (-discount), which reported a N5,200 total mismatch on an invoice
+    whose total was right.
+    """
+    text = _money_is_decimal_string(v)
+    if text is None:
+        return None
+    return text.lstrip("-+").strip()
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -144,9 +159,9 @@ class SupplierDocument(_Strict):
     notes: list[str] = Field(default_factory=list)
 
     _sub = field_validator("subtotal_naira", mode="before")(_money_is_decimal_string)
-    _disc = field_validator("discount_naira", mode="before")(_money_is_decimal_string)
+    _disc = field_validator("discount_naira", mode="before")(_deduction_is_positive)
     _tot = field_validator("total_naira", mode="before")(_money_is_decimal_string)
-    _paid = field_validator("paid_naira", mode="before")(_money_is_decimal_string)
+    _paid = field_validator("paid_naira", mode="before")(_deduction_is_positive)
     _bal = field_validator("balance_naira", mode="before")(_money_is_decimal_string)
 
 

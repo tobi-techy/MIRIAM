@@ -71,6 +71,52 @@ async def test_router_disabled_uses_the_deterministic_guess() -> None:
     assert decision.doc_kind == "stock_book"
 
 
+async def test_go_hint_wins_when_jev_says_other() -> None:
+    """A phone photo of an invoice has no native text, and Jev answered "other".
+
+    Go classifies first and only sends the three shop kinds, so its hint is the
+    routing decision of record: the owner must not get silence for an invoice
+    photo. Jev still picks the tier, and the disagreement is recorded.
+    """
+    decision = await decide_starting_tier(
+        _facts(file_type="image/jpeg", width=1500, height=2000),
+        doc_hint="invoice",
+        judge=FakeJudge(doc_kind="other", difficulty="easy", confidence=0.9),
+    )
+    assert decision.doc_kind == "invoice"
+    assert decision.degraded is True
+    assert "kept Go hint invoice" in decision.reason
+
+
+async def test_a_jev_kind_is_kept_when_go_sends_no_hint() -> None:
+    decision = await decide_starting_tier(
+        _facts(), judge=FakeJudge(doc_kind="receipt", difficulty="easy")
+    )
+    assert decision.doc_kind == "receipt"
+    assert decision.degraded is False
+
+
+async def test_a_go_hint_outside_the_three_kinds_does_not_override_jev() -> None:
+    decision = await decide_starting_tier(
+        _facts(),
+        doc_hint="bank_statement",
+        judge=FakeJudge(doc_kind="stock_book", difficulty="easy"),
+    )
+    assert decision.doc_kind == "stock_book"
+    assert decision.degraded is False
+
+
+async def test_jev_kind_is_kept_when_it_agrees_with_go() -> None:
+    decision = await decide_starting_tier(
+        _facts(),
+        doc_hint="invoice",
+        judge=FakeJudge(doc_kind="invoice", difficulty="easy"),
+    )
+    assert decision.doc_kind == "invoice"
+    assert decision.degraded is False
+    assert "kept Go hint" not in decision.reason
+
+
 async def test_empty_jev_choice_falls_back_to_the_go_hint() -> None:
     judge = FakeJudge(doc_kind="", confidence=0.9)
     judge.doc_kind = ""

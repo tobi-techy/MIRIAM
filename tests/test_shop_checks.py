@@ -160,6 +160,28 @@ def test_discount_and_total_mismatch_is_reported() -> None:
     assert check.message == "subtotal - discount = N48,000, printed total N50,000"
 
 
+def test_a_discount_and_payment_printed_with_a_minus_stay_positive() -> None:
+    """A live read of the invoice returned "-2,600" and "-150,000".
+
+    The minus is the column saying "subtracted", and keeping it made the reply
+    read "Discount -N2,600" and made the check compute subtotal - (-discount),
+    which invented a N5,200 mismatch on an invoice whose total was right.
+    """
+    doc = wigmore_invoice(discount_naira="-2,600", paid_naira="-150,000")
+    assert doc.discount_naira == "2600"
+    assert doc.paid_naira == "150000"
+
+    report = check_supplier_document(doc)
+    check = next(c for c in report.checks if c.name == "discount_and_total")
+    assert check.passed is True
+    assert report.subtotal_delta_minor == 2_000_00
+
+
+def test_a_negative_balance_is_left_alone_because_it_means_something() -> None:
+    doc = wigmore_invoice(balance_naira="-500")
+    assert doc.balance_naira == "-500"
+
+
 def test_missing_line_total_is_not_counted_as_matching() -> None:
     doc = SupplierDocument.model_validate(
         {
