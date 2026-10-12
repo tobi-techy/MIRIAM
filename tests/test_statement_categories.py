@@ -22,7 +22,10 @@ def test_nigerian_narrations():
     assert categorize_narration("POS PURCHASE SHOPRITE LEKKI", "debit") == "groceries"
     assert categorize_narration("WEB BET9JA/0123", "debit") == "betting"
     assert categorize_narration("IKEDC PAYMENT 44921", "debit") == "utilities"
-    assert categorize_narration("NIP GTB/OBADEJO/0123456789/TRANSFER", "debit") == "transfer_out"
+    assert (
+        categorize_narration("NIP GTB/OBADEJO/0123456789/TRANSFER", "debit")
+        == "transfer_out"
+    )
     assert categorize_narration("SALARY PAYMENT", "credit") == "salary"
     assert spend_kind("transfer_out") == "movement"
     assert spend_kind("groceries") == "consumption"

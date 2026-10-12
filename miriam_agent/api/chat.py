@@ -22,7 +22,6 @@ Confirmations arrive as ``{confirm_id, yes|no}``. A typed "yes" is a message lik
 any other and settles nothing.
 """
 
-import json
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -37,6 +36,16 @@ from pydantic import BaseModel
 
 from miriam_agent.agents.agent_loop import Agent, AgentRunResult
 from miriam_agent.agents.base import AgentConfig
+from miriam_agent.api.chat_turns import (
+    _display_name,
+    _finalize_turn,
+    _finish_onboarding_turn,
+    _ingest_to_supermemory,
+    _load_financial_plan,
+    _load_memory_facts,
+    _load_user_context,
+    _sse,
+)
 from miriam_agent.api.dependencies import (
     get_audit_system,
     get_bearer_token,
@@ -57,12 +66,6 @@ from miriam_agent.hands.ledger import (
 from miriam_agent.hands.limits import Policy
 from miriam_agent.hands.state import InsufficientState
 from miriam_agent.hands.transfer import GoRail, parse_amount
-from miriam_agent.integrations.supermemory_client import (
-    container_tag_for,
-    conversation_scope_for,
-    display_name_for,
-    person_entity_context,
-)
 from miriam_agent.judgment.gates import safe_ingress_gate
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
@@ -105,25 +108,85 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
 
     Injected into the Orchestrator as its audit sink. The receipt is the
     compliance fact — what was attempted, moved, or refused — and until now
-    it lived only in the rewritable Redis ledger blob. Fail-open: the
-    orchestrator catches sink errors, so this raising never breaks a turn.
+    it lived only in the rewritable Redis ledger blob.
+
+    G25 fix: bounded synchronous retry (3x, backoff). The orchestrator now
+    blocks settlement acknowledgement on a durable write before returning to
+    the caller. This function raises on failure so the orchestrator can
+    withhold the success reply; _emit_audit failure no longer silently allows
+    settled money without a durable row.
     """
-    audit = await get_audit_system().__anext__()
-    if audit is None:
-        return
+    import asyncio
+
     receipt = result.receipt
-    await audit.log_money_movement(
-        user_id=event.user_id,
-        transaction_id=receipt.id,
-        amount=float(receipt.amount or 0),
-        currency=receipt.currency,
-        action=receipt.action,
-        status=receipt.status,
-        from_account=receipt.sleeve,
-        to_account=receipt.counterparty,
-        requires_approval=False,
-        approval_id=result.confirm_id or None,
-    )
+    if receipt is None:
+        return
+    last_exc = None
+    for attempt in range(3):
+        try:
+            audit = await get_audit_system().__anext__()
+            if audit is None:
+                # Transient unavailability (DB not ready): retry, not fail-closed.
+                raise RuntimeError("audit system unavailable (transient)")
+            await audit.log_money_movement(
+                user_id=event.user_id,
+                transaction_id=receipt.id,
+                amount=float(receipt.amount or 0),
+                currency=receipt.currency,
+                action=receipt.action,
+                status=receipt.status,
+                from_account=receipt.sleeve,
+                to_account=receipt.counterparty,
+                requires_approval=False,
+                approval_id=result.confirm_id or None,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2:
+                await asyncio.sleep(0.2 * (2**attempt))
+    # Raise so the orchestrator withholds a successful reply; the ledger
+    # already holds the receipt and the outbox will retry, but the caller
+    # gets a 503 to retry rather than a false "done".
+    raise last_exc if last_exc is not None else RuntimeError("audit persist failed")
+
+
+_journal_singleton: Any | None = None
+
+
+def _get_or_build_journal():
+    """Process-wide Postgres journal, built lazily without probing.
+
+    The journal connects on first use: if Postgres is down, the first
+    ``reserve()`` raises and the transfer path refuses fail-closed. No probe
+    at build time, no event-loop tricks -- construction never touches the
+    network, so this is safe to call synchronously per request.
+    """
+    global _journal_singleton
+    if _journal_singleton is None:
+        from miriam_agent.hands.execution_journal import PostgresExecutionJournal
+
+        _journal_singleton = PostgresExecutionJournal(get_settings().DATABASE_URL)
+    return _journal_singleton
+
+
+_payment_refs_singleton: Any | None = None
+
+
+def _get_or_build_payment_refs():
+    """Process-wide Postgres payment-reference store, built lazily.
+
+    Same shape as the journal: construction never touches the network, and the
+    first ``claim()`` opens the connection. If Postgres is down the claim
+    raises, the inflow path refuses fail-closed, and the rail retries rather
+    than double-counting.
+    """
+    global _payment_refs_singleton
+    if _payment_refs_singleton is None:
+        from miriam_agent.hands.payment_refs import PostgresPaymentRefStore
+
+        _payment_refs_singleton = PostgresPaymentRefStore(get_settings().DATABASE_URL)
+    return _payment_refs_singleton
 
 
 def _orchestrator_for(token: str) -> Orchestrator:
@@ -145,6 +208,8 @@ def _orchestrator_for(token: str) -> Orchestrator:
         rail=GoRail(token),
         go_token=token,
         audit_sink=_persist_money_audit,
+        journal=_get_or_build_journal(),
+        payment_refs=_get_or_build_payment_refs(),
         cards_enabled=settings.GO_CONFIRM_CARDS_ENABLED,
         card_channels=tuple(channels) if channels else ("imessage",),
     )
@@ -204,19 +269,6 @@ def _install_audit_observer() -> None:
     _audit_observer_installed = True
 
 
-def _serialize_agent_result(result: Any) -> dict[str, Any]:
-    return {
-        "response": result.response,
-        "conversation_id": result.conversation_id,
-        "messages": list(result.messages),
-        "reaction": str(result.reaction or ""),
-        "share": None,
-        # Same id the inbound request carried (and the header echoes), so the
-        # client can join this reply to the tool calls and audit rows behind it.
-        "trace_id": getattr(result, "trace_id", "") or current_trace_id(),
-    }
-
-
 def _serialize_money_result(result: TurnResult) -> dict[str, Any]:
     """The client payload for a money turn.
 
@@ -267,26 +319,41 @@ async def _run_money_turn(
     client the server is broken.
     """
     orchestrator = _orchestrator_for(token)
-    try:
-        if confirm_id:
-            return await orchestrator.handle_confirm(user.id, confirm_id, yes)
-        if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(message):
-            # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
-            # stable id derived from the alert so a re-paste cannot split twice.
-            # Off by default and refused in production entirely — chat text is
-            # not a payment fact, so it must not mint ledger money.
-            return await orchestrator.handle_inflow(
-                user.id,
-                payment_id=inflow_id_for_alert(message),
-                amount=_alert_amount(message),
-                source_raw=message,
-            )
-        return await orchestrator.handle_utterance(user.id, message)
-    except LedgerConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="that ledger is busy; try again in a moment",
-        ) from exc
+    # G22: reload-and-retry on LedgerConflictError (lost-update) with
+    # bounded retries so a concurrent commit does not surface as 409 to the
+    # user when a retry would succeed.
+    last_conflict: LedgerConflictError | None = None
+    for attempt in range(3):
+        try:
+            if confirm_id:
+                return await orchestrator.handle_confirm(user.id, confirm_id, yes)
+            if get_settings().ALLOW_CHAT_INFLOW_SYNTH and looks_like_inflow_alert(
+                message
+            ):
+                # Demo-only escape hatch (ALLOW_CHAT_INFLOW_SYNTH): split against a
+                # stable id derived from the alert so a re-paste cannot split twice.
+                # Off by default and refused in production entirely — chat text is
+                # not a payment fact, so it must not mint ledger money.
+                return await orchestrator.handle_inflow(
+                    user.id,
+                    payment_id=inflow_id_for_alert(message),
+                    amount=_alert_amount(message),
+                    source_raw=message,
+                    channel="chat_synth",
+                    reference=inflow_id_for_alert(message),
+                )
+            return await orchestrator.handle_utterance(user.id, message)
+        except LedgerConflictError as exc:
+            last_conflict = exc
+            if attempt < 2:
+                import asyncio as _aio
+
+                await _aio.sleep(0.05 * (2**attempt))
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="that ledger is busy; try again in a moment",
+            ) from last_conflict
 
 
 def _alert_amount(message: str) -> Decimal:
@@ -940,6 +1007,14 @@ async def money_inflow(
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
     source_raw = str(request.get("source_raw") or "")
+    # Structured payment identity (G23/C052). When ``reference`` is present the
+    # dedupe key is (channel, sender, amount, reference), so the same transfer
+    # worded differently, or sent as a different screenshot, still counts once.
+    channel = str(request.get("channel") or "").strip()
+    sender_handle = str(
+        request.get("sender") or request.get("sender_handle") or ""
+    ).strip()
+    reference = str(request.get("reference") or "").strip()
     if not payment_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -976,6 +1051,9 @@ async def money_inflow(
             payment_id=payment_id,
             amount=parsed_amount,
             source_raw=source_raw,
+            channel=channel,
+            sender_handle=sender_handle,
+            reference=reference,
         )
     except InsufficientState as exc:
         # The ledger cannot answer for this user yet. Refuse rather than guess.
@@ -1465,229 +1543,3 @@ async def _require_owned_conversation(
         )
         return f"{candidate}:{user.id}"
     return candidate
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    """Format a dict as a single Server-Sent Events ``data:`` frame.
-
-    Every frame carries the request's trace id, so a streamed reply can be
-    joined to the tool calls and audit rows behind it without a second lookup.
-    """
-    frame = {"trace_id": current_trace_id(), **payload}
-    return f"data: {json.dumps(frame)}\n\n"
-
-
-async def _finish_onboarding_turn(
-    memory_store: MemoryStore,
-    supermemory_memory: Any,
-    user: User,
-    message: str,
-    onboarding: Any,
-) -> dict[str, Any]:
-    """Persist and return an onboarding turn (mirrors the agent-turn path)."""
-    conv_id = onboarding.conversation_id or f"onboarding:{user.id}"
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="user",
-        content=message,
-        conversation_id=conv_id,
-        metadata={"channel": "api", "onboarding": True},
-    )
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="assistant",
-        content=onboarding.response,
-        conversation_id=conv_id,
-        metadata={"channel": "api", "onboarding": True},
-    )
-    await _ingest_to_supermemory(
-        supermemory_memory,
-        user.id,
-        channel="onboarding",
-        user_message=message,
-        assistant_message=onboarding.response,
-        name=_display_name(user),
-    )
-    payload = onboarding.to_payload(conv_id)
-    payload["conversation_history"] = await memory_store.get_conversation_history(
-        conv_id, user.id
-    )
-    payload["trace_id"] = current_trace_id()
-    return payload
-
-
-async def _load_financial_plan(token: str) -> dict[str, Any] | None:
-    """Assemble a short plan note from live Go data (fail-open).
-
-    Does not call the retired Go AI ``/api/v1/ai/financial-plan`` endpoint.
-    """
-    try:
-        from miriam_agent.financial.intelligence import financial_plan_live
-        from miriam_agent.integrations.go_client import get_go_client
-
-        client = get_go_client()
-        plan = await financial_plan_live(client, token)
-        if plan:
-            return plan
-    except Exception as e:
-        logger.info("Financial plan unavailable (non-blocking): %s", e)
-    return None
-
-
-async def _load_user_context(memory_store: MemoryStore, user: User) -> dict[str, Any]:
-    """Build the context block shown to the LLM about the user."""
-    context: dict[str, Any] = {
-        "name": user.full_name or user.username,
-        "user_id": user.id,
-        "roles": list(getattr(user, "roles", None) or []),
-    }
-    try:
-        profile = await memory_store.get_financial_profile(user.id)
-        if profile:
-            context["monthly_income"] = profile.monthly_income
-            context["current_savings"] = profile.current_savings
-            context["risk_tolerance"] = profile.risk_tolerance
-            context["goals"] = profile.financial_goals
-    except Exception:
-        pass
-    return context
-
-
-async def _load_memory_facts(
-    memory_store: MemoryStore,
-    user_id: str,
-    query: str | None = None,
-    supermemory_memory: Any = None,
-) -> list[dict[str, Any]]:
-    """Load remembered facts about the user.
-
-    Prefers Supermemory (always-on profile + query-scoped semantic recall),
-    falling back to the local SQL memory store when Supermemory is disabled
-    or unavailable.
-    """
-    if supermemory_memory is not None and supermemory_memory.enabled:
-        try:
-            container_tag = container_tag_for(user_id)
-            smart_facts = await supermemory_memory.build_memory_facts(
-                container_tag,
-                query=query or "What should I know about this user?",
-                # Web recall reads web turns: onboarding interview chatter
-                # and spectrum/money receipts must not crowd it out. The
-                # always-on profile (name and other static anchors) is
-                # unaffected — this scopes the query-scoped search only.
-                filters={"channel": "web", "source": "miriam"},
-            )
-            if smart_facts:
-                return smart_facts
-        except Exception:
-            pass  # fail open to local store
-
-    facts: list[dict[str, Any]] = []
-    for kind in ("preference", "goal", "financial", "pattern", "onboarding"):
-        try:
-            entries = await memory_store.retrieve_memory(
-                user_id=user_id, memory_type=kind, limit=3
-            )
-            facts.extend(
-                [
-                    {"type": kind, "content": e.content, "extra_data": e.extra_data}
-                    for e in entries
-                ]
-            )
-        except Exception:
-            continue
-    return facts[:8]
-
-
-async def _ingest_to_supermemory(
-    supermemory_memory: Any,
-    user_id: str,
-    *,
-    channel: str,
-    user_message: str,
-    assistant_message: str,
-    name: str | None = None,
-) -> None:
-    """Send a user/assistant turn into Supermemory's memory graph.
-
-    The turn is keyed to a stable per-person, per-channel scope rather than the
-    client's conversation id. That is the whole point: a client that starts a
-    new conversation per session used to hand Supermemory a new document each
-    time, which is how one person's memory ended up as several disconnected
-    clusters. With a stable scope, a person's web turns are one document, their
-    onboarding another, and dynamic dreaming links the memories across them.
-
-    Fire-and-forget and fail-open: memory ingest must never break the chat
-    response, so any error is swallowed here. ``entityContext`` grounds
-    extraction about the right person (rules doc: "User is X, talking to
-    Miriam"), so a fact like "I'm saving for a house" is filed against
-    someone rather than nobody.
-    """
-    if supermemory_memory is None or not supermemory_memory.enabled:
-        return
-    try:
-        container_tag = container_tag_for(user_id)
-        await supermemory_memory.ingest_turn(
-            container_tag=container_tag,
-            conversation_id=conversation_scope_for(user_id, channel),
-            user_message=user_message,
-            assistant_message=assistant_message,
-            metadata={
-                "channel": channel,
-                "source": "miriam",
-                "agent": "miriam-python",
-            },
-            entity_context=person_entity_context(user_id, name),
-        )
-        # The settings call 404s until the container exists, so it runs after
-        # the first turn lands. It is memoised after that.
-        await supermemory_memory.ensure_container(container_tag, user_id, name=name)
-    except Exception as e:
-        logger.warning("Memorizing turn failed (non-blocking): %s", e)
-
-
-def _display_name(user: User) -> str | None:
-    """The name Supermemory should label and ground this person's space with."""
-    return display_name_for(user.full_name, user.username)
-
-
-async def _finalize_turn(
-    *,
-    memory_store: MemoryStore,
-    supermemory_memory: Any,
-    user: User,
-    message: str,
-    result: AgentRunResult,
-) -> dict[str, Any]:
-    """Persist and serialize a finished turn (agent run or ingress short-circuit).
-
-    Shared by the normal path and the ingress gate so a refused/clarified turn
-    is recorded exactly like any other exchange.
-    """
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="user",
-        content=message,
-        conversation_id=result.conversation_id,
-        metadata={"channel": "api"},
-    )
-    await memory_store.store_interaction(
-        user_id=user.id,
-        role="assistant",
-        content=result.response,
-        conversation_id=result.conversation_id,
-        metadata={"channel": "api"},
-    )
-    await _ingest_to_supermemory(
-        supermemory_memory,
-        user.id,
-        channel="web",
-        user_message=message,
-        assistant_message=result.response,
-        name=_display_name(user),
-    )
-    payload = _serialize_agent_result(result)
-    payload["conversation_history"] = await memory_store.get_conversation_history(
-        result.conversation_id, user.id
-    )
-    return payload

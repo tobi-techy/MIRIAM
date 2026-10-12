@@ -175,25 +175,21 @@ BLOB_LIMIT = 700
 
 # path -> recorded size. A registered blob may not grow past its record; the
 # ratchet only ever moves down, until the entry deletes itself.
+# The ratchet was tightened by the blob-ratchet split: each recorded size is the
+# file's new line count. memory.py (655) and onboarding/driver.py (551) fell
+# under the 700-line limit, so their entries are gone.
 REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/financial/intelligence.py": 3280,
-    "miriam_agent/onboarding/service.py": 1897,
-    "miriam_agent/tools/definitions.py": 1387,
-    "miriam_agent/financial/profile.py": 1376,
-    "miriam_agent/orchestrator.py": 1050,
-    # +12 for the empty-confirm_id 422 guards (false-settlement fix); +45 for
-    # the stable per-person memory scopes (channel-scoped ingest, entity
-    # context, onboarding mirroring, _prepare_turn's shared memory service).
-    "miriam_agent/api/chat.py": 1627,
-    "miriam_agent/database/memory.py": 782,
-    "miriam_agent/hands/transfer.py": 998,
+    "miriam_agent/onboarding/service.py": 1848,
+    "miriam_agent/tools/definitions.py": 972,
+    "miriam_agent/financial/profile.py": 1233,
+    "miriam_agent/orchestrator.py": 990,
+    "miriam_agent/api/chat.py": 1545,
+    "miriam_agent/hands/transfer.py": 972,
     "miriam_agent/money/plan.py": 885,
-    # +57 for the named funding-write methods (hands no longer calls private
-    # _token_post; the validation/logging/retry contract lives in one place).
-    "miriam_agent/integrations/go_client.py": 1266,
-    "miriam_agent/integrations/supermemory_client.py": 829,
+    "miriam_agent/integrations/go_client.py": 861,
+    "miriam_agent/integrations/supermemory_client.py": 785,
     "miriam_agent/safety/validator.py": 848,
-    "miriam_agent/onboarding/driver.py": 747,
     "miriam_agent/financial/diagnosis.py": 715,
 }
 

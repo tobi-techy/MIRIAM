@@ -75,10 +75,10 @@ registry.register(
     description=(
         "Get the user's personal money curve for one Glider enrollment. "
         "returnMethod=MWR (default) is the money-weighted return (the user's own "
-        "money, in and out); returnMethod=TWR is the time-weighted return. This is "
-        "the user's money, not the strategy's template TWR (see get_strategy_performance). "
-        "Both are provider values, not estimates. Empty/unavailable shapes are returned "
-        "as-is; never invent numbers."
+        "money, in and out); returnMethod=TWR is the time-weighted return. "
+        "This is the user's money, not the strategy's template TWR "
+        "(see get_strategy_performance). Both are provider values, not estimates. "
+        "Empty/unavailable shapes are returned as-is; never invent numbers."
     ),
     args_schema={
         "type": "object",
@@ -87,7 +87,10 @@ registry.register(
             "returnMethod": {
                 "type": "string",
                 "enum": ["MWR", "TWR"],
-                "description": "Return method; MWR (default) is money-weighted, TWR is time-weighted",
+                "description": (
+                    "Return method; MWR (default) is money-weighted, "
+                    "TWR is time-weighted"
+                ),
             },
         },
         "required": ["enrollment_id"],
@@ -145,11 +148,11 @@ async def _get_allocation_breakdown(
 registry.register(
     name="get_allocation_breakdown",
     description=(
-        "Break the user's Glider holdings down into buckets across the given dimensions "
-        "(e.g. sector, region, asset-class). holdings is a list of {caipAssetId, symbol, "
-        "weight}; dimensions is a list of dimension names; multiCategoryMode controls how "
-        "assets in multiple categories are counted. Returns raw Glider buckets — provider "
-        "values, not estimates."
+        "Break the user's Glider holdings down into buckets across the given "
+        "dimensions (e.g. sector, region, asset-class). holdings is a list of "
+        "{caipAssetId, symbol, weight}; dimensions is a list of dimension names; "
+        "multiCategoryMode controls how assets in multiple categories are counted. "
+        "Returns raw Glider buckets, provider values, not estimates."
     ),
     args_schema={
         "type": "object",
@@ -159,7 +162,10 @@ registry.register(
                 "items": {
                     "type": "object",
                     "properties": {
-                        "caipAssetId": {**_SCHEMA_STRING, "description": "CAIP-19 asset id"},
+                        "caipAssetId": {
+                            **_SCHEMA_STRING,
+                            "description": "CAIP-19 asset id",
+                        },
                         "symbol": {**_SCHEMA_STRING, "description": "Asset symbol"},
                         "weight": {**_SCHEMA_NUMBER, "description": "Weight in USD"},
                     },
@@ -195,9 +201,9 @@ async def _get_strategy_schedule(
 registry.register(
     name="get_strategy_schedule",
     description=(
-        "Get the configured rebalance cadence for one Glider strategy: a schedule object "
-        "or {schedule:null, note} when none is configured. This is the configured cadence "
-        "only — the runtime nextDueAt lives on the portfolio, not here."
+        "Get the configured rebalance cadence for one Glider strategy: a schedule "
+        "object or {schedule:null, note} when none is configured. This is the "
+        "configured cadence only; the runtime nextDueAt lives on the portfolio."
     ),
     args_schema={
         "type": "object",
@@ -245,9 +251,7 @@ async def _get_strategy_fees(
     args: dict[str, Any], ctx: dict[str, Any]
 ) -> dict[str, Any]:
     client = get_go_client()
-    return await client.get_investment_strategy_fees(
-        ctx["token"], args["strategy_id"]
-    )
+    return await client.get_investment_strategy_fees(ctx["token"], args["strategy_id"])
 
 
 registry.register(

@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import JSON as SQLAlchemyJSON
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -84,9 +85,7 @@ class Transaction(Base):
     category: Mapped[str] = mapped_column(String, nullable=False)
     # income, expense, transfer
     type: Mapped[str] = mapped_column(String, nullable=False)
-    transaction_date: Mapped[datetime] = mapped_column(
-        DateTime, default=utcnow_naive
-    )
+    transaction_date: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
@@ -260,6 +259,86 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+
+class PaymentReference(Base):
+    """Dedupe key for inbound payments: channel+sender+amount+ref (G23).
+
+    Inbound money dedupes on the four structured columns
+    (channel, sender_handle, amount_minor, reference) with a unique index.
+    The raw payload and its hash are retained for dispute replay, but they are
+    deliberately NOT part of the key: two wordings of one transfer must
+    collide, and two different transfers that share a sender and amount must
+    not.
+    """
+
+    __tablename__ = "payment_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel",
+            "sender_handle",
+            "amount_minor",
+            "reference",
+            name="uq_payment_ref_dedupe",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    sender_handle: Mapped[str] = mapped_column(String, nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reference: Mapped[str] = mapped_column(String, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="reported"
+    )  # reported/unmatched until settlement-finality
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+class MoneyExecution(Base):
+    """Durable exactly-once journal for money movements. Layer 1 - HANDS.
+
+    One row per idempotency key, written BEFORE the rail is called. The row is
+    the arbiter that closes the check-then-act race in ``execute_transfer``:
+    two workers racing the same key both try to insert, exactly one wins
+    (the primary key), and the loser replays instead of calling the rail a
+    second time.
+
+    Lifecycle: ``reserved`` -> ``dispatched`` -> ``confirmed`` | ``failed``.
+    ``reserved`` means "this key is claimed, the rail has not been called yet"
+    (crash here = safe to retry: nothing moved). ``dispatched`` means "the
+    rail was called" (crash here = reconcile against ``rail_reference`` before
+    retrying, never blindly re-fire). Terminal states are ``confirmed`` and
+    ``failed``.
+
+    This journal is the exactly-once arbiter, NOT the money record: the ledger
+    (``hands/ledger.py``) stays the single source of truth for balances. Rows
+    are never updated in place except for the forward lifecycle transitions;
+    nothing is ever deleted (retention is a separate, future concern).
+    """
+
+    __tablename__ = "money_executions"
+
+    # The idempotency key (e.g. "{decision_id}:{action.signature()}"). The
+    # primary key IS the claim: insert-or-conflict is the whole mechanism.
+    idempotency_key: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    amount: Mapped[str] = mapped_column(String, nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False, default="")
+    counterparty: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sleeve: Mapped[str] = mapped_column(String, nullable=False, default="")
+    decision_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="reserved")
+    rail_reference: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
+    )
 
 
 class ToolUsage(Base):

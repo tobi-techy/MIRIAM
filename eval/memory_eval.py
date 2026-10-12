@@ -1,7 +1,7 @@
 """Memory-quality golden set: retrieval stays correct, numbers stay out.
 
 Offline by design so CI runs it without a SUPERMEMORY_API_KEY. Each case
-pins one load-bearing invariant from docs/MEMORY-ARCHITECTURE.md:
+pins one load-bearing invariant from the memory model:
 
 1. Money ingest carries no numbers (user text scrubbed, assistant side is
    a de-identified action/status summary, never the narration).
@@ -29,7 +29,10 @@ FAIL: list[str] = []
 
 def check(name: str, cond: bool, detail: str = "") -> None:
     (PASS if cond else FAIL).append(name)
-    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f" — {detail}" if detail and not cond else ""))
+    print(
+        f"{'PASS' if cond else 'FAIL'}  {name}"
+        + (f" — {detail}" if detail and not cond else "")
+    )
 
 
 def _run(coro):
@@ -67,7 +70,9 @@ def main() -> int:
     receipt = SimpleNamespace(action="transfer", status="executed", counterparty="Femi")
     result = SimpleNamespace(receipt=receipt, confirm_id="")
     summary = chatmod._money_memory_summary(result)
-    check("summary:exact", summary == "money turn: transfer with Femi (executed)", summary)
+    check(
+        "summary:exact", summary == "money turn: transfer with Femi (executed)", summary
+    )
     check("summary:no-digits", not any(ch.isdigit() for ch in summary), summary)
     pending = SimpleNamespace(receipt=None, confirm_id="c1")
     check(
@@ -139,10 +144,20 @@ def main() -> int:
         )
 
     payload = _run(_go())
-    check("finalize:keeps-full-reply-locally", "200,000" in payload["response"], payload["response"][:60])
-    blob = (seen.get("user_message") or "") + " " + (seen.get("assistant_message") or "")
+    check(
+        "finalize:keeps-full-reply-locally",
+        "200,000" in payload["response"],
+        payload["response"][:60],
+    )
+    blob = (
+        (seen.get("user_message") or "") + " " + (seen.get("assistant_message") or "")
+    )
     check("finalize:graph-gets-no-digits", not any(ch.isdigit() for ch in blob), blob)
-    check("finalize:graph-names-action", "transfer" in (seen.get("assistant_message") or ""), seen.get("assistant_message"))
+    check(
+        "finalize:graph-names-action",
+        "transfer" in (seen.get("assistant_message") or ""),
+        seen.get("assistant_message"),
+    )
 
     # 2. Read path: web filter on chat, threshold+rerank on voice.
     from miriam_agent.conversational.supermemory_memory import SupermemoryMemory
@@ -152,9 +167,14 @@ def main() -> int:
     class _FakeClient:
         enabled = True
 
-        async def profile(self, tag, query=None, filters=None, **k):  # noqa: ANN040 - test double
+        async def profile(
+            self, tag, query=None, filters=None, **k
+        ):  # noqa: ANN040 - test double
             recorded["profile_filters"] = filters
-            return {"profile": {"static": [], "dynamic": [], "buckets": {}}, "search_results": None}
+            return {
+                "profile": {"static": [], "dynamic": [], "buckets": {}},
+                "search_results": None,
+            }
 
         async def search(self, tag, q, **k):  # noqa: ANN040 - test double
             recorded.update(k)
@@ -162,7 +182,10 @@ def main() -> int:
 
     sm = SupermemoryMemory(_FakeClient())  # type: ignore[arg-type]
     _run(sm.build_memory_facts("u", query="rent", filters={"channel": "web"}))
-    check("read:profile-gets-filters", recorded.get("profile_filters") == {"channel": "web"})
+    check(
+        "read:profile-gets-filters",
+        recorded.get("profile_filters") == {"channel": "web"},
+    )
 
     recorded.clear()
     _run(sm.build_memory_facts("u", query="rent", threshold=0.35, rerank=True))
@@ -184,7 +207,11 @@ def main() -> int:
     sm2 = SupermemoryMemory(_ForgetClient())  # type: ignore[arg-type]
     out = _run(sm2.forget_exact("u", "old bank"))
     check("forget:preview-first", posted and posted[0].get("dry_run") is True)
-    check("forget:apply-bound-to-ids", posted[-1].get("ids") == ["a", "b"], str(posted[-1]))
+    check(
+        "forget:apply-bound-to-ids",
+        posted[-1].get("ids") == ["a", "b"],
+        str(posted[-1]),
+    )
     check("forget:applied", out == {"deleted": 2})
 
     # 4. Correction endpoints fail open when disabled.
@@ -200,7 +227,10 @@ def main() -> int:
         return r, f, li
 
     r, f, li = _run(_off_calls())
-    check("endpoints:disabled-fail-open", r["enabled"] is False and f["enabled"] is False and li["memories"] == [])
+    check(
+        "endpoints:disabled-fail-open",
+        r["enabled"] is False and f["enabled"] is False and li["memories"] == [],
+    )
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     return 1 if FAIL else 0

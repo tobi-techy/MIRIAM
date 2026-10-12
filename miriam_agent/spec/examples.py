@@ -29,7 +29,8 @@ class SpecExample:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def parse_markdown_example(self, content: str) -> "SpecExample":
+    @classmethod
+    def parse_markdown_example(cls, content: str) -> "SpecExample":
         """Parse a markdown example block and return a SpecExample object."""
         # Extract ID from header
         id_match = re.search(r"## Example (\w+)", content)
@@ -142,7 +143,7 @@ def parse_spec_examples(markdown_content: str) -> list[SpecExample]:
 
     for block in example_blocks:
         try:
-            example = SpecExample().parse_markdown_example(block)
+            example = SpecExample.parse_markdown_example(block)
             examples.append(example)
         except ValueError as e:
             print(f"Warning: Failed to parse example block: {e}")

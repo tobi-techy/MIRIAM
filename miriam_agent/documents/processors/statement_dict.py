@@ -21,9 +21,7 @@ def _transaction_dict(t) -> dict[str, Any]:
         "amount": str(t.amount.normalized) if t.amount else None,
         "direction": t.direction,
         "currency": t.currency,
-        "balance_after": (
-            str(t.balance_after.normalized) if t.balance_after else None
-        ),
+        "balance_after": (str(t.balance_after.normalized) if t.balance_after else None),
         "reference": t.reference,
         "page": t.page,
         "category": bucket,

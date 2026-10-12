@@ -21,6 +21,8 @@ _settings = get_settings()
 _memory_store: MemoryStore | None = None
 _financial_intelligence: FinancialIntelligence | None = None
 _audit_system: Any | None = None
+_execution_journal: Any | None = None
+_journal_unavailable: bool = False
 
 
 async def get_settings_dep() -> Settings:
@@ -159,6 +161,32 @@ async def get_supermemory_memory_dep() -> AsyncGenerator[Any, None]:
 
     service = SupermemoryMemory(get_supermemory_client())
     yield service
+
+
+async def get_execution_journal() -> AsyncGenerator[Any, None]:
+    """Get or create the exactly-once journal singleton (fail-closed downstream).
+
+    Unlike the audit singleton above, a journal outage must NOT be silent: the
+    transfer path refuses movements when the journal is down, so yielding None
+    here means "journal unavailable, money turns will refuse" -- loud, safe,
+    and visible. The flag avoids reconnect-spinning on every turn during a
+    database outage.
+    """
+    global _execution_journal, _journal_unavailable
+    if _execution_journal is None and not _journal_unavailable:
+        try:
+            from miriam_agent.hands.execution_journal import (
+                PostgresExecutionJournal,
+            )
+
+            journal = PostgresExecutionJournal(_settings.DATABASE_URL)
+            # Prove the connection now, not on the first money turn.
+            await journal.status_of(key="__journal_probe__")
+            _execution_journal = journal
+        except Exception:
+            _journal_unavailable = True
+            _execution_journal = None
+    yield _execution_journal
 
 
 async def get_audit_system() -> AsyncGenerator[Any, None]:

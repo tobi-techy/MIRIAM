@@ -31,6 +31,7 @@ import logging
 import time
 from typing import Any, cast
 
+from miriam_agent.conversational.redact import redact_money_figures
 from miriam_agent.integrations.supermemory_client import (
     SupermemoryClient,
     get_supermemory_client,
@@ -273,7 +274,17 @@ class SupermemoryMemory:
         if user_message:
             messages.append({"role": "user", "content": user_message})
         if assistant_message:
-            messages.append({"role": "assistant", "content": assistant_message})
+            # Facts, not balances: the memory graph must never store Miriam's
+            # own computed figures ("you're at ₦720"), or a later turn will
+            # quote a stale number as current (TRUTH RULE #1). The user's own
+            # words are left verbatim -- "I earn 250k" is their truth and
+            # legitimate memory material.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": redact_money_figures(assistant_message),
+                }
+            )
         if not messages:
             return None
         try:
@@ -445,9 +456,7 @@ class SupermemoryMemory:
             logger.warning("Supermemory update failed: %s", e)
             return None
 
-    async def list_inferred(
-        self, container_tag: str
-    ) -> list[dict[str, Any]]:
+    async def list_inferred(self, container_tag: str) -> list[dict[str, Any]]:
         """Unreviewed inferred (derive) memories awaiting review."""
         if not self.enabled:
             return []
@@ -475,9 +484,7 @@ class SupermemoryMemory:
         if not self.enabled:
             return None
         try:
-            return await self.client.review_inferred(
-                container_tag, memory_id, action
-            )
+            return await self.client.review_inferred(container_tag, memory_id, action)
         except Exception as e:
             logger.warning("Supermemory review failed: %s", e)
             return None

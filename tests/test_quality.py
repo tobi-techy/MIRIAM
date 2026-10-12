@@ -366,10 +366,22 @@ def test_percent_does_not_clash_with_plain_integer():
 
 
 def test_naija_slang_passes_lint():
-    assert _lint("No wahala - we go sort am together. What hits your account in a normal month?") == []
+    assert (
+        _lint(
+            "No wahala - we go sort am together. What hits your account "
+            "in a normal month?"
+        )
+        == []
+    )
     assert _lint("E don set - your buffer is locked and the month is covered.") == []
     assert _lint("How far - salary don land?") == []
-    assert _lint("Ah, that one pain me. Rent is covered, so the pressure is the small-small spending. Wetin dey chop am pass?") == []
+    assert (
+        _lint(
+            "Ah, that one pain me. Rent is covered, so the pressure is the "
+            "small-small spending. Wetin dey chop am pass?"
+        )
+        == []
+    )
 
 
 def test_pidgin_generic_praise_still_flagged():

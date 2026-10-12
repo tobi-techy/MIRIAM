@@ -1,7 +1,7 @@
 """The MoneyPlan output contract.
 
 Every user-facing money answer is an instance of :class:`MoneyPlan`, then
-rendered. The LLM never constructs one -- Python does (``MONEY-PLAN-CONTRACT.md``).
+rendered. The LLM never constructs one -- Python does.
 
 Two things here are structural rather than advisory:
 
@@ -10,7 +10,7 @@ Two things here are structural rather than advisory:
     would say so.
   - :meth:`MoneyPlan._guard_gated_investing` refuses to construct a plan that has
     investable surplus, or a Glider action, while the book is gated. The safety
-    ordering (``MONEY-RULES.md`` §3) is therefore enforced by the type system,
+    ordering is therefore enforced by the type system,
     not by remembering to check a flag.
 
 Money is ``Decimal`` throughout and converted only at the boundary.
@@ -56,7 +56,7 @@ ProblemType = Literal[
 
 Confidence = Literal["high", "medium", "low"]
 
-# Debt triage bands (``MONEY-RULES.md`` §3).
+# Debt triage bands.
 DebtBand = Literal["fire", "judgment", "keep", "none"]
 
 # How the extra payment is aimed (``R-RAMSEY-3``).
@@ -350,7 +350,7 @@ class MoneyPlan(BaseModel):
     def _guard_gated_investing(self) -> MoneyPlan:
         """Refuse to build a plan that invests before the safety stack is done.
 
-        This is the ordering invariant (``MONEY-RULES.md`` §3) expressed as a
+        This is the ordering invariant expressed as a
         type constraint. A gated book cannot coexist with investable surplus or a
         Glider action; a positive investable surplus requires a real growth
         sleeve; and a Glider action requires a growth sleeve to hold. If a future

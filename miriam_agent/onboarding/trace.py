@@ -109,9 +109,9 @@ class OnboardingTraceStore:
         self._redis: Any = None
         if self._url:
             try:
-                from redis import asyncio as aioredis
+                from miriam_agent.core.redis_client import build_redis_client
 
-                self._redis = aioredis.from_url(self._url, decode_responses=True)
+                self._redis = build_redis_client(self._url)
             except Exception as e:  # pragma: no cover - import/env issues
                 logger.warning(
                     "Onboarding trace Redis unavailable, using in-process trace: %s",

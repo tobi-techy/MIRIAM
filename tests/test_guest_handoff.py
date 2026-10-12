@@ -49,9 +49,7 @@ def test_completed_guest_interview_replaces_a_restarted_greeting():
     )
     assert should_replace(None, guest)
     assert should_replace(restarted, guest)
-    assert should_replace(
-        OnboardingState({"stage": STAGE_GREETING}), guest
-    )
+    assert should_replace(OnboardingState({"stage": STAGE_GREETING}), guest)
     assert not should_replace(
         OnboardingState({"stage": STAGE_COMPLETE, "name": "Tobiloba"}), guest
     )
@@ -93,12 +91,12 @@ def test_adopt_moves_completed_guest_state_onto_the_linked_user():
     )
     real_id = "a28c1e1a-3e6d-4a3d-9fec-8186396cc478"
     _run(store.save_state(guest_id, guest_state))
-    _run(
-        store.save_state(
-            real_id, OnboardingState({"stage": STAGE_GREETING})
+    _run(store.save_state(real_id, OnboardingState({"stage": STAGE_GREETING})))
+    memory = _Memory(
+        _User(
+            guest_id, email=f"guest_{guest_id[:8]}@miriam.invalid", username="guest_abc"
         )
     )
-    memory = _Memory(_User(guest_id, email=f"guest_{guest_id[:8]}@miriam.invalid", username="guest_abc"))
     moved = _run(
         adopt_guest_interview(
             memory,

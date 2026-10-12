@@ -4,8 +4,7 @@ Data, not code: a template declares *what kind* of assets fill each sleeve and
 the runtime resolves them against Glider's supported-asset list for the user's
 chains. **No asset addresses are hardcoded.** A CAIP-19 address baked into a
 source file is a dead contract waiting to happen, and it is exactly the kind of
-"guess the asset id" failure the client is forbidden from making
-(``MONEY-PLAN-CONTRACT.md`` §6).
+"guess the asset id" failure the client is forbidden from making.
 
 Allocations are expressed as percent strings summing to 100, because that is
 what ``POST /v2/strategies`` accepts.

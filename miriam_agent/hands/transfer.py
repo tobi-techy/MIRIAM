@@ -25,11 +25,18 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
 
 from miriam_agent.hands.audit import AuditRow, Receipt, sleeves_snapshot
+from miriam_agent.hands.execution_journal import (
+    CONFIRMED,
+    DISPATCHED,
+    ExecutionJournal,
+    InMemoryExecutionJournal,
+    JournalClaim,
+)
 from miriam_agent.hands.ledger import Ledger, LedgerStore, Movement, money
 from miriam_agent.hands.limits import Policy, evaluate_limits
 from miriam_agent.hands.nl import parse_amount as parse_amount
@@ -38,6 +45,14 @@ from miriam_agent.hands.state import (
     HandlerState,
     ProposedAction,
     require_complete,
+)
+from miriam_agent.hands.transfer_receipts import (
+    _audit,
+    _decision_verdict,
+    _id,
+    _rejected,
+    _safe_mark,
+    _utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,88 +184,113 @@ class TransferOutcome:
     audit: list[AuditRow] = field(default_factory=list)
 
 
-def _id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def _audit(
+async def _claim_key(
+    journal: ExecutionJournal,
     *,
     ledger: Ledger,
-    receipt: Receipt,
-    decision_id: str,
-    trigger: str,
-    detail: str = "",
-) -> AuditRow:
-    return AuditRow(
-        id=_id("audit"),
-        at=receipt.at,
-        user_id=ledger.user_id,
-        action=receipt.action,
-        trigger=trigger,  # type: ignore[arg-type]
-        amount=receipt.amount,
-        currency=receipt.currency,
-        sleeve=receipt.sleeve,
-        counterparty=receipt.counterparty,
-        sleeves_before=receipt.sleeves_before,
-        sleeves_after=receipt.sleeves_after,
-        decision_id=decision_id,
-        receipt_id=receipt.id,
-        idempotency_key=receipt.idempotency_key,
-        detail=detail or receipt.detail,
-    )
-
-
-def _rejected(
-    *,
-    ledger: Ledger,
-    action: str,
-    reasons: list[str],
+    key: str,
     amount: Decimal | None,
     counterparty: str,
+    sleeve: str,
     decision_id: str,
-    idempotency_key: str,
     at: datetime,
-    detail: str,
-) -> Receipt:
-    """A receipt for something that did not happen. Nothing moved."""
-    snapshot = sleeves_snapshot(ledger.sleeves)
-    return Receipt(
-        id=_id("rcpt"),
-        at=at,
-        status="rejected",
-        action=action,
-        currency=ledger.currency,
-        amount=amount,
-        counterparty=counterparty,
-        sleeve="spendable",
-        decision_id=decision_id,
-        idempotency_key=idempotency_key,
-        reasons=reasons,
-        sleeves_before=snapshot,
-        sleeves_after=snapshot,
-        detail=detail,
-    )
+) -> TransferOutcome | None:
+    """Claim the idempotency key, or return the outcome that avoids the rail.
 
-
-def _decision_verdict(decision: dict | None) -> tuple[bool, list[str]]:
-    """Whether a typed decision authorises a movement.
-
-    Absent, negative, or not-yet-acted decisions all read as "no". This is a
-    second lock on the same door that Judgment opens: if the decision field is
-    missing or malformed, nothing moves.
+    Returns None when this caller won the claim and may proceed. Any other
+    return is final: a replay of the prior receipt (key already settled), a
+    refusal because another worker holds the key (dispatched/in-flight or a
+    reserved claim that never settled), or a refusal because the journal is
+    down (fail-closed: an unknown journal state must refuse, not execute).
     """
-    if not decision:
-        return False, ["NO_DECISION"]
-    if decision.get("next_mode") != "act":
-        return False, ["NOT_ACT_MODE"]
-    choice = decision.get("action_choice")
-    if choice not in ("allow", "allow_smaller"):
-        return False, ["DECISION_DENIED"]
-    return True, []
+    try:
+        claim: JournalClaim = await journal.reserve(
+            key=key,
+            user_id=ledger.user_id,
+            action="transfer",
+            amount=amount if amount is not None else Decimal("0"),
+            currency=ledger.currency,
+            counterparty=counterparty,
+            sleeve=sleeve,
+            decision_id=decision_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - journal outage fails closed
+        logger.error("execution journal unavailable; refusing transfer: %s", exc)
+        return TransferOutcome(
+            receipt=_rejected(
+                ledger=ledger,
+                action="transfer",
+                reasons=["JOURNAL_UNAVAILABLE"],
+                amount=amount,
+                counterparty=counterparty,
+                decision_id=decision_id,
+                idempotency_key=key,
+                at=at,
+                detail="the exactly-once journal is unreachable; nothing moved",
+            ),
+            ledger=ledger,
+        )
+    if claim.won:
+        # The journal is the cross-worker arbiter, but the ledger is still the
+        # money truth within this process: a fresh/local journal can win a key
+        # the ledger already settled (retry without the shared journal, or two
+        # journal instances over one store). The ledger receipt wins -- replay,
+        # never re-fire. This preserves the pre-journal exactly-once guarantee.
+        prior = ledger.receipt_for(key)
+        if prior is not None:
+            return TransferOutcome(
+                receipt=prior.model_copy(update={"idempotent_replay": True}),
+                ledger=ledger,
+            )
+        return None
+    prior = ledger.receipt_for(key)
+    if claim.status == CONFIRMED and prior is not None:
+        return TransferOutcome(
+            receipt=prior.model_copy(update={"idempotent_replay": True}),
+            ledger=ledger,
+        )
+    if claim.status in (DISPATCHED, "reserved"):
+        # Claimed but unsettled: the rail may already hold the money (crash
+        # between rail and ledger-save) or another worker may be in flight.
+        # Re-fire nothing; surface the in-flight state for reconciliation.
+        return TransferOutcome(
+            receipt=_rejected(
+                ledger=ledger,
+                action="transfer",
+                reasons=["ALREADY_IN_FLIGHT"],
+                amount=amount,
+                counterparty=counterparty,
+                decision_id=decision_id,
+                idempotency_key=key,
+                at=at,
+                detail=(
+                    "this movement is already claimed"
+                    + (
+                        f" (rail reference {claim.rail_reference})"
+                        if claim.rail_reference
+                        else ""
+                    )
+                    + "; reconcile before retrying, nothing moved on this attempt"
+                ),
+            ),
+            ledger=ledger,
+        )
+    # Claimed and terminal-failed, or any other loser state: refuse rather
+    # than re-fire a key whose history this worker cannot prove.
+    return TransferOutcome(
+        receipt=_rejected(
+            ledger=ledger,
+            action="transfer",
+            reasons=["DUPLICATE_KEY"],
+            amount=amount,
+            counterparty=counterparty,
+            decision_id=decision_id,
+            idempotency_key=key,
+            at=at,
+            detail="this idempotency key was already claimed; nothing moved",
+        ),
+        ledger=ledger,
+    )
 
 
 async def execute_transfer(
@@ -261,11 +301,19 @@ async def execute_transfer(
     policy: Policy,
     rail: Rail,
     at: datetime | None = None,
+    journal: ExecutionJournal | None = None,
 ) -> TransferOutcome:
     """Execute the transfer STATE proposes, if policy and the decision allow.
 
     Hands enforces the decision; it does not make it. When anything is off the
     result is a ``rejected`` receipt and an unchanged ledger.
+
+    Exactly-once: when ``journal`` is given, the idempotency key is claimed in
+    the journal BEFORE the rail is called, so two workers racing the same key
+    cannot both reach the rail. Losing the claim replays instead of executing.
+    A journal outage fails closed: the movement is refused, never executed.
+    When ``journal`` is None a process-local journal is used, which is correct
+    for single-process deployments and tests but not for multi-worker ones.
     """
     timestamp = at if at is not None else _utcnow()
     action = state.proposed_action
@@ -289,12 +337,22 @@ async def execute_transfer(
         )
 
     idempotency_key = f"{decision_id}:{action.signature()}"
-    prior = ledger.receipt_for(idempotency_key)
-    if prior is not None:
-        return TransferOutcome(
-            receipt=prior.model_copy(update={"idempotent_replay": True}),
-            ledger=ledger,
-        )
+    journal = journal if journal is not None else InMemoryExecutionJournal()
+    claim = await _claim_key(
+        journal,
+        ledger=ledger,
+        key=idempotency_key,
+        amount=action.amount,
+        counterparty=action.counterparty,
+        sleeve=action.sleeve,
+        decision_id=decision_id,
+        at=timestamp,
+    )
+    if claim is not None:
+        # Lost the claim, or the journal is down: either way the rail is not
+        # called. A replay returns the prior receipt; a journal outage or an
+        # in-flight key returns a refusal.
+        return claim
 
     require_complete(state)
 
@@ -379,8 +437,10 @@ async def execute_transfer(
         purpose="transfer",
         confirm_id=decision_id,
     )
+    await _safe_mark(journal, "dispatched", idempotency_key)
     outcome = await rail.execute(instruction)
     if not outcome.ok:
+        await _safe_mark(journal, "failed", idempotency_key)
         receipt = _rejected(
             ledger=ledger,
             action="transfer",
@@ -445,6 +505,9 @@ async def execute_transfer(
         )
         ledger.remember_receipt(receipt)
         await store.save(ledger)
+        await _safe_mark(
+            journal, "confirmed", idempotency_key, rail_reference=outcome.reference
+        )
     except Exception as exc:  # noqa: BLE001 - compensate rather than drift
         logger.error("ledger commit failed after a successful rail call: %s", exc)
         reversal = await rail.reverse(instruction, outcome.reference)
@@ -474,13 +537,16 @@ async def execute_transfer(
             idempotency_key=idempotency_key,
             at=timestamp,
             detail=(
-                f"the ledger could not record the movement ({exc}); " f"{reversal_fact}"
+                f"the ledger could not record the movement ({exc}); {reversal_fact}"
             ),
         )
         # Keep the rail reference on the receipt, not only in a log line: this is
         # the object the caller returns, audits and can reconcile from.
         receipt.rail_reference = outcome.reference
         rolled_back.remember_receipt(receipt)
+        await _safe_mark(
+            journal, "failed", idempotency_key, rail_reference=outcome.reference
+        )
         try:
             # Guarded: this is a second write to a store that just failed, so a
             # failure here is expected rather than exceptional.

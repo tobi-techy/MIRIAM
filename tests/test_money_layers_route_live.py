@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 from layer_fakes import FakeProvider, jev, judge_of
 
+from miriam_agent.agents.agent_loop import Agent
 from miriam_agent.api import chat, dependencies
 from miriam_agent.api.main import app
 from miriam_agent.config.settings import get_settings
@@ -38,6 +39,7 @@ from miriam_agent.hands.ledger import (
     money,
 )
 from miriam_agent.hands.limits import Policy
+from miriam_agent.hands.payment_refs import InMemoryPaymentRefStore
 from miriam_agent.hands.transfer import InMemoryRail, TransferInstruction
 from miriam_agent.orchestrator import Orchestrator
 from miriam_agent.safety.money_tools import MONEY_TOOL_NAMES
@@ -98,7 +100,9 @@ def _ledger(*, spendable: str, rent_required: str = "0", reserved: str = "0") ->
     return ledger
 
 
-def _wire(monkeypatch, *, ledger: Ledger, judge=None, audit_sink=None):
+def _wire(
+    monkeypatch, *, ledger: Ledger, judge=None, audit_sink=None, payment_refs=None
+):
     """Point the chat endpoints at a test Orchestrator.
 
     ``chat._orchestrator_for`` is the seam where the live path picks the shared
@@ -120,8 +124,20 @@ def _wire(monkeypatch, *, ledger: Ledger, judge=None, audit_sink=None):
         provider=FakeProvider("Noted."),
         judge=judge or judge_of(jev(intent="order", afford=0.9)),
         audit_sink=audit_sink,
+        payment_refs=(
+            payment_refs if payment_refs is not None else InMemoryPaymentRefStore()
+        ),
     )
     monkeypatch.setattr(chat, "_orchestrator_for", lambda token: orchestrator)
+
+    # Answerable turns go to the general agent, whose LLM provider is built from
+    # the environment. Point that agent at the same fake provider so a non-money
+    # message ("yes, do it") is answered without a live key or the network.
+    monkeypatch.setattr(
+        chat,
+        "_build_agent",
+        lambda registry: Agent(registry=registry, provider=FakeProvider("Noted.")),
+    )
 
     user = User()
     user.id = USER_ID
@@ -445,8 +461,13 @@ def test_every_receipt_reaches_the_durable_audit_sink(monkeypatch):
     assert seen == [(USER_ID, "inflow_split")]
 
 
-def test_a_failing_audit_sink_never_breaks_a_settled_turn(monkeypatch):
-    """Audit is fail-open: an outage degrades the paper trail, not the turn."""
+def test_a_failing_audit_sink_fails_the_turn_closed_with_a_503(monkeypatch):
+    """Audit is fail-closed (G25): a dead audit store withholds the success narration.
+
+    The settled movement stays in the ledger, but the caller gets 503
+    (retryable) with no receipt, so the rail retries instead of reading a
+    false "done" for money with no durable audit row.
+    """
     ledger = _ledger(spendable="0", rent_required="150000")
 
     async def _broken_sink(event: Any, result: Any) -> None:
@@ -456,8 +477,9 @@ def test_a_failing_audit_sink_never_breaks_a_settled_turn(monkeypatch):
     client = TestClient(app, raise_server_exceptions=False)
     response = _inflow_post(client)
 
-    assert response.status_code == 200, response.text
-    assert response.json()["receipt"]["action"] == "inflow_split"
+    assert response.status_code == 503, response.text
+    assert "durable audit unavailable" in response.json()["detail"]
+    assert "receipt" not in response.json()
 
 
 def _inflow_post(client: TestClient) -> Any:
@@ -494,6 +516,166 @@ def test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once(monkeypatch):
     reloaded = await_sync(_load_for(store))
     assert reloaded.sleeves["savings"] == money(126000)
     assert reloaded.sleeves["locked"] == money(150000)
+    assert rail.moves == []
+
+
+# ---------------------------------------------------------------------------
+# C052: duplicate alerts are caught on the structured payment key, not the text
+# ---------------------------------------------------------------------------
+
+_INFLOW_URL = "/api/v1/money/inflow"
+_RAIL_HEADERS = {
+    "Authorization": "Bearer test-token",
+    "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
+}
+
+
+def _inflow_post_fields(client: TestClient, **fields: Any) -> Any:
+    """POST /money/inflow with structured payment identity fields."""
+    body: dict[str, Any] = {
+        "payment_id": "pay_default",
+        "amount": "420000",
+        "source_raw": "",
+        "channel": "gtbank",
+        "sender": "ACME PAYROLL",
+        "reference": "REF-1",
+    }
+    body.update(fields)
+    return client.post(_INFLOW_URL, headers=_RAIL_HEADERS, json=body)
+
+
+def test_same_transfer_worded_differently_splits_once(monkeypatch):
+    """One transfer, two wordings, one split.
+
+    The second delivery carries a different rail ``payment_id`` and different
+    raw text but the same (channel, sender, amount, reference): it is the same
+    payment, so it replays the original receipt and moves nothing.
+    """
+    ledger = _ledger(spendable="0", rent_required="150000")
+    store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = _inflow_post_fields(
+        client,
+        payment_id="pay_a",
+        source_raw="Credit alert: NGN420,000.00 from ACME PAYROLL",
+        reference="REF-9",
+    )
+    second = _inflow_post_fields(
+        client,
+        payment_id="pay_b",
+        source_raw="GTBank: you received N420,000 from ACME PAYROLL.",
+        reference="REF-9",
+    )
+
+    assert first.status_code == 200
+    assert first.json()["receipt"]["action"] == "inflow_split"
+    assert second.status_code == 200
+    assert second.json()["receipt"]["idempotent_replay"] is True
+    reloaded = await_sync(_load_for(store))
+    assert reloaded.sleeves["savings"] == money(126000)  # one split, 30% of 420k
+    assert rail.moves == []
+
+
+def test_same_transfer_from_a_different_screenshot_splits_once(monkeypatch):
+    """The raw payload differs (a different screenshot) but the key does not."""
+    ledger = _ledger(spendable="0", rent_required="150000")
+    store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = _inflow_post_fields(
+        client,
+        payment_id="pay_shot1",
+        source_raw="screenshot-ocr: ACME PAYROLL 420,000.00 12:04",
+        reference="REF-77",
+    )
+    second = _inflow_post_fields(
+        client,
+        payment_id="pay_shot2",
+        source_raw="screenshot-ocr: ACME PAYROLL NGN420,000 12:04 (retake)",
+        reference="REF-77",
+    )
+
+    assert first.json()["receipt"]["action"] == "inflow_split"
+    assert second.json()["receipt"]["idempotent_replay"] is True
+    reloaded = await_sync(_load_for(store))
+    assert reloaded.sleeves["savings"] == money(126000)
+    assert rail.moves == []
+
+
+def test_two_payments_same_sender_and_amount_different_reference_both_count(
+    monkeypatch,
+):
+    """Same sender and amount, different references: two real payments."""
+    ledger = _ledger(spendable="0", rent_required="150000")
+    store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = _inflow_post_fields(client, payment_id="pay_a", reference="REF-A")
+    second = _inflow_post_fields(client, payment_id="pay_b", reference="REF-B")
+
+    assert first.json()["receipt"]["action"] == "inflow_split"
+    assert second.json()["receipt"]["action"] == "inflow_split"
+    reloaded = await_sync(_load_for(store))
+    assert reloaded.sleeves["savings"] == money(252000)  # both counted
+    assert rail.moves == []
+
+
+def test_concurrent_duplicate_payment_splits_once(monkeypatch):
+    """The same payment delivered twice at once moves money once.
+
+    Two overlapping HTTP requests race the atomic insert-or-conflict claim:
+    exactly one wins the split, the other replays and moves nothing.
+    """
+    import asyncio
+
+    import httpx
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    store, rail, _memory = _wire(monkeypatch, ledger=ledger)
+
+    body = {
+        "amount": "420000",
+        "source_raw": "Credit alert: NGN420,000.00 from ACME PAYROLL",
+        "channel": "gtbank",
+        "sender": "ACME PAYROLL",
+        "reference": "REF-RACE",
+    }
+
+    async def go() -> list[Any]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await asyncio.gather(
+                client.post(
+                    _INFLOW_URL,
+                    headers=_RAIL_HEADERS,
+                    json={**body, "payment_id": "pay_1"},
+                ),
+                client.post(
+                    _INFLOW_URL,
+                    headers=_RAIL_HEADERS,
+                    json={**body, "payment_id": "pay_2"},
+                ),
+            )
+
+    first, second = await_sync(go())
+    assert first.status_code == 200
+    assert second.status_code == 200
+    actions = {first.json()["receipt"]["action"], second.json()["receipt"]["action"]}
+    assert actions == {"inflow_split", "inflow_duplicate"} or (
+        len(
+            [
+                r
+                for r in (first.json(), second.json())
+                if r["receipt"]["idempotent_replay"]
+            ]
+        )
+        == 1
+    )
+    reloaded = await_sync(_load_for(store))
+    assert reloaded.sleeves["savings"] == money(126000)  # exactly one split
     assert rail.moves == []
 
 

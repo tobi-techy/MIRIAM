@@ -1,6 +1,6 @@
 """Curated local reference data: inflation, risk-free rates, debt thresholds.
 
-The debt bands (``MONEY-RULES.md`` §3) and the inflation-erosion diagnosis both
+The debt bands and the inflation-erosion diagnosis both
 need a local hurdle rate. Without one, 12% debt is either cheap or ruinous and
 there is no way to tell which. This module supplies that number, and is honest
 about how much it should be trusted.
@@ -207,7 +207,7 @@ def _vehicle(name: str, kind: str, insured: bool, notes: str = "") -> SafetyVehi
 def reference_from_env() -> CountryReference | None:
     """Operator-supplied live reference via environment (no code change).
 
-    Reads ``MONEY_REF_*`` vars pinned in ``docs/MONEY-REFERENCE-OPS.md``::
+    Reads ``MONEY_REF_*`` vars from the environment::
 
         MONEY_REF_COUNTRY=NG MONEY_REF_CURRENCY=NGN
         MONEY_REF_INFLATION_PCT=24.0 MONEY_REF_RISK_FREE_PCT=19.0

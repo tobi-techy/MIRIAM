@@ -719,13 +719,9 @@ class InputValidator:
         without needing a real Redis server.
         """
         if self._redis is None:
-            import redis.asyncio as aioredis
+            from miriam_agent.core.redis_client import build_redis_client
 
-            from miriam_agent.config.settings import get_settings
-
-            self._redis = aioredis.from_url(
-                get_settings().REDIS_URL, decode_responses=True
-            )
+            self._redis = build_redis_client()
         return self._redis
 
     # Local fallback buckets when Redis is down — per-process, best-effort.
