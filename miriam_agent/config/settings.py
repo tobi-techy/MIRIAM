@@ -233,6 +233,41 @@ class Settings(BaseSettings):
     DOCUMENT_MIN_TEXT_QUALITY: int = Field(default=120)
     DOCUMENT_RECONCILIATION_TOLERANCE: str = Field(default="1.00")
 
+    # Shop reading (handwritten stock books, distributor invoices and delivery
+    # notes, sent as a photo or PDF over iMessage). Every generative call goes
+    # through llmapi.ai, an OpenAI-compatible gateway; the model ids live here,
+    # never in code. Jev (TypeSafe) picks the tier before the read and judges
+    # the result after it, so a read starts small and escalates to the big
+    # model only when the router or the judge says so.
+    LLMAPI_API_KEY: str = Field(default="")
+    LLMAPI_BASE_URL: str = Field(default="https://api.llmapi.ai/v1")
+    READ_SMALL_MODEL: str = Field(default="gemini-3.8-flash")
+    READ_BIG_MODEL: str = Field(default="gpt-5.6-terra")
+    # The small tier runs at low reasoning effort; the big tier at high. Both
+    # are gateway parameter names ("reasoning_effort"), not model ids.
+    READ_SMALL_REASONING_EFFORT: str = Field(default="low")
+    READ_BIG_REASONING_EFFORT: str = Field(default="high")
+    # Router/judge. ROUTER_ENABLED off means every read starts on READ_BIG and
+    # no Jev call is made; the deterministic checks still run. Jev unavailable
+    # always escalates to READ_BIG regardless of this flag (fail closed).
+    ROUTER_ENABLED: bool = Field(default=True)
+    JEV_ESCALATE_QUALITY_MAX: int = Field(default=2)
+    JEV_MIN_CONFIDENCE: float = Field(default=0.7)
+    # Jev in the reader gets one attempt with this timeout; there is no retry.
+    SHOP_READ_JEV_TIMEOUT_S: float = Field(default=5.0)
+    # Endpoint-scoped budgets for one shop read, separate from a general agent
+    # turn: a read is two model passes on possibly the big model, which is
+    # above AGENT_MAX_COST_USD_PER_TURN and AGENT_WALL_CLOCK_S. The agent turn
+    # budgets are deliberately left untouched.
+    SHOP_READ_MAX_COST_USD: float = Field(default=0.50)
+    SHOP_READ_WALL_CLOCK_S: float = Field(default=140.0)
+    SHOP_READ_PDF_MAX_PAGES: int = Field(default=5)
+    SHOP_READ_LONG_EDGE_PX: int = Field(default=2000)
+    # Cap on extraction reads per document (extract + verify counts as one),
+    # shared by escalation, schema retry and provider-failure tier switch.
+    SHOP_READ_MAX_EXTRACTIONS: int = Field(default=2)
+    SHOP_READ_PROMPT_VERSION: str = Field(default="shop-read-v1")
+
     # Money pipeline (deterministic planning engines under miriam_agent/money/).
     # Thresholds live here rather than in the engines because a hardcoded limit
     # that drifts from config was a finding in the production audit; the money
