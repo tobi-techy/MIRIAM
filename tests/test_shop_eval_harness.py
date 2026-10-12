@@ -52,9 +52,9 @@ def test_stock_book_figures_come_from_the_saved_extraction() -> None:
         "raw_extraction": mama_tobi_book().model_dump(),
     }
     values = _observe(SimpleNamespace(doc_type="stock_book"), saved)
-    assert values["computed_total"] == "N286,300"
-    assert values["written_total"] == "N254,400"
-    assert values["gap"] == "N31,900"
+    assert values["computed_total"] == "₦286,300"
+    assert values["written_total"] == "₦254,400"
+    assert values["gap"] == "₦31,900"
     assert values["rows_failing"] == 0
     assert values["rows_read"] == 8
 
@@ -65,14 +65,14 @@ def test_invoice_figures_name_the_one_bad_line() -> None:
         "raw_extraction": wigmore_invoice().model_dump(),
     }
     values = _observe(SimpleNamespace(doc_type="invoice"), saved)
-    assert values["computed_subtotal"] == "N180,600"
-    assert values["printed_subtotal"] == "N182,600"
-    assert values["subtotal_delta"] == "N2,000"
+    assert values["computed_subtotal"] == "₦180,600"
+    assert values["printed_subtotal"] == "₦182,600"
+    assert values["subtotal_delta"] == "₦2,000"
     assert values["line_mismatches"] == 1
-    assert values["line_mismatch_1"].startswith("Milo 400g refill: 6 x N3,800")
-    assert values["total"] == "N180,000"
-    assert values["paid"] == "N150,000"
-    assert values["balance"] == "N30,000"
+    assert values["line_mismatch_1"].startswith("Milo 400g refill: 6 x ₦3,800")
+    assert values["total"] == "₦180,000"
+    assert values["paid"] == "₦150,000"
+    assert values["balance"] == "₦30,000"
     assert values["due"] == "17/10/2026"
 
 
@@ -82,17 +82,17 @@ def test_a_page_that_was_not_read_reports_only_its_kind() -> None:
 
 
 def test_observation_without_misses_is_a_pass() -> None:
-    observation = Observation(ok=True, values={"gap": "N31,900"})
+    observation = Observation(ok=True, values={"gap": "₦31,900"})
     assert observation.misses == []
     assert observation.error == ""
 
 
 def test_table_and_summary_report_a_miss_rather_than_hiding_it() -> None:
-    hit = Observation(ok=True, values={"gap": "N31,900"}, latency_s=4.0, cost_usd=0.01)
+    hit = Observation(ok=True, values={"gap": "₦31,900"}, latency_s=4.0, cost_usd=0.01)
     miss = Observation(
         ok=False,
-        values={"gap": "N31,000"},
-        misses=["gap: expected 'N31,900', got 'N31,000'"],
+        values={"gap": "₦31,000"},
+        misses=["gap: expected '₦31,900', got '₦31,000'"],
         latency_s=8.0,
         cost_usd=0.02,
     )
@@ -131,7 +131,7 @@ def test_every_case_expectation_has_a_fixture_path_under_tests() -> None:
     ],
 )
 def test_expected_figures_are_all_in_naira_form_or_plain(name: str) -> None:
-    """Every money expectation is a N-prefixed string, never a bare float."""
+    """Every money expectation carries the one currency symbol, never a float."""
     money_keys = {
         "computed_total",
         "written_total",
@@ -148,5 +148,5 @@ def test_expected_figures_are_all_in_naira_form_or_plain(name: str) -> None:
         if key not in money_keys:
             continue
         assert isinstance(expected, str)
-        assert expected.startswith("N"), (name, key, expected)
+        assert expected.startswith("₦"), (name, key, expected)
         assert "E" not in expected, (name, key, expected)

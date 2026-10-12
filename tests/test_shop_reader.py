@@ -303,3 +303,63 @@ async def test_one_bad_correction_does_not_discard_the_others(prepared) -> None:
     assert "verify correction dropped: rows[0].sold" in flags
     assert "verify corrected 2 cell(s)" in flags
     assert "verify corrected 3 cell(s)" not in flags
+
+
+async def test_two_passes_that_read_a_cell_differently_are_reported(prepared) -> None:
+    """The extraction pass said 10, the verify pass said 9: two independent reads
+    of one cell, two figures, so the figure is not a fact."""
+    provider = FakeProvider(
+        [payload(mama_tobi_book())],
+        verify={"corrections": [{"path": "rows[0].left", "value": "9"}]},
+    )
+    disagreements: list[Any] = []
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider, disagreements=disagreements
+    )
+    assert isinstance(extraction, StockBook)
+    # The verify pass still wins the maths: nothing about the read changes shape.
+    assert extraction.rows[0].left == 9
+    assert [d.cell for d in disagreements] == ["left"]
+    assert disagreements[0].label == "Rice 50kg"
+    # Smallest first, the way "is it 9 or 29?" reads.
+    assert (disagreements[0].first, disagreements[0].second) == ("9", "10")
+    assert any("verify disagrees on rows[0].left" in f for f in flags)
+
+
+async def test_the_same_figure_written_differently_is_not_a_disagreement(
+    prepared,
+) -> None:
+    """The verify pass writes "N5,500" where the first pass wrote "5500". Same
+    figure: no question for the owner, no figure held back."""
+    provider = FakeProvider(
+        [payload(mama_tobi_book())],
+        verify={"corrections": [{"path": "rows[1].price_naira", "value": "N5,500"}]},
+    )
+    disagreements: list[Any] = []
+    extraction, flags, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider, disagreements=disagreements
+    )
+    assert isinstance(extraction, StockBook)
+    assert disagreements == []
+    assert extraction.rows[1].price_naira == "5500"
+    assert not any("disagrees" in f for f in flags)
+
+
+async def test_a_cell_the_first_pass_left_empty_is_not_a_disagreement(
+    prepared,
+) -> None:
+    """The first pass read no figure at all and the verify pass supplied one.
+    That is a fill, not two reads in conflict, so the reply does not ask."""
+    book = mama_tobi_book()
+    book.rows[0].left = None
+    provider = FakeProvider(
+        [payload(book)],
+        verify={"corrections": [{"path": "rows[0].left", "value": "9"}]},
+    )
+    disagreements: list[Any] = []
+    extraction, _, _, _ = await read_on_tier(
+        prepared, StockBook, "small", provider=provider, disagreements=disagreements
+    )
+    assert isinstance(extraction, StockBook)
+    assert extraction.rows[0].left == 9
+    assert disagreements == []

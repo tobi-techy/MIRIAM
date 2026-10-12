@@ -29,7 +29,7 @@ from miriam_agent.agents.llm import (
 from miriam_agent.config.settings import get_settings
 from miriam_agent.core.exceptions import AgentError
 from miriam_agent.shop.preprocess import PreparedDocument
-from miriam_agent.shop.schemas import SCHEMA_BY_KIND, OtherDocument
+from miriam_agent.shop.schemas import SCHEMA_BY_KIND, Disagreement, OtherDocument
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ class ReadResult:
     flags: list[str] = field(default_factory=list)
     confidence: float = 0.0
     degraded: bool = False
+    # Cells the extraction pass and the verify pass read differently.
+    disagreements: list[Disagreement] = field(default_factory=list)
 
 
 class _Strict(BaseModel):
@@ -220,6 +222,65 @@ def _apply_correction(data: Any, keys: list[str | int], value: str) -> bool:
     return True
 
 
+_DIGITS = re.compile(r"\d+|\d[\d,.]*\d")
+
+
+def _digits(value: Any) -> str:
+    """The figures in a value, without currency, commas or words.
+
+    "N9,800" and "9800" are the same figure and must never be called a
+    disagreement; 9 and 29 are not.
+    """
+    found = _DIGITS.findall(str(value))
+    return "".join(part.replace(",", "") for part in found)
+
+
+def _value_at(data: Any, keys: list[str | int]) -> Any:
+    current = data
+    for key in keys:
+        if isinstance(current, list):
+            if not isinstance(key, int) or key >= len(current):
+                return None
+            current = current[key]
+        elif isinstance(current, dict):
+            if key not in current:
+                return None
+            current = current[key]
+        else:
+            return None
+    return current
+
+
+def _row_label(original: dict[str, Any], keys: list[str | int]) -> str:
+    """The item a corrected cell belongs to, so a question can name it."""
+    parent = _value_at(original, keys[:-1])
+    if isinstance(parent, dict):
+        for name in ("item", "description", "name"):
+            value = parent.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _disagreement(
+    original: dict[str, Any], keys: list[str | int], corrected: Any, path: str
+) -> Disagreement | None:
+    """A question, when the two passes read one cell as two different figures."""
+    first = _value_at(original, keys)
+    first_digits, second_digits = _digits(first), _digits(corrected)
+    if not first_digits or first_digits == second_digits:
+        return None
+    # Smallest first, the way "is it 9 or 29?" reads.
+    order = sorted((first_digits, second_digits), key=int)
+    return Disagreement(
+        path=path,
+        cell=str(keys[-1]),
+        label=_row_label(original, keys),
+        first=order[0],
+        second=order[1],
+    )
+
+
 def _unwrap_annotation(annotation: Any) -> Any:
     """``list[X]`` / ``dict[str, X]`` / ``X | None`` -> ``X``, recursively."""
     origin = get_origin(annotation)
@@ -302,6 +363,7 @@ async def _one_read(
     reasoning_effort: str | None,
     budget: ReadBudget,
     tier_label: str,
+    disagreements: list[Disagreement] | None = None,
 ) -> tuple[BaseModel, list[str], float, list[str]]:
     """Pass (a) extract, then pass (b) verify. One schema retry, else fail."""
     flags: list[str] = []
@@ -343,6 +405,7 @@ async def _one_read(
             )
         )
 
+    applied: list[tuple[list[str | int], Any, str]] = []
     if candidates:
         # The common case: the whole batch is valid, so apply it in one go.
         batch = copy.deepcopy(original)
@@ -351,6 +414,7 @@ async def _one_read(
         try:
             extraction = schema.model_validate(batch)
             flags.append(f"verify corrected {len(candidates)} cell(s)")
+            applied = list(candidates)
         except ValidationError as e:
             # One correction that cannot be valid must not roll back the rest.
             # A live read hit exactly this: the verify pass offered "10 ctn" for
@@ -369,9 +433,22 @@ async def _one_read(
                     continue
                 current = trial
                 kept += 1
+                applied.append((keys, value, path))
             extraction = schema.model_validate(current)
             if kept:
                 flags.append(f"verify corrected {kept} cell(s)")
+
+    # Two independent reads of one cell that name different figures: the figure
+    # is not a fact. It is carried out as a question and the reply withholds it.
+    found: list[Disagreement] = []
+    for keys, value, path in applied:
+        item = _disagreement(original, keys, value, path)
+        if item is None:
+            continue
+        found.append(item)
+        flags.append(f"verify disagrees on {path}: {item.first} or {item.second}")
+    if disagreements is not None:
+        disagreements.extend(found)
 
     confidence = _mean_confidence(extraction)
     return extraction, flags, confidence, model_path
@@ -443,6 +520,7 @@ async def read_on_tier(
     caption: str = "",
     budget: ReadBudget | None = None,
     provider: LLMAPIProvider | None = None,
+    disagreements: list[Disagreement] | None = None,
 ) -> tuple[BaseModel, list[str], float, list[str]]:
     """One extraction read (both passes) on one tier."""
     budget = budget if budget is not None else ReadBudget()
@@ -455,6 +533,7 @@ async def read_on_tier(
         reasoning_effort=_effort_for(tier),
         budget=budget,
         tier_label=tier,
+        disagreements=disagreements,
     )
 
 
@@ -480,6 +559,7 @@ async def read_document(
 
     tiers = [starting_tier] + [t for t in ("small", "big") if t != starting_tier]
     flags: list[str] = []
+    disagreements: list[Disagreement] = []
     last_error: Exception | None = None
     attempted: list[str] = []
 
@@ -492,6 +572,7 @@ async def read_document(
                 caption=caption,
                 budget=budget,
                 provider=provider_factory(tier),
+                disagreements=disagreements,
             )
             flags.extend(read_flags)
             return ReadResult(
@@ -502,6 +583,7 @@ async def read_document(
                 flags=flags,
                 confidence=confidence,
                 degraded=budget.used > 1,
+                disagreements=disagreements,
             )
         except ReadCapExceeded:
             raise
@@ -521,6 +603,7 @@ async def read_document(
 
 __all__ = [
     "CellCorrection",
+    "Disagreement",
     "ReadBudget",
     "ReadCapExceeded",
     "ReadFailed",

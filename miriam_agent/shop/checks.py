@@ -64,15 +64,21 @@ class InvoiceReport:
     flags: list[str] = field(default_factory=list)
 
 
+# One currency symbol, everywhere a figure of ours is printed. The naira sign
+# travels as UTF-8 through JSON end to end; if a channel ever mangles it, flip
+# this constant and every reply follows in the same commit.
+CURRENCY_SYMBOL = "₦"
+
+
 def naira(minor: int) -> str:
-    """Render kobo as a plain naira string, e.g. ``N286,300``."""
+    """Render kobo as a naira string, e.g. ``₦286,300``."""
     sign = "-" if minor < 0 else ""
     naira_value = abs(minor) // 100
     remainder = abs(minor) % 100
     text = f"{naira_value:,}"
     if remainder:
         text = f"{text}.{remainder:02d}"
-    return f"{sign}N{text}"
+    return f"{sign}{CURRENCY_SYMBOL}{text}"
 
 
 def _minor(value: str | int | None) -> int:

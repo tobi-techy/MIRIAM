@@ -455,6 +455,7 @@ async def _finish_stock_book(
         book,
         report,
         notes,
+        disagreements=read.disagreements,
         trust_label=reply_mod.TRUST_SELF_REPORTED,
     )
     stored = await store.save(

@@ -83,8 +83,8 @@ def test_read_returns_the_checked_reply(monkeypatch) -> None:
     body = response.json()
     assert body["doc_type"] == "stock_book"
     assert body["doc_id"]
-    assert "Total from your prices: N286,300" in body["reply_text"]
-    assert "Gap N31,900" in body["reply_text"]
+    assert "Total from your prices: ₦286,300" in body["reply_text"]
+    assert "Gap ₦31,900" in body["reply_text"]
     assert body["confidence"] == pytest.approx(0.95)
 
 

@@ -57,7 +57,7 @@ class Case:
 
 
 # Stock book rows in mama_tobi add up; only the written total is short, which is
-# what the amendment says this page shows: N254,400 written against N286,300 of
+# what the amendment says this page shows: ₦254,400 written against ₦286,300 of
 # sales from the prices.
 CASES: list[Case] = [
     Case(
@@ -67,9 +67,9 @@ CASES: list[Case] = [
         expect={
             "doc_type": "stock_book",
             "rows_read": 7,
-            "computed_total": "N286,300",
-            "written_total": "N254,400",
-            "gap": "N31,900",
+            "computed_total": "₦286,300",
+            "written_total": "₦254,400",
+            "gap": "₦31,900",
             # The page really does have one row that does not add up: Dangote
             # Spag reads 30 + 20 - 22 = 28 with 29 written beside it. A live read
             # found exactly that, so 1 is the page, not a model error.
@@ -82,9 +82,9 @@ CASES: list[Case] = [
         doc_kind="stock_book",
         expect={
             "doc_type": "stock_book",
-            "computed_total": "N248,000",
-            "written_total": "N236,000",
-            "gap": "N12,000",
+            "computed_total": "₦248,000",
+            "written_total": "₦236,000",
+            "gap": "₦12,000",
             "rows_failing": 0,
         },
     ),
@@ -94,9 +94,9 @@ CASES: list[Case] = [
         doc_kind="stock_book",
         expect={
             "doc_type": "stock_book",
-            "computed_total": "N248,000",
-            "written_total": "N236,000",
-            "gap": "N12,000",
+            "computed_total": "₦248,000",
+            "written_total": "₦236,000",
+            "gap": "₦12,000",
         },
         note="scanned PDF: rasterised, native text is not usable",
     ),
@@ -107,18 +107,18 @@ CASES: list[Case] = [
         expect={
             "doc_type": "invoice",
             "lines_read": 5,
-            "computed_subtotal": "N180,600",
-            "printed_subtotal": "N182,600",
-            "subtotal_delta": "N2,000",
+            "computed_subtotal": "₦180,600",
+            "printed_subtotal": "₦182,600",
+            "subtotal_delta": "₦2,000",
             "line_mismatches": 1,
             "line_mismatch_1": (
-                "Milo 400g refill: 6 x N3,800 = N22,800, printed N24,800, "
-                "mismatch N2,000"
+                "Milo 400g refill: 6 x ₦3,800 = ₦22,800, printed ₦24,800, "
+                "mismatch ₦2,000"
             ),
-            "discount": "N2,600",
-            "total": "N180,000",
-            "paid": "N150,000",
-            "balance": "N30,000",
+            "discount": "₦2,600",
+            "total": "₦180,000",
+            "paid": "₦150,000",
+            "balance": "₦30,000",
             "due": "17/10/2026",
         },
         note="text PDF: native text is usable, image still sent",
@@ -130,12 +130,12 @@ CASES: list[Case] = [
         expect={
             "doc_type": "invoice",
             "lines_read": 5,
-            "computed_subtotal": "N180,600",
-            "printed_subtotal": "N182,600",
-            "subtotal_delta": "N2,000",
+            "computed_subtotal": "₦180,600",
+            "printed_subtotal": "₦182,600",
+            "subtotal_delta": "₦2,000",
             "line_mismatches": 1,
-            "total": "N180,000",
-            "balance": "N30,000",
+            "total": "₦180,000",
+            "balance": "₦30,000",
         },
         note="phone photo of the same invoice",
     ),

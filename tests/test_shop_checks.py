@@ -22,9 +22,9 @@ from miriam_agent.shop.schemas import (
 
 
 def test_naira_renders_plain_naira() -> None:
-    assert naira(254_400_00) == "N254,400"
-    assert naira(31_900_00) == "N31,900"
-    assert naira(0) == "N0"
+    assert naira(254_400_00) == "₦254,400"
+    assert naira(31_900_00) == "₦31,900"
+    assert naira(0) == "₦0"
 
 
 def test_money_goes_through_amount_to_minor() -> None:
@@ -38,11 +38,11 @@ def test_stock_book_total_gap_matches_the_page() -> None:
     assert report.written_total_minor == 254_400_00
     assert report.gap_minor == 31_900_00
     assert report.rows_failing == 0
-    assert "total gap N31,900" in report.flags
+    assert "total gap ₦31,900" in report.flags
 
     gap_check = next(c for c in report.checks if c.name == "written_total_vs_computed")
     assert gap_check.passed is False
-    assert gap_check.message == ("written N254,400, computed N286,300, gap N31,900")
+    assert gap_check.message == ("written ₦254,400, computed ₦286,300, gap ₦31,900")
 
 
 def test_stock_left_is_opening_plus_supplied_minus_sold() -> None:
@@ -128,10 +128,10 @@ def test_invoice_finds_the_milo_line_and_overstated_subtotal() -> None:
     assert report.subtotal_delta_minor == 2_000_00
     assert len(report.line_mismatches) == 1
     assert report.line_mismatches[0] == (
-        "Milo 400g refill: 6 x N3,800 = N22,800, printed N24,800, " "mismatch N2,000"
+        "Milo 400g refill: 6 x ₦3,800 = ₦22,800, printed ₦24,800, " "mismatch ₦2,000"
     )
     assert "1 line(s) mis-priced" in report.flags
-    assert "subtotal overstated N2,000" in report.flags
+    assert "subtotal overstated ₦2,000" in report.flags
 
     discount_check = next(c for c in report.checks if c.name == "discount_and_total")
     assert discount_check.passed is True
@@ -157,15 +157,15 @@ def test_discount_and_total_mismatch_is_reported() -> None:
     report = check_supplier_document(doc)
     check = next(c for c in report.checks if c.name == "discount_and_total")
     assert check.passed is False
-    assert check.message == "subtotal - discount = N48,000, printed total N50,000"
+    assert check.message == "subtotal - discount = ₦48,000, printed total ₦50,000"
 
 
 def test_a_discount_and_payment_printed_with_a_minus_stay_positive() -> None:
     """A live read of the invoice returned "-2,600" and "-150,000".
 
     The minus is the column saying "subtracted", and keeping it made the reply
-    read "Discount -N2,600" and made the check compute subtotal - (-discount),
-    which invented a N5,200 mismatch on an invoice whose total was right.
+    read "Discount -₦2,600" and made the check compute subtotal - (-discount),
+    which invented a ₦5,200 mismatch on an invoice whose total was right.
     """
     doc = wigmore_invoice(discount_naira="-2,600", paid_naira="-150,000")
     assert doc.discount_naira == "2600"

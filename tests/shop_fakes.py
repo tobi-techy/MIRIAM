@@ -172,7 +172,7 @@ def provider_factory(small: FakeProvider, big: FakeProvider | None = None) -> An
 
 
 def mama_tobi_book(**overrides: Any) -> StockBook:
-    """The Mama Tobi page: rows add up, the written total is N31,900 short.
+    """The Mama Tobi page: rows add up, the written total is ₦31,900 short.
 
     Rows are internally consistent on purpose so the only failure in the checks
     is the written total, which is what the amendment expects this page to show.
@@ -211,7 +211,7 @@ def mama_tobi_book(**overrides: Any) -> StockBook:
 
 
 def wigmore_invoice(**overrides: Any) -> SupplierDocument:
-    """The Wigmore invoice, including the N2,000 Milo line mistake."""
+    """The Wigmore invoice, including the ₦2,000 Milo line mistake."""
     lines = [
         ("Indomie Instant Noodles 70g (ctn of 40)", 10, "9200", "92000"),
         ("Peak Evaporated Milk 160g tin", 24, "400", "9600"),

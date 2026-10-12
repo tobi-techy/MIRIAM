@@ -65,8 +65,9 @@ async def test_stock_book_reply_reports_the_checked_numbers() -> None:
     assert result.doc_id
     assert "Mama Tobi, 11/10/2026" in result.reply_text
     assert "I read 8 items" in result.reply_text
-    assert "Total from your prices: N286,300" in result.reply_text
-    assert "You wrote N254,400. Gap N31,900." in result.reply_text
+    assert "Total from your prices: ₦286,300" in result.reply_text
+    assert "You wrote ₦254,400." in result.reply_text
+    assert "Gap ₦31,900." in result.reply_text
     assert "self reported" in result.reply_text
     assert "—" not in result.reply_text
     assert result.confidence == pytest.approx(0.95)
@@ -82,7 +83,7 @@ async def test_a_separator_in_notes_never_becomes_a_reply_line() -> None:
             "—  ''  —",
             "Mrs Bisi owes 3,200",
             "   ",
-            "Paid Wigmore N150,000 transfer",
+            "Paid Wigmore ₦150,000 transfer",
         ]
     )
     result = await read_stock(
@@ -94,30 +95,22 @@ async def test_a_separator_in_notes_never_becomes_a_reply_line() -> None:
 
     assert "—" not in result.reply_text
     assert "'" not in result.reply_text
-    # Every "could not classify" line names something the owner wrote.
-    note_lines = [
-        line
-        for line in result.reply_text.splitlines()
-        if line.startswith("I could not classify one note:")
+    # One notes block, one note per line, no repeated "I could not classify".
+    assert result.reply_text.count("Notes from your page:") == 1
+    block = result.reply_text.split("Notes from your page:\n", 1)[1]
+    block = block.split("\n\n", 1)[0]
+    assert block.splitlines() == [
+        "Mrs Bisi owes 3,200",
+        "Paid Wigmore ₦150,000 transfer",
     ]
-    for line in note_lines:
-        assert line.removeprefix("I could not classify one note:").strip()
-    # The two notes the owner actually wrote are still surfaced verbatim.
-    assert "I could not classify one note: Mrs Bisi owes 3,200" in result.reply_text
-    assert (
-        "I could not classify one note: Paid Wigmore N150,000 transfer"
-        in result.reply_text
-    )
-    # And no note row is stored for a separator.
-    assert result.reply_text.count("I could not classify one note") == 2
 
 
 async def test_the_reply_states_the_gap_once_not_twice() -> None:
     """The check message and the "You wrote ... Gap ..." line said the same three
     figures in one reply. A live read showed it; the owner should see it once."""
     result = await read_stock()
-    assert result.reply_text.count("N31,900") == 1
-    assert "computed N286,300" not in result.reply_text
+    assert result.reply_text.count("₦31,900") == 1
+    assert "computed ₦286,300" not in result.reply_text
 
 
 async def test_a_question_in_the_reply_does_not_end_with_two_periods() -> None:
@@ -139,11 +132,11 @@ async def test_invoice_reply_prints_discount_and_payment_without_a_minus() -> No
         judge=FakeJudge(doc_kind="invoice", difficulty="easy"),
         provider_factory=provider_factory(provider),
     )
-    assert "Discount N2,600." in result.reply_text
-    assert "Paid N150,000." in result.reply_text
-    assert "-N2,600" not in result.reply_text
-    assert "-N150,000" not in result.reply_text
-    assert "subtotal - discount = N185,200" not in result.reply_text
+    assert "Discount ₦2,600." in result.reply_text
+    assert "Paid ₦150,000." in result.reply_text
+    assert "-₦2,600" not in result.reply_text
+    assert "-₦150,000" not in result.reply_text
+    assert "subtotal - discount = ₦185,200" not in result.reply_text
 
 
 async def test_stock_reply_never_prints_model_prose() -> None:
@@ -152,7 +145,7 @@ async def test_stock_reply_never_prints_model_prose() -> None:
     result = await read_stock(book=book)
     # The item name is data, so it appears; but the reply is still template
     # lines only, with the checked figures and no free text.
-    assert "Total from your prices: N286,300" in result.reply_text
+    assert "Total from your prices: ₦286,300" in result.reply_text
     assert result.reply_text.endswith(
         "Saved as your own book (self reported), so it is your record only and "
         "never feeds credit on its own."
@@ -226,14 +219,14 @@ async def test_invoice_reply_names_the_line_and_the_overstated_subtotal() -> Non
     reply = result.reply_text
     assert result.doc_type == "invoice"
     assert reply.startswith("Invoice from Wigmore Trading Ltd WGT/INV/2610-0417")
-    assert "6 x N3,800 = N22,800, printed N24,800, mismatch N2,000" in reply
-    assert "Correct lines total: N180,600" in reply
-    assert "Printed subtotal: N182,600" in reply
-    assert "overstated by N2,000" in reply
-    assert "Discount N2,600" in reply
-    assert "Total to pay N180,000" in reply
-    assert "Paid N150,000" in reply
-    assert "Balance N30,000 due 17/10/2026" in reply
+    assert "6 x ₦3,800 = ₦22,800, printed ₦24,800, mismatch ₦2,000" in reply
+    assert "Correct lines total: ₦180,600" in reply
+    assert "Printed subtotal: ₦182,600" in reply
+    assert "overstated by ₦2,000" in reply
+    assert "Discount ₦2,600" in reply
+    assert "Total to pay ₦180,000" in reply
+    assert "Paid ₦150,000" in reply
+    assert "Balance ₦30,000 due 17/10/2026" in reply
     assert "supplier document" in reply
     assert "unverified until the book shows it" in reply
 
@@ -379,7 +372,7 @@ async def test_notes_are_classified_and_shown() -> None:
         provider_factory=provider_factory(provider),
     )
     assert judge.note_calls == 2
-    assert "Notes: " in result.reply_text
+    assert "Notes from your page:" in result.reply_text
     assert "Chinedu" in result.reply_text
     assert "12,500" in result.reply_text
 
@@ -396,7 +389,8 @@ async def test_unclassifiable_note_is_surfaced_verbatim() -> None:
         judge=judge,
         provider_factory=provider_factory(provider),
     )
-    assert "I could not classify one note: Monday something" in result.reply_text
+    assert "I could not classify" not in result.reply_text
+    assert "Monday something" in result.reply_text.splitlines()
     assert "note not understood" in result.flags
 
 
@@ -448,3 +442,108 @@ async def test_invoice_store_rows_are_written_for_the_lines() -> None:
     assert saved["lines"][3]["item"] == "Milo 400g refill"
     assert saved["rows"] == []
     assert saved["prompt_version"] == "shop-read-v1"
+
+
+async def test_a_disputed_left_figure_is_asked_not_stated() -> None:
+    """A live page did this on its Dangote row: the extraction pass read one
+    figure for "left" and the verify pass read another. The figure is not a
+    fact, so the row line that states it and the low-stock line that prints it
+    both stay out of the reply, and the owner gets the two candidates instead."""
+    book = mama_tobi_book()
+    row = book.rows[0]
+    row.opening, row.supplied, row.sold, row.left = 30, 20, 22, 6
+    provider = FakeProvider(
+        [payload(book)],
+        verify={"corrections": [{"path": "rows[0].left", "value": "5"}]},
+    )
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=InMemoryShopDocumentStore(),
+        judge=FakeJudge(doc_kind="stock_book", note_unavailable=True),
+        provider_factory=provider_factory(provider),
+    )
+
+    reply = result.reply_text
+    assert "I couldn't read the left figure for Rice 50kg, is it 5 or 6?" in reply
+    # No figure at all for the cell the two reads disagreed on.
+    assert "book says" not in reply
+    assert "(6 left)" not in reply
+    assert "(5 left)" not in reply
+    assert "Rows that do not add up" not in reply
+    # The settled maths is untouched by the question.
+    assert "Rice 50kg 22 x ₦12,000 = ₦264,000" in reply
+
+
+async def test_a_disputed_price_is_asked_with_the_maths_intact() -> None:
+    """A disputed price changes the money, so the reply states the settle figure
+    and asks in the same breath: never a silent choice, never a broken total."""
+    provider = FakeProvider(
+        [payload(mama_tobi_book())],
+        verify={"corrections": [{"path": "rows[0].price_naira", "value": "13000"}]},
+    )
+    result = await read_shop_document(
+        file_b64=STOCK_PNG,
+        mime="image/png",
+        user_id="user-1",
+        store=InMemoryShopDocumentStore(),
+        judge=FakeJudge(doc_kind="stock_book", note_unavailable=True),
+        provider_factory=provider_factory(provider),
+    )
+
+    reply = result.reply_text
+    assert (
+        "I couldn't read the price figure for Rice 50kg, is it 12000 or 13000?" in reply
+    )
+    assert "Rice 50kg 3 x ₦13,000 = ₦39,000" in reply
+
+
+async def test_the_reply_is_sections_with_one_sales_row_per_line() -> None:
+    """Read on a phone: one section per thing, a blank line between them, and
+    one row per line instead of a paragraph of semicolon-joined figures."""
+    result = await read_stock(
+        judge=FakeJudge(doc_kind="stock_book", note_unavailable=True)
+    )
+    sections = result.reply_text.split("\n\n")
+    assert sections[0] == "Mama Tobi, 11/10/2026. I read 8 items."
+
+    sales = sections[1].splitlines()
+    assert sales[0] == "Sales from your prices:"
+    assert len(sales) == 9  # the header line and eight rows, one each
+    assert all("=" in line for line in sales[1:])
+    assert all(";" not in line for line in sales[1:])
+
+    totals = sections[2].splitlines()
+    assert totals == [
+        "Total from your prices: ₦286,300.",
+        "You wrote ₦254,400.",
+        "Gap ₦31,900.",
+    ]
+
+
+async def test_a_note_that_only_repeats_the_written_total_is_dropped() -> None:
+    """The page's own "Total sales today: 254,400" is the figure the gap line
+    already states: it does not come back as a note, and every other note the
+    owner wrote still does, with one currency symbol."""
+    book = mama_tobi_book(
+        notes=[
+            "Total sales today: N254,400",
+            "Paid Wigmore N150,000 transfer",
+            "Mrs Bisi owes 3,200",
+        ]
+    )
+    result = await read_stock(
+        book=book,
+        judge=FakeJudge(doc_kind="stock_book", note_unavailable=True),
+    )
+
+    block = result.reply_text.split("Notes from your page:\n", 1)[1]
+    block = block.split("\n\n", 1)[0]
+    assert block.splitlines() == [
+        "Paid Wigmore ₦150,000 transfer",
+        "Mrs Bisi owes 3,200",
+    ]
+    # The written total appears once, in the gap section, not twice.
+    assert result.reply_text.count("₦254,400") == 1
+    assert "N150,000" not in result.reply_text

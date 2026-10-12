@@ -10,6 +10,7 @@ sentence in a stray field fails validation instead of being half-read.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Literal
@@ -70,6 +71,43 @@ def _deduction_is_positive(v: Any) -> str | None:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+@dataclass(frozen=True)
+class Disagreement:
+    """One cell the two reads of a page did not agree on.
+
+    The extraction pass and the verify pass are two independent reads of the
+    same image. When they name different figures for one cell, the figure is
+    not a fact and the reply must not print it: it goes to the owner as a
+    question with both candidates. Nothing is averaged, nothing is guessed.
+    """
+
+    path: str
+    cell: str
+    label: str
+    first: str
+    second: str
+
+
+def cell_words(cell: str) -> str:
+    """The cell name as the owner's words, for a question in the reply."""
+    words = {
+        "left": "left",
+        "opening": "opening",
+        "supplied": "supplied",
+        "sold": "sold",
+        "price_naira": "price",
+        "qty": "quantity",
+        "unit_price_naira": "unit price",
+        "line_total_naira": "line total",
+        "printed_total_naira": "printed line total",
+        "discount_naira": "discount",
+        "total_naira": "total",
+        "paid_naira": "paid",
+        "balance_naira": "balance",
+    }
+    return words.get(cell, cell.removesuffix("_naira").replace("_", " "))
 
 
 class CrossedOut(_Strict):
