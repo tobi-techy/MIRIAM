@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from miriam_agent.api.chat import router as chat_router
 from miriam_agent.api.memory import router as memory_router
 from miriam_agent.api.proactive import router as proactive_router
+from miriam_agent.api.shop import router as shop_router
 from miriam_agent.api.spectrum import router as spectrum_router
 from miriam_agent.observability.correlation import (
     TRACE_HEADER,
@@ -67,6 +68,12 @@ async def lifespan(app: FastAPI):
         await close_async_client()
     except Exception:
         logger.exception("TypeSafe client shutdown failed")
+    try:
+        from miriam_agent.judgment.reading import close_reader_client
+
+        await close_reader_client()
+    except Exception:
+        logger.exception("TypeSafe reader client shutdown failed")
     logger.info("Miriam Financial Agent API shutting down")
 
 
@@ -309,3 +316,4 @@ app.include_router(chat_router, prefix="/api/v1")
 app.include_router(memory_router, prefix="/api/v1")
 app.include_router(proactive_router, prefix="/api/v1")
 app.include_router(spectrum_router, prefix="/api/v1")
+app.include_router(shop_router, prefix="/api/v1")

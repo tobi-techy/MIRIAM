@@ -39,6 +39,15 @@ services:
       ENVIRONMENT: development
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       TYPESAFE_ENABLED: ${TYPESAFE_ENABLED:-true}
+      # Shop document reading (stock books, invoices, delivery notes). Without
+      # LLMAPI_API_KEY every read fails closed to the retake message.
+      LLMAPI_API_KEY: ${LLMAPI_API_KEY:-}
+      LLMAPI_BASE_URL: ${LLMAPI_BASE_URL:-https://api.llmapi.ai/v1}
+      # Optional. The single Jev call each of these makes is a router decision,
+      # so without TYPESAFE_API_KEY the router starts every read on the big
+      # model and escalates rather than trusting a cheap read.
+      READ_SMALL_MODEL: ${READ_SMALL_MODEL:-gemini-3.8-flash}
+      READ_BIG_MODEL: ${READ_BIG_MODEL:-gpt-5.6-terra}
     ports:
       - "8000:8000"
       - "8001:8001"  # Hot reload port

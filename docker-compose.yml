@@ -84,6 +84,17 @@ services:
       # pre-TypeSafe path unchanged.
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       TYPESAFE_ENABLED: ${TYPESAFE_ENABLED:-true}
+      # Shop document reading (stock books, invoices, delivery notes). Kept
+      # optional like TYPESAFE_API_KEY rather than required: without the key the
+      # service still boots and every read fails closed to the retake message,
+      # which is better than a container that refuses to start over one feature.
+      LLMAPI_API_KEY: ${LLMAPI_API_KEY:-}
+      LLMAPI_BASE_URL: ${LLMAPI_BASE_URL:-https://api.llmapi.ai/v1}
+      READ_SMALL_MODEL: ${READ_SMALL_MODEL:-gemini-3.8-flash}
+      READ_BIG_MODEL: ${READ_BIG_MODEL:-gpt-5.6-terra}
+      # Where a saved read lands. Postgres is the default; memory is for the
+      # live eval only (it is lost on restart).
+      SHOP_DOC_STORE: ${SHOP_DOC_STORE:-postgres}
     ports:
       - "8000:8000"
     depends_on:
