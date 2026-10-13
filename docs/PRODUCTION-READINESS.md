@@ -110,10 +110,13 @@ when `ENVIRONMENT` is `production`/`prod` (any casing) and:
 - Add `RAIL_ALLOW_DEV_SIGN` to the production guard so a misconfigured host
   fails at boot instead of at the first wallet-signed settlement. (`GO_BACKEND_URL`
   and the model key are now guarded — see the table above.)
-- `tests/test_spec_examples.py` skips 13 tests because
-  `docs/miriam_spec/miriam_spec_v1.2.md` is missing and a bare
-  `except Exception: pytest.skip` hides it; the spec-gate CI step passes
-  vacuously as a result.
+- The spec gate now loads `docs/miriam_spec/miriam_spec_v1.2.md` for real and
+  fails loudly on a missing, unreadable or empty document (the loader pointed
+  one directory too low and the tests turned every error, assertion failures
+  included, into a skip). That surfaced real drift: the document and
+  `miriam_agent/spec/examples.py` disagree on both the examples heading and the
+  example block format, so three spec-gate assertions fail. Reconciling them is
+  the open follow-up; see "Spec ownership" in `CONTRIBUTION.md`.
 - Dead deploy-target references in other repos' docs (AWS ECS, Fly, k8s,
   Terraform) belong to `RAIL-BACKEND-SERVICE` history, not here; this repo has
   no such manifest and no second target. The AtlasFlow reality: the Go service

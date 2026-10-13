@@ -186,6 +186,32 @@ Miriam's behavioral specification is stored in `docs/miriam_spec/` and managed t
    - Behavioral impact must be documented
    - All references to the old version must be updated
 
+### Spec ownership
+
+The spec module is **kept and owned**; it is not dead code. A machine-checked
+spec is the point: `miriam_agent/spec/` (registry, examples loader),
+`docs/miriam_spec/`, `tests/test_miriam_spec.py`, `tests/test_spec_examples.py`
+and the `Run spec gate tests` CI step are one unit. Accountable owner: the
+repository owner (`tobi-techy`) until reassigned here.
+
+History, so nobody has to rediscover it:
+
+- `98756df` created the spec and its registry.
+- `dc6e533` (2026-10-12) deleted the whole unit (document, module, both test
+  files, the CI step and these two sections) as an unowned cleanup.
+- Merge `9f7b594` (2026-10-12, "Merge origin/main into
+  fix/plain-english-onboarding") restored all of it, so the surface has been
+  flip-flopping with no decision recorded.
+- This decision settles it: keep it, and make the gate real. The loader used to
+  resolve `miriam_agent/docs/...` (one directory too low) and the tests turned
+  any error, including a failed assertion, into a skip, so 13 of 30 tests
+  skipped and the gate proved nothing.
+
+Rules going forward: the tests must load the real document and must never
+convert a load error into a skip; delete the unit only in one PR that removes
+the document, the module, both test files, the CI step and this section
+together, and says so in its title.
+
 ### Spec Validation
 
 The CI pipeline now includes a **spec-gate step** that runs:

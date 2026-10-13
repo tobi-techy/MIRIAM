@@ -61,6 +61,10 @@ jobs:
       - name: Run mypy type checking (ratchet)
         run: python scripts/mypy_ratchet.py
 
+      # Guards docs/miriam_spec/miriam_spec_v1.2.md against drifting from the
+      # registry and examples in miriam_agent/spec. The document is loaded for
+      # real: a missing, unreadable or empty spec fails here instead of
+      # skipping. Ownership and history: CONTRIBUTION.md, "Spec ownership".
       - name: Run spec gate tests
         run: |
           pytest tests/test_miriam_spec.py tests/test_spec_examples.py -v
