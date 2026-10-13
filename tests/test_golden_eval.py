@@ -165,9 +165,11 @@ class TestMemorySearch:
         """MIRI-8 Gap 5: init-db.sql no longer mirrors the schema.
 
         Alembic is the only path that creates application tables, so the SQL
-        bootstrap may only create the extension. The ``embedding`` column lives
-        (as JSON today, vector-ready) in ``alembic/versions/001_baseline.py``,
-        which also creates the extension.
+        bootstrap may only create the extension. The Python agent's own
+        migrations deliberately do NOT enable pgvector and do NOT create an
+        ``embedding`` column: semantic memory is off in the pilot (owner
+        decision, 13 Oct 2026), and the path back is written once in
+        ``docs/SEMANTIC-MEMORY-PATH-BACK.md``.
         """
         import pathlib
 
@@ -175,7 +177,10 @@ class TestMemorySearch:
         assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
         assert "CREATE TABLE" not in sql, "init-db.sql must not create tables"
         migration = pathlib.Path("alembic/versions/001_baseline.py").read_text()
-        assert "CREATE EXTENSION IF NOT EXISTS vector" in migration
+        assert "CREATE EXTENSION IF NOT EXISTS vector" not in migration, (
+            "the Python agent's migrations must not enable pgvector "
+            "(owner decision 13 Oct 2026; docs/SEMANTIC-MEMORY-PATH-BACK.md)"
+        )
 
 
 class TestToolValidation:

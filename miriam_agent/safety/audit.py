@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from miriam_agent.core.timeutil import utcnow_naive
-from miriam_agent.database.models import AuditLog, Base
+from miriam_agent.database.bootstrap import create_schema_if_allowed
+from miriam_agent.database.models import AuditLog
 from miriam_agent.observability.correlation import current_trace_id
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class AuditSystem:
         """Initialize the audit database connection."""
         self.engine = create_async_engine(self.database_url)
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await create_schema_if_allowed(conn)
         # Create async session factory
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
