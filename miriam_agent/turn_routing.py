@@ -47,6 +47,10 @@ class SourcedRequest(BaseModel):
     """
 
     message_source: MessageSource = "user"
+    # The provider's id for the inbound message, platform-scoped by the caller.
+    # Present, it makes the turn idempotent: a replay of the same id never runs
+    # the model a second time. See ``api.idempotency``.
+    message_id: str = ""
 
     @model_validator(mode="after")
     def _settlement_is_a_user_act(self) -> SourcedRequest:
