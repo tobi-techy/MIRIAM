@@ -1,6 +1,8 @@
-FROM python:3.11-slim AS base
-# Supply-chain: pin to a digest in release branches via
-# `docker pull python:3.11-slim` then `docker inspect --format='{{index .RepoDigests 0}}'`.
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce AS base
+# Supply-chain: the base is pinned by digest (the multi-arch index digest of
+# python:3.11-slim). Refresh deliberately with:
+#   docker pull python:3.11-slim \
+#     && docker inspect --format='{{index .RepoDigests 0}}' python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -22,6 +24,13 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY miriam_agent ./miriam_agent
+# Alembic and the DB bootstrap scripts ship inside the image so a deploy can
+# run `alembic upgrade head` from the container itself (the image is
+# self-sufficient: no checkout, no host tooling). psycopg2-binary is a runtime
+# dependency for that sync path — see alembic/env.py and pyproject.toml.
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+COPY scripts ./scripts
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh \
     && uv sync --frozen --no-dev \

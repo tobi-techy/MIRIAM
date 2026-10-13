@@ -53,6 +53,11 @@ dependencies = [
     "matplotlib>=3.11.2",
     "alembic>=1.13.0",
     "pillow>=12.3.0",
+    # Runtime, not dev-only: the image ships alembic/ + alembic.ini and a deploy
+    # runs `alembic upgrade head` inside the container. alembic/env.py drives the
+    # sync engine, which needs a sync Postgres driver. psycopg2-binary bundles
+    # libpq, so no extra system package is required in the runtime stage.
+    "psycopg2-binary>=2.9.13",
 ]
 
 [project.optional-dependencies]
@@ -136,5 +141,4 @@ python_functions = "test_"
 [dependency-groups]
 dev = [
     "aiosqlite>=0.22.1",
-    "psycopg2-binary>=2.9.13",
 ]

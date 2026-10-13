@@ -46,13 +46,24 @@ it only touches the required-checks list and leaves other protection settings
 ## Migrations and readiness
 
 - `entrypoint.sh` does **not** migrate; the deploy job runs `alembic upgrade head`
-  before containers start. A failed migration must stop the deploy.
-- Readiness/liveness probe is `GET /health/ready`; `docker-compose.yml` gates the
-  app on Postgres and Redis health before starting it.
+  before containers start. A failed migration must stop the deploy. The image
+  ships `alembic/`, `alembic.ini` and `scripts/` (and `psycopg2-binary` as a
+  runtime dependency), so `alembic upgrade head` runs from inside the container
+  with no host checkout.
+- **Alembic is the only path that creates application tables.**
+  `scripts/init-db.sql` is reduced to `CREATE EXTENSION IF NOT EXISTS vector;`
+  and no longer mirrors `models.py`; do not add table DDL there.
+- The Postgres must have the `vector` extension available (`pgvector/pgvector:pg15`
+  or a managed Postgres with pgvector); `postgres:15` alone cannot run migration 001.
+- Readiness/liveness probe is `GET /health/ready` (reports `database`, `go_backend`,
+  `llm` and `config`); AtlasFlow probes `GET /` on `PORT`; `docker-compose.yml`
+  gates the app on Postgres and Redis health before starting it.
 
 ## Secrets and configuration
 
-Two independent layers already fail fast, and one gap remains.
+Two independent layers fail fast — the app's production boot guard and compose's
+required-variable interpolation — so a misconfigured host stops at boot rather
+than at the first money turn.
 
 ### The app refuses to boot in production without these
 
@@ -66,6 +77,8 @@ when `ENVIRONMENT` is `production`/`prod` (any casing) and:
 | `ENCRYPTION_KEY` | strong, `>= 32` chars (no deriving it from `SECRET_KEY`) |
 | `JWT_ISSUER` | set, `>= 3` chars (Go writes `rail_service`) |
 | `RAIL_SERVICE_KEY` | strong, `>= 32` chars — the only credential that may mint ledger inflows |
+| `GO_BACKEND_URL` | must not be the `localhost:8080` default (a container probing localhost finds only itself); set it to the Go service URL |
+| `OPENAI_API_KEY` or `CONCENTRATE_API_KEY` | at least one must be set — without a model key every answerable chat turn fails |
 | `DATABASE_URL` | must not contain the default `miriam_password` |
 | `ALLOW_CHAT_INFLOW_SYNTH` | must be `false` (chat text must never mint inflows) |
 
@@ -73,14 +86,13 @@ when `ENVIRONMENT` is `production`/`prod` (any casing) and:
 
 `docker-compose.yml` uses `${VAR:?message}` so a missing value aborts
 `docker compose up` with a named error: `POSTGRES_PASSWORD`, `SECRET_KEY`,
-`JWT_SECRET`, `ENCRYPTION_KEY`, `RAIL_SERVICE_KEY`.
+`JWT_SECRET`, `ENCRYPTION_KEY`, `RAIL_SERVICE_KEY`, `GO_BACKEND_URL`.
 
 ### Not guarded — confirm by hand before go-live
 
 | Variable | Why it matters |
 |---|---|
-| `OPENAI_API_KEY` **or** `CONCENTRATE_API_KEY` | Without one, building the agent raises `ConfigurationError` and every answerable chat turn returns 500. Not covered by the production guard. |
-| `GO_BACKEND_URL` | Defaults to `http://localhost:8080`; must point at the Go service or no money moves. |
+| `PORT` | **Set `PORT=8000`.** AtlasFlow probes `http://<vm>:<PORT>/` and defaults `PORT` to `3000`; an unset `PORT` leaves uvicorn on 8000 while the platform probes 3000, so the deploy never goes healthy. The entrypoint logs the listening port and whether `PORT` was set. |
 | `RAIL_ALLOW_DEV_SIGN` | Defaults `false`. Keep it false in production: `true` lets a base64 blob in a `terminal` message settle a wallet signature. |
 | `MONEY_SINGLE_PROCESS` | Defaults `false`. Must match reality: `true` only for a genuinely single-replica deploy, otherwise a Redis outage gives one user two ledgers. AtlasFlow runs `replicas: 1`. |
 | `ALLOWED_ORIGINS` | Defaults to `*`, which turns credentialed CORS off (`api/main.py`). Set the real origin list only if a browser app needs cookies. |
@@ -95,12 +107,16 @@ when `ENVIRONMENT` is `production`/`prod` (any casing) and:
 
 ## Follow-ups worth opening
 
-- Add `OPENAI_API_KEY`/`CONCENTRATE_API_KEY` and `RAIL_ALLOW_DEV_SIGN` to the
-  production guard so a misconfigured host fails at boot instead of at the first
-  money turn.
+- Add `RAIL_ALLOW_DEV_SIGN` to the production guard so a misconfigured host
+  fails at boot instead of at the first wallet-signed settlement. (`GO_BACKEND_URL`
+  and the model key are now guarded — see the table above.)
 - `tests/test_spec_examples.py` skips 13 tests because
   `docs/miriam_spec/miriam_spec_v1.2.md` is missing and a bare
   `except Exception: pytest.skip` hides it; the spec-gate CI step passes
   vacuously as a result.
-- Dead deploy-target references still appear in docs (AWS ECS, Fly, k8s,
-  Terraform) and conflict with the AtlasFlow-only rule; archive them.
+- Dead deploy-target references in other repos' docs (AWS ECS, Fly, k8s,
+  Terraform) belong to `RAIL-BACKEND-SERVICE` history, not here; this repo has
+  no such manifest and no second target. The AtlasFlow reality: the Go service
+  owns the money/records/consent platform and reaches this Python agent over
+  HTTP (`PYTHON_AGENT_ENABLED`/`PYTHON_AGENT_URL`, aligned `JWT_SECRET`); the
+  agent has no AtlasFlow project of its own.

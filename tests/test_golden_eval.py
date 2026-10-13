@@ -161,12 +161,21 @@ class TestMemorySearch:
         toks = [t.lower() for t in q.split() if len(t) > 2][:8]
         assert toks == ["salary", "rent", "lagos"]
 
-    def test_init_db_has_vector(self):
+    def test_init_db_is_extension_only(self):
+        """MIRI-8 Gap 5: init-db.sql no longer mirrors the schema.
+
+        Alembic is the only path that creates application tables, so the SQL
+        bootstrap may only create the extension. The ``embedding`` column lives
+        (as JSON today, vector-ready) in ``alembic/versions/001_baseline.py``,
+        which also creates the extension.
+        """
         import pathlib
 
         sql = pathlib.Path("scripts/init-db.sql").read_text()
         assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
-        assert "VECTOR(1536)" in sql
+        assert "CREATE TABLE" not in sql, "init-db.sql must not create tables"
+        migration = pathlib.Path("alembic/versions/001_baseline.py").read_text()
+        assert "CREATE EXTENSION IF NOT EXISTS vector" in migration
 
 
 class TestToolValidation:

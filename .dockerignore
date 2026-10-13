@@ -1,0 +1,44 @@
+# Keep the build context small and the image free of host-only artifacts.
+# The Dockerfile copies only: pyproject.toml, uv.lock, README.md,
+# miriam_agent/, entrypoint.sh, alembic/, alembic.ini and scripts/ — everything
+# else here is excluded so the daemon never sees it.
+
+# Version control and editors
+.git
+.gitignore
+.github
+.commandcode
+*.md
+!README.md
+
+# Python environments and caches
+.venv
+venv
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Node / dashboard and the (Bun) WhatsApp bridge: built and deployed separately
+apps/spectrum-gateway/node_modules
+apps/**/node_modules
+**/node_modules
+
+# Docs, evals and tests are not part of the runtime image
+docs/
+tests/
+eval/
+
+# Local env / secrets must never enter the context
+.env
+.env.*
+*.env
+*.pem
+*.key
+secrets/

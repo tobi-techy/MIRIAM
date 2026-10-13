@@ -69,6 +69,10 @@ def test_metrics_rejects_fake_bearer_in_production(monkeypatch):
         "postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
     )
     monkeypatch.setenv("RAIL_SERVICE_KEY", "r" * 40)
+    # Required since Gaps 7/8: the Go money authority (not its localhost
+    # default) and a model key.
+    monkeypatch.setenv("GO_BACKEND_URL", "https://api.userail.money")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "p" * 40)
     from miriam_agent.config.settings import get_settings
 
     get_settings.cache_clear()
