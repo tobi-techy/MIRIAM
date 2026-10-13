@@ -243,6 +243,27 @@ async def ready_check():
     except Exception as e:
         checks["llm"] = f"unconfigured: {type(e).__name__}"
 
+    # Configuration sanity (Gaps 7 and 8): the same misconfigurations the
+    # production boot guard refuses, surfaced for a stack started outside
+    # production mode. Reports names only, never the values.
+    try:
+        from miriam_agent.config.settings import get_settings
+
+        settings = get_settings()
+        misconfig: list[str] = []
+        if settings.GO_BACKEND_URL.rstrip("/") in {
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+        }:
+            misconfig.append("go_backend_url_is_localhost_default")
+        if not (settings.OPENAI_API_KEY or settings.CONCENTRATE_API_KEY):
+            misconfig.append("no_model_key")
+        checks["config"] = (
+            "ok" if not misconfig else "problems: " + ", ".join(misconfig)
+        )
+    except Exception as e:
+        checks["config"] = f"unavailable: {type(e).__name__}"
+
     return checks
 
 

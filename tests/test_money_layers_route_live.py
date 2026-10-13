@@ -409,7 +409,14 @@ def test_build_money_plan_is_not_called_on_a_send_or_an_inflow(monkeypatch):
             "Authorization": "Bearer test-token",
             "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
         },
-        json={"payment_id": "pay_1", "amount": "420000", "source_raw": "PAYROLL"},
+        json={
+            "payment_id": "pay_1",
+            "amount": "420000",
+            "source_raw": "PAYROLL",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-ROUTE",
+        },
     )
     assert inflow.status_code == 200, inflow.text
 
@@ -432,7 +439,14 @@ def test_the_inflow_endpoint_splits_without_a_model(monkeypatch):
             "Authorization": "Bearer test-token",
             "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
         },
-        json={"payment_id": "pay_42", "amount": "420000", "source_raw": "PAYROLL"},
+        json={
+            "payment_id": "pay_42",
+            "amount": "420000",
+            "source_raw": "PAYROLL",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-NOMODEL",
+        },
     )
 
     assert response.status_code == 200, response.text
@@ -489,7 +503,14 @@ def _inflow_post(client: TestClient) -> Any:
             "Authorization": "Bearer test-token",
             "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
         },
-        json={"payment_id": "pay_audit", "amount": "420000", "source_raw": "PAYROLL"},
+        json={
+            "payment_id": "pay_audit",
+            "amount": "420000",
+            "source_raw": "PAYROLL",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-AUDIT",
+        },
     )
 
 
@@ -621,6 +642,110 @@ def test_two_payments_same_sender_and_amount_different_reference_both_count(
     assert rail.moves == []
 
 
+def test_a_reference_less_inflow_is_credited_but_not_labelled_verified(
+    monkeypatch,
+):
+    """The authority's credit is honoured, but it is never called verified.
+
+    The Go platform is the authority for money and it may deliver an inflow
+    with an incomplete identity (no ``reference``). That is a real credit, so
+    it is always split and credited -- never refused. But dedupe falls back to
+    the rail's ``payment_id``, so the receipt the caller gets is labelled
+    ``verified=False`` and no ``payment_references`` row is written for it.
+    """
+    from miriam_agent.hands.payment_refs import InMemoryPaymentRefStore
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    refs = InMemoryPaymentRefStore()
+    store, rail, _memory = _wire(monkeypatch, ledger=ledger, payment_refs=refs)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        _INFLOW_URL,
+        headers=_RAIL_HEADERS,
+        json={
+            "payment_id": "pay_noref",
+            "amount": "420000",
+            "source_raw": "Credit alert: NGN420,000.00 from ACME PAYROLL",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            # reference deliberately omitted
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    receipt = response.json()["receipt"]
+    assert receipt["action"] == "inflow_split"
+    assert receipt["verified"] is False  # the label that matters
+    assert refs._rows == {}  # no structured-key claim row was written
+    reloaded = await_sync(_load_for(store))
+    assert reloaded.sleeves["savings"] == money(126000)  # the credit landed
+    assert rail.moves == []
+
+
+def test_an_inflow_with_the_full_identity_is_labelled_verified(monkeypatch):
+    """A complete identity writes a claim row and yields a verified credit."""
+    from miriam_agent.hands.payment_refs import InMemoryPaymentRefStore
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    refs = InMemoryPaymentRefStore()
+    _store, rail, _memory = _wire(monkeypatch, ledger=ledger, payment_refs=refs)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = _inflow_post_fields(client, payment_id="pay_full", reference="REF-FULL")
+
+    assert response.status_code == 200, response.text
+    receipt = response.json()["receipt"]
+    assert receipt["action"] == "inflow_split"
+    assert receipt["verified"] is True
+    assert refs._rows != {}  # the structured-key claim row was written
+    assert rail.moves == []
+
+
+def test_the_durable_audit_carries_the_trust_label(monkeypatch):
+    """The label reaches the durable audit, not just the reply.
+
+    An incomplete-identity inflow is written to the audit store with
+    ``verified=False``; a complete one with ``verified=True``. Otherwise a
+    downstream reader of the audit could not tell the two apart.
+    """
+    recorded: list[dict[str, Any]] = []
+
+    class _RecordingAudit:
+        async def log_money_movement(self, **kwargs: Any) -> str:
+            recorded.append(kwargs)
+            return "audit_row"
+
+    async def _fake_audit_system():
+        yield _RecordingAudit()
+
+    monkeypatch.setattr(chat, "get_audit_system", _fake_audit_system)
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    _store, rail, _memory = _wire(
+        monkeypatch, ledger=ledger, audit_sink=chat._persist_money_audit
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    unverified = client.post(
+        _INFLOW_URL,
+        headers=_RAIL_HEADERS,
+        json={
+            "payment_id": "pay_audit_u",
+            "amount": "100000",
+            "source_raw": "alert",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+        },
+    )
+    verified = _inflow_post_fields(client, payment_id="pay_audit_v", amount="100000")
+
+    assert unverified.status_code == 200, unverified.text
+    assert verified.status_code == 200, verified.text
+    assert [row["verified"] for row in recorded] == [False, True]
+    assert rail.moves == []
+
+
 def test_concurrent_duplicate_payment_splits_once(monkeypatch):
     """The same payment delivered twice at once moves money once.
 
@@ -747,7 +872,14 @@ def test_a_repeated_inflow_webhook_splits_once(monkeypatch):
     ledger = _ledger(spendable="0")
     store, _rail, _memory = _wire(monkeypatch, ledger=ledger)
     client = TestClient(app, raise_server_exceptions=False)
-    body = {"payment_id": "pay_dup", "amount": "100000", "source_raw": "PAYROLL"}
+    body = {
+        "payment_id": "pay_dup",
+        "amount": "100000",
+        "source_raw": "PAYROLL",
+        "channel": "gtbank",
+        "sender": "ACME PAYROLL",
+        "reference": "REF-DUP",
+    }
 
     for _ in range(2):
         response = client.post(
@@ -835,7 +967,13 @@ def test_an_inflow_webhook_fails_retryably_when_the_ledger_is_unreachable(monkey
             "Authorization": "Bearer test-token",
             "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
         },
-        json={"payment_id": "pay_down", "amount": "420000"},
+        json={
+            "payment_id": "pay_down",
+            "amount": "420000",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-DOWN",
+        },
     )
     assert response.status_code == 503
     assert "unavailable" in response.json()["detail"]
@@ -899,7 +1037,13 @@ def test_a_good_amount_still_splits(monkeypatch):
             "Authorization": "Bearer test-token",
             "X-Rail-Service-Key": "test-rail-service-key-0123456789abcdef",
         },
-        json={"payment_id": "pay_ok", "amount": "420000"},
+        json={
+            "payment_id": "pay_ok",
+            "amount": "420000",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-OK",
+        },
     )
     assert response.status_code == 200, response.text
 

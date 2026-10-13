@@ -1,4 +1,8 @@
-"""Miriam specification package."""
+"""Miriam specification package.
+
+Kept and owned: a machine-checked spec is the point. See "Spec ownership" in
+CONTRIBUTION.md for the decision and the delete/restore history.
+"""
 
 # Core registry exports
 # Loading utilities
@@ -8,6 +12,7 @@ from miriam_agent.spec.registry import (
     RULES,
     SECTIONS,
     SPEC_HASH,
+    SPEC_PATH,
     TRANSACTION_CLASSES,
     content_hash,
     load_markdown,
@@ -15,7 +20,6 @@ from miriam_agent.spec.registry import (
 )
 
 SPEC_VERSION = "1.2"
-SPEC_PATH = "../docs/miriam_spec/miriam_spec_v1.2.md"
 
 __all__ = [
     "SPEC_VERSION",

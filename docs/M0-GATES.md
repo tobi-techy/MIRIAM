@@ -25,7 +25,7 @@ make test
 | Synth flag | `pytest tests/test_synth_gate.py` + `ENVIRONMENT=production ALLOW_CHAT_INFLOW_SYNTH=true` boot failure | Chat text cannot mint ledger money outside dev (G23) |
 | PaymentReference | `alembic upgrade --sql` shows `uq_payment_ref_dedupe` index | Inflow dedupes on structured columns not raw text hash (G23) |
 | Audit durability | orchestrator unit test: sink that always raises → handle raises `LedgerUnavailable` (503) not 500 | Settled money without a durable row is impossible; caller retries (G25) |
-| Single-uvicorn | `grep -c 'uvicorn' entrypoint.sh` == 1, `exec uvicorn` with `--timeout-graceful-shutdown` | No divergent in-process ledgers during Redis outage (G22) |
+| Single-uvicorn | `grep -c '^exec uvicorn' entrypoint.sh` == 1 (a bare `uvicorn` count also matches the comments and drifts — 3 before #44, 4 after), and that line carries `--timeout-graceful-shutdown` | No divergent in-process ledgers during Redis outage (G22) |
 | Conflict retry | `POST /api/v1/chat` concurrent confirms: second returns receipt not 500 | Lost-update retries ×3 before 409 (G22) |
 | Alembic source-of-truth | `alembic check` green | `create_all` vs `init-db.sql` reconciled; new DDL goes via migration (G27) |
 | Compose readiness | `docker compose config` shows `condition: service_healthy` and healthcheck `/health/ready` | Deploys gate on DB/Go/LLM readiness, not liveness (G32) |

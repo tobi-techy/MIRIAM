@@ -1,0 +1,49 @@
+{
+  "version": "2026-10-13",
+  "exemptions": [
+    {
+      "area": "Credit & Distributors",
+      "justification": "No credit or distributor code exists in the agent: every capability from C060 to C069 is `planned` and nothing in the area is claimed, so there is nothing to run. The risk the 100% bar exists to stop is lending on figures that are not yet verified, so credit stays out until tenancy, consent and verified sales ship (design section 14, steps 2 and 6). This exemption stands, and the gate ships, only while none of the listed paths exists.",
+      "owner": "tobilobaomotade",
+      "review_by": "2027-01-31",
+      "invalidating_paths": [
+        "miriam_agent/**/credit*",
+        "miriam_agent/**/repayment*",
+        "miriam_agent/**/loan*",
+        "miriam_agent/**/distributor*"
+      ]
+    },
+    {
+      "area": "Expenses & Cash",
+      "justification": "Expense logging, cash-on-hand and the real-profit view (C083 to C088) are `planned`; today money is recorded only through the rail ledger. The risk is telling a shop its cash position from incomplete inputs, so the area stays unmeasured until the expense and cash-drawer paths are built with evidence. This exemption stands, and the gate ships, only while none of the listed paths exists.",
+      "owner": "tobilobaomotade",
+      "review_by": "2027-01-31",
+      "invalidating_paths": [
+        "miriam_agent/**/expense*",
+        "miriam_agent/**/cash_drawer*",
+        "miriam_agent/**/cashbook*",
+        "miriam_agent/**/levy*"
+      ]
+    },
+    {
+      "area": "Inventory",
+      "justification": "Stock levels, low-stock alerts, shrinkage and stock counts (C026 to C037) are `planned`, and the catalog's own gap note records that there is no stock-book reader yet. The risk is a wrong stock or shrinkage figure reaching a shop or a distributor, so the area is exempt only while no inventory code exists. This exemption stands, and the gate ships, only while none of the listed paths exists.",
+      "owner": "tobilobaomotade",
+      "review_by": "2027-01-31",
+      "invalidating_paths": [
+        "miriam_agent/**/stock*",
+        "miriam_agent/**/inventory*",
+        "miriam_agent/**/shrinkage*"
+      ]
+    },
+    {
+      "area": "Sales Records",
+      "justification": "Chat-logged sales, profit per sale and the trusted sales record (C038 to C047) are `planned`; sales figures today come from the rail's inflow path, not from a shop sales ledger. The risk is a distributor reading a sales history that nothing verified, so the area is exempt only while no sales-record code exists. This exemption stands, and the gate ships, only while none of the listed paths exists.",
+      "owner": "tobilobaomotade",
+      "review_by": "2027-01-31",
+      "invalidating_paths": [
+        "miriam_agent/**/sales*"
+      ]
+    }
+  ]
+}

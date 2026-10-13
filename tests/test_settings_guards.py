@@ -52,6 +52,10 @@ def _strong(**overrides):
         RAIL_SERVICE_KEY="r" * 40,
         ALLOWED_ORIGINS="https://app.example.com",
         DATABASE_URL="postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam",
+        # Required since Gaps 7/8: the Go money authority (not its localhost
+        # default) and a model key.
+        GO_BACKEND_URL="https://api.userail.money",
+        OPENAI_API_KEY="sk-" + "p" * 40,
     )
     base.update(overrides)
     return _settings(**base)
@@ -85,6 +89,9 @@ def test_production_uses_go_issuer_and_open_cors_when_unset(monkeypatch):
             "postgresql+asyncpg://miriam:strong-prod-pw-1234567890@localhost:5432/miriam"
         ),
         RAIL_SERVICE_KEY="r" * 40,
+        # Required since Gaps 7/8.
+        GO_BACKEND_URL="https://api.userail.money",
+        OPENAI_API_KEY="sk-" + "p" * 40,
     )
     assert settings.JWT_AUDIENCE == ""
     assert settings.JWT_ISSUER == "rail_service"
@@ -185,3 +192,36 @@ def test_development_allows_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     settings = _settings(ENVIRONMENT="development")
     assert settings.JWT_SECRET == "change-me-in-production"
+
+
+def test_production_rejects_localhost_go_backend(monkeypatch):
+    """Gap 7: the localhost default is a container probing itself."""
+    monkeypatch.delenv("GO_BACKEND_URL", raising=False)
+    for url in (
+        "http://localhost:8080",
+        "http://localhost:8080/",
+        "http://127.0.0.1:8080",
+    ):
+        with pytest.raises(Exception, match="GO_BACKEND_URL"):
+            _strong(GO_BACKEND_URL=url)
+
+
+def test_production_rejects_missing_model_key(monkeypatch):
+    """Gap 8: no model key means every answerable turn fails at the model."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CONCENTRATE_API_KEY", raising=False)
+    for empty in ("", "   "):
+        with pytest.raises(Exception, match="model key"):
+            _strong(OPENAI_API_KEY=empty, CONCENTRATE_API_KEY="")
+    # Concentrate is an accepted alternative to OpenAI.
+    assert _strong(OPENAI_API_KEY="", CONCENTRATE_API_KEY="c" * 40).CONCENTRATE_API_KEY
+
+
+def test_development_is_not_guarded_for_go_backend_or_model(monkeypatch):
+    """Local dev keeps the convenient defaults for both new checks."""
+    monkeypatch.delenv("GO_BACKEND_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CONCENTRATE_API_KEY", raising=False)
+    settings = _settings(ENVIRONMENT="development")
+    assert settings.GO_BACKEND_URL == "http://localhost:8080"
+    assert settings.OPENAI_API_KEY == ""

@@ -125,8 +125,15 @@ class AuditSystem:
         to_account: str | None = None,
         requires_approval: bool = False,
         approval_id: str | None = None,
+        verified: bool = True,
     ) -> str:
-        """Log a money movement transaction."""
+        """Log a money movement transaction.
+
+        ``verified`` mirrors the receipt's trust label: False records that the
+        movement was an inflow whose identity was incomplete, so the credit is
+        on the books but is not a verified credit. Stored in the existing
+        ``details`` JSON column, so no migration is needed.
+        """
         try:
             async with self.async_session() as session:
                 # Create detailed log entry
@@ -146,6 +153,7 @@ class AuditSystem:
                             "to_account": to_account,
                             "requires_approval": requires_approval,
                             "approval_id": approval_id,
+                            "verified": verified,
                             "timestamp": utcnow_naive().isoformat(),
                         }
                     ),

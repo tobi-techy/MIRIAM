@@ -1,0 +1,21 @@
+# Secret-scan config shared by CI (.github/workflows/ci.yml, job secret-scan)
+# and the pre-commit hook (.pre-commit-config.yaml). Keep it tight: it extends
+# the stock ruleset and adds one rule. There are deliberately NO path or regex
+# allowlists. A finding that is already rotated goes in .gitleaks-baseline.json
+# (reviewed in a PR, keyed by commit+file+rule+line), not in a pattern that
+# would also hide the next real secret. See docs/SECRET-SCANNING.md.
+title = "miriam"
+
+[extend]
+useDefault = true
+
+# The stock rules do not know ECS/Kubernetes-style {"name": ..., "value": ...}
+# pairs, which is how ChainRails keys were committed in RAIL-BACKEND-SERVICE
+# task definitions (none of the stock rules fired on them).
+[[rules]]
+id = "env-name-value-secret"
+description = "Secret-named environment entry with an inline value (task definition / manifest style)"
+regex = '''(?i)"name"\s*:\s*"[A-Z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]*"\s*,\s*"value"\s*:\s*"([^"\s$]{8,})"'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["key", "secret", "token", "password"]

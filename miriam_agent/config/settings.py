@@ -390,6 +390,29 @@ class Settings(BaseSettings):
                 "production; it is the only credential allowed to mint ledger "
                 "inflows"
             )
+        # The Go money authority. Its default is localhost:8080, which inside a
+        # container is the container itself, so the app would boot, report
+        # go_backend: unreachable and move no money (Gap 7). Fail at boot.
+        if self.GO_BACKEND_URL.strip().rstrip("/") in {
+            "",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+        }:
+            problems.append(
+                "GO_BACKEND_URL must point at the Go money authority in "
+                "production, not its localhost:8080 default; a container probing "
+                "localhost finds only itself and no money can move. It pairs "
+                "with RAIL_SERVICE_KEY, which must equal Go's"
+            )
+        # The model key. Without one, building the agent raises
+        # ConfigurationError and every answerable chat turn 500s, yet the app
+        # still boots and reports llm: unconfigured while healthy (Gap 8).
+        if not (self.OPENAI_API_KEY.strip() or self.CONCENTRATE_API_KEY.strip()):
+            problems.append(
+                "OPENAI_API_KEY or CONCENTRATE_API_KEY must be set in "
+                "production: without a model key no answerable chat turn can "
+                "reach the model"
+            )
         if self.ALLOW_CHAT_INFLOW_SYNTH:
             problems.append(
                 "ALLOW_CHAT_INFLOW_SYNTH must be false in production: chat text "

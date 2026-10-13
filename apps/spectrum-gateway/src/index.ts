@@ -1,3 +1,9 @@
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+
+import { Keypair, VersionedTransaction } from "@solana/web3.js";
+import { localIMessage } from "@spectrum-ts/imessage-local";
 /**
  * Spectrum gateway: one agent loop, many providers.
  *
@@ -16,16 +22,13 @@
  * and demo recordings must use a real wallet instead.
  */
 import { Spectrum } from "spectrum-ts";
-import { terminal } from "spectrum-ts/providers/terminal";
 import { imessage } from "spectrum-ts/providers/imessage";
-import { localIMessage } from "@spectrum-ts/imessage-local";
-import { Keypair, VersionedTransaction } from "@solana/web3.js";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { callMiriam, type MiriamRequest } from "./miriam.js";
-import { inboundText, renderMiriam } from "./render.js";
+import { terminal } from "spectrum-ts/providers/terminal";
+
 import { miriamChannel, miriamSpace, shouldHandle } from "./guard.js";
+import { callMiriam } from "./miriam.js";
+import type { MiriamRequest } from "./miriam.js";
+import { inboundText, renderMiriam } from "./render.js";
 
 const MIRIAM_USER = process.env.MIRIAM_USER_ID ?? "terminal-user";
 const CHANNEL = (process.env.GATEWAY_CHANNEL ?? "terminal") as
@@ -42,14 +45,16 @@ if (devKeypair) {
 
 // Singleton: two gateways watching one inbox would double-answer every
 // message (and double-tap challenges). A money bot must never run twinned.
-const lockFile = join(tmpdir(), "spectrum-gateway.lock");
+const lockFile = path.join(tmpdir(), "spectrum-gateway.lock");
 try {
-  const stale = await readFile(lockFile, "utf8").catch(() => "");
+  const stale = await readFile(lockFile, "utf-8").catch(() => "");
   if (stale.trim()) {
     const [pid] = stale.trim().split(":");
     try {
       process.kill(Number(pid), 0);
-      console.error(`[gateway] another instance is running (pid ${pid}); refusing to start`);
+      console.error(
+        `[gateway] another instance is running (pid ${pid}); refusing to start`
+      );
       process.exit(1);
     } catch {
       // stale lock, take over
@@ -59,7 +64,13 @@ try {
   // no lock, take over
 }
 await writeFile(lockFile, `${process.pid}:${Date.now()}`);
-const releaseLock = () => rm(lockFile, { force: true }).catch(() => {});
+const releaseLock = async (): Promise<void> => {
+  try {
+    await rm(lockFile, { force: true });
+  } catch {
+    // lock already gone; gateway owns cleanup on shutdown
+  }
+};
 process.on("SIGINT", async () => {
   await releaseLock();
   process.exit(0);
@@ -70,7 +81,7 @@ process.on("SIGTERM", async () => {
 });
 
 const imessageLive = Boolean(
-  process.env.SPECTRUM_PROJECT_ID && process.env.SPECTRUM_PROJECT_SECRET,
+  process.env.SPECTRUM_PROJECT_ID && process.env.SPECTRUM_PROJECT_SECRET
 );
 // Local macOS iMessage (reads ~/Library/Messages/chat.db, sends via
 // Messages.app). Needs Full Disk Access for this process (probe below) and,
@@ -84,25 +95,25 @@ const allowFrom = (process.env.IMESSAGE_ALLOW_FROM ?? "")
 
 if (imessageLocal && allowFrom.length === 0) {
   console.error(
-    "[gateway] refusing local iMessage without IMESSAGE_ALLOW_FROM "
-    + "(comma-separated phones/emails of the one test line)",
+    "[gateway] refusing local iMessage without IMESSAGE_ALLOW_FROM " +
+      "(comma-separated phones/emails of the one test line)"
   );
   process.exit(1);
 }
 
 if (imessageLocal) {
-  const db = join(homedir(), "Library", "Messages", "chat.db");
+  const db = path.join(homedir(), "Library", "Messages", "chat.db");
   try {
     const { Database } = await import("bun:sqlite");
     const probe = new Database(db, { readonly: true });
     probe.query("select count(*) as n from message").get();
     probe.close();
     console.log("[gateway] chat.db readable (Full Disk Access ok)");
-  } catch (err) {
+  } catch (error) {
     console.error(
-      `[gateway] cannot read ${db}: ${(err as Error).message}\n`
-      + "Grant Full Disk Access: System Settings → Privacy & Security → "
-      + "Full Disk Access → add your terminal app, then restart the gateway.",
+      `[gateway] cannot read ${db}: ${(error as Error).message}\n` +
+        "Grant Full Disk Access: System Settings → Privacy & Security → " +
+        "Full Disk Access → add your terminal app, then restart the gateway."
     );
     process.exit(1);
   }
@@ -113,9 +124,13 @@ const providers = [
   ...(imessageLive ? [imessage.config()] : []),
   ...(imessageLocal ? [localIMessage.config()] : []),
 ];
-if (imessageLive) console.log("[gateway] cloud imessage provider live");
+if (imessageLive) {
+  console.log("[gateway] cloud imessage provider live");
+}
 if (imessageLocal) {
-  console.log(`[gateway] local imessage live (allow-from: ${allowFrom.join(", ")})`);
+  console.log(
+    `[gateway] local imessage live (allow-from: ${allowFrom.join(", ")})`
+  );
 }
 if (!imessageLive && !imessageLocal) {
   console.log("[gateway] terminal only (no iMessage configured)");
@@ -131,10 +146,11 @@ const spec = imessageLive
     })
   : await Spectrum({ providers });
 
-console.log("[gateway] ready. Type the allocate script, e.g. 'i just got paid 100'.");
+console.log(
+  "[gateway] ready. Type the allocate script, e.g. 'i just got paid 100'."
+);
 
 const bootTime = Date.now();
-const norm = (s: string) => s.trim().toLowerCase();
 
 for await (const [space, message] of spec.messages) {
   const platform = (message as { platform?: string }).platform ?? "";
@@ -148,18 +164,22 @@ for await (const [space, message] of spec.messages) {
   // anyone not on the allowlist never reach Miriam.
   const verdict = shouldHandle(
     {
-      platform,
       direction,
+      platform,
       sender,
       timestampMs: ts,
     },
     bootTime,
-    allowFrom,
+    allowFrom
   );
   if (verdict === "not-allowlisted") {
-    console.log(`[gateway] ignoring local imessage from non-allowlisted ${sender}`);
+    console.log(
+      `[gateway] ignoring local imessage from non-allowlisted ${sender}`
+    );
   }
-  if (verdict !== "ok") continue;
+  if (verdict !== "ok") {
+    continue;
+  }
 
   if (process.env.DEBUG_INBOUND === "1") {
     try {
@@ -179,7 +199,9 @@ for await (const [space, message] of spec.messages) {
       // same memory until a verified merge moves it.
       ...(sender ? { sender_id: sender } : {}),
       text: inboundText(message),
-      ...(devKeypair ? { wallet_address: devKeypair.publicKey.toBase58() } : {}),
+      ...(devKeypair
+        ? { wallet_address: devKeypair.publicKey.toBase58() }
+        : {}),
     };
     try {
       const parts = await callMiriam(req);
@@ -187,26 +209,26 @@ for await (const [space, message] of spec.messages) {
       // Dev-sign: sign the stage-1 transaction and submit the signature.
       if (DEV_SIGN && devKeypair && meta.sign_payload && meta.flow_id) {
         const tx = VersionedTransaction.deserialize(
-          Buffer.from(meta.sign_payload, "base64"),
+          Buffer.from(meta.sign_payload, "base64")
         );
         tx.sign([devKeypair]);
         const signed = Buffer.from(tx.serialize()).toString("base64");
         console.log(`[dev-sign] submitting signature for flow ${meta.flow_id}`);
         const follow = await callMiriam({
           channel: miriamChannel(platform, CHANNEL) as MiriamRequest["channel"],
+          flow_id: meta.flow_id,
+          signed_tx: signed,
           space_id: miriamSpace(platform, space.id),
+          text: "",
           user_id: MIRIAM_USER,
           ...(sender ? { sender_id: sender } : {}),
-          text: "",
-          signed_tx: signed,
-          flow_id: meta.flow_id,
         });
         await renderMiriam(space, follow);
       } else if (meta.confirm_id && !meta.sign_payload) {
         console.log(`[gateway] open challenge: confirm ${meta.confirm_id}`);
       }
-    } catch (err) {
-      console.error("[gateway] turn failed:", (err as Error).message);
+    } catch (error) {
+      console.error("[gateway] turn failed:", (error as Error).message);
     }
   });
 }

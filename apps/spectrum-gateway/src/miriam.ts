@@ -48,23 +48,28 @@ export interface MiriamRequest {
   flow_id?: string;
 }
 
-const base = (process.env.MIRIAM_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const base = (process.env.MIRIAM_URL ?? "http://localhost:8000").replace(
+  /\/$/u,
+  ""
+);
 const token = process.env.MIRIAM_TOKEN ?? "";
 
-export async function callMiriam(req: MiriamRequest): Promise<Part[]> {
+export const callMiriam = async (req: MiriamRequest): Promise<Part[]> => {
   const res = await fetch(`${base}/api/v1/chat/spectrum`, {
-    method: "POST",
+    body: JSON.stringify(req),
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify(req),
+    method: "POST",
   });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`miriam ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = (await res.json()) as { parts: Part[] };
-  if (!Array.isArray(data.parts)) throw new Error("miriam returned no parts");
+  if (!Array.isArray(data.parts)) {
+    throw new TypeError("miriam returned no parts");
+  }
   return data.parts;
-}
+};
