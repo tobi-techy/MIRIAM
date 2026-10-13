@@ -139,6 +139,7 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
                 to_account=receipt.counterparty,
                 requires_approval=False,
                 approval_id=result.confirm_id or None,
+                verified=receipt.verified,
             )
             return
         except Exception as exc:  # noqa: BLE001
@@ -1000,8 +1001,14 @@ async def money_inflow(
 
     Auth is two-factor by design: the bearer JWT names the account to credit,
     and the ``X-Rail-Service-Key`` header proves the caller is the rail -- this
-    endpoint mints ledger money. ``reference`` is required: it is part of the
-    dedupe key, so a reference-less inflow is refused, not downgraded.
+    endpoint mints ledger money.
+
+    The Go platform is the authority for money, so a real inflow is always
+    recorded and credited; it is never refused for an incomplete identity. But
+    ``reference`` is part of the structured dedupe key: when it is absent the
+    credit is still split, deduped on the rail's ``payment_id`` instead, and
+    labelled **not verified** on the receipt and in the durable audit -- never
+    described as a verified credit.
     """
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
@@ -1036,13 +1043,6 @@ async def money_inflow(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="amount must be a positive number",
         )
-    # An incomplete identity is not a payment we can verify: refuse (fail closed)
-    # rather than silently downgrade the dedupe key to ``payment_id`` alone.
-    if not reference:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="reference is required"
-        )
-
     orchestrator = _orchestrator_for(token)
     try:
         result = await orchestrator.handle_inflow(

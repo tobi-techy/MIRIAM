@@ -642,15 +642,16 @@ def test_two_payments_same_sender_and_amount_different_reference_both_count(
     assert rail.moves == []
 
 
-def test_a_reference_less_inflow_is_refused_and_is_not_a_verified_payment(
+def test_a_reference_less_inflow_is_credited_but_not_labelled_verified(
     monkeypatch,
 ):
-    """An incomplete identity is refused (fail closed), not silently downgraded.
+    """The authority's credit is honoured, but it is never called verified.
 
-    Without a ``reference`` the dedupe key cannot tell a re-delivery apart from
-    a second transfer that shares the sender and amount, so the endpoint
-    refuses the request before any row is written or any money moves. The old
-    behaviour accepted it and fell back to ``payment_id`` alone.
+    The Go platform is the authority for money and it may deliver an inflow
+    with an incomplete identity (no ``reference``). That is a real credit, so
+    it is always split and credited -- never refused. But dedupe falls back to
+    the rail's ``payment_id``, so the receipt the caller gets is labelled
+    ``verified=False`` and no ``payment_references`` row is written for it.
     """
     from miriam_agent.hands.payment_refs import InMemoryPaymentRefStore
 
@@ -672,11 +673,76 @@ def test_a_reference_less_inflow_is_refused_and_is_not_a_verified_payment(
         },
     )
 
-    assert response.status_code == 400, response.text
-    assert "reference" in response.json()["detail"]
-    assert refs._rows == {}  # no claim row was written
+    assert response.status_code == 200, response.text
+    receipt = response.json()["receipt"]
+    assert receipt["action"] == "inflow_split"
+    assert receipt["verified"] is False  # the label that matters
+    assert refs._rows == {}  # no structured-key claim row was written
     reloaded = await_sync(_load_for(store))
-    assert reloaded.sleeves["savings"] == money(0)  # nothing moved
+    assert reloaded.sleeves["savings"] == money(126000)  # the credit landed
+    assert rail.moves == []
+
+
+def test_an_inflow_with_the_full_identity_is_labelled_verified(monkeypatch):
+    """A complete identity writes a claim row and yields a verified credit."""
+    from miriam_agent.hands.payment_refs import InMemoryPaymentRefStore
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    refs = InMemoryPaymentRefStore()
+    _store, rail, _memory = _wire(monkeypatch, ledger=ledger, payment_refs=refs)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = _inflow_post_fields(client, payment_id="pay_full", reference="REF-FULL")
+
+    assert response.status_code == 200, response.text
+    receipt = response.json()["receipt"]
+    assert receipt["action"] == "inflow_split"
+    assert receipt["verified"] is True
+    assert refs._rows != {}  # the structured-key claim row was written
+    assert rail.moves == []
+
+
+def test_the_durable_audit_carries_the_trust_label(monkeypatch):
+    """The label reaches the durable audit, not just the reply.
+
+    An incomplete-identity inflow is written to the audit store with
+    ``verified=False``; a complete one with ``verified=True``. Otherwise a
+    downstream reader of the audit could not tell the two apart.
+    """
+    recorded: list[dict[str, Any]] = []
+
+    class _RecordingAudit:
+        async def log_money_movement(self, **kwargs: Any) -> str:
+            recorded.append(kwargs)
+            return "audit_row"
+
+    async def _fake_audit_system():
+        yield _RecordingAudit()
+
+    monkeypatch.setattr(chat, "get_audit_system", _fake_audit_system)
+
+    ledger = _ledger(spendable="0", rent_required="150000")
+    _store, rail, _memory = _wire(
+        monkeypatch, ledger=ledger, audit_sink=chat._persist_money_audit
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    unverified = client.post(
+        _INFLOW_URL,
+        headers=_RAIL_HEADERS,
+        json={
+            "payment_id": "pay_audit_u",
+            "amount": "100000",
+            "source_raw": "alert",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+        },
+    )
+    verified = _inflow_post_fields(client, payment_id="pay_audit_v", amount="100000")
+
+    assert unverified.status_code == 200, unverified.text
+    assert verified.status_code == 200, verified.text
+    assert [row["verified"] for row in recorded] == [False, True]
     assert rail.moves == []
 
 
