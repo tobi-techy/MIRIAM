@@ -53,6 +53,11 @@ dependencies = [
     "matplotlib>=3.11.2",
     "alembic>=1.13.0",
     "pillow>=12.3.0",
+    # Shop reading: rasterise PDF pages for vision and convert phone HEIC
+    # photos. Both ship binary wheels, so there is no system poppler or
+    # libheif dependency to install at deploy time.
+    "pypdfium2>=4.30.0",
+    "pillow-heif>=0.18.0",
     # Runtime, not dev-only: the image ships alembic/ + alembic.ini and a deploy
     # runs `alembic upgrade head` inside the container. alembic/env.py drives the
     # sync engine, which needs a sync Postgres driver. psycopg2-binary bundles

@@ -284,9 +284,14 @@
       "does": "Turns a photo of a paper stock book into structured items and quantities",
       "priority": "P0",
       "phase": "pilot",
-      "status": "planned",
-      "evidence": [],
-      "gap": "",
+      "status": "partial",
+      "evidence": [
+        "tests/test_shop_service.py::test_stock_book_reply_reports_the_checked_numbers",
+        "tests/test_shop_endpoint.py::test_read_returns_the_checked_reply",
+        "tests/test_shop_service.py::test_an_unknown_image_is_classified_by_the_reader",
+        "tests/test_shop_reader.py::test_classify_page_asks_the_model_with_the_page_itself"
+      ],
+      "gap": "Live end to end on the one handwritten page in hand: the big and routed reads returned all 7 rows with N286,300 on hand and the N31,900 gap exactly, and the small model matched 2 of 3 pages. A bare photo with no caption and no OCR pass at all now reaches the reader as unknown_image, is classified by the reader's own cheap call and read end to end in 42.2s, and a page the reader declines gets that photo's old answer unchanged. No golden set of real pages yet, and one row of that page (a crossed-out Dangote line) is where tiers diverge.",
       "eval": {
         "scenario": "Photo of one page, 25 rows, messy handwriting",
         "expected": "Extracts item, qty, price per row",
@@ -338,9 +343,12 @@
       "does": "Marks rows it is unsure about and confirms them",
       "priority": "P0",
       "phase": "pilot",
-      "status": "planned",
-      "evidence": [],
-      "gap": "",
+      "status": "partial",
+      "evidence": [
+        "tests/test_shop_service.py::test_low_confidence_row_is_asked_about_not_trusted",
+        "tests/test_shop_checks.py::test_low_stock_crossed_out_and_unclear_are_reported"
+      ],
+      "gap": "Unclear rows are flagged from per-cell read confidence and asked about rather than trusted, on the one page measured. Recall over a set of deliberately unclear numbers is not measured.",
       "eval": {
         "scenario": "Page with 3 unclear numbers",
         "expected": "Lists the 3 rows and asks to confirm",
@@ -356,9 +364,13 @@
       "does": "Understands cancelled and corrected numbers",
       "priority": "P1",
       "phase": "pilot",
-      "status": "planned",
-      "evidence": [],
-      "gap": "",
+      "status": "partial",
+      "evidence": [
+        "tests/test_shop_reader.py::test_a_correction_to_a_crossed_out_cell_is_applied_as_text",
+        "tests/test_shop_service.py::test_crossed_out_value_is_reported_as_data",
+        "tests/test_shop_checks.py::test_a_discount_and_payment_printed_with_a_minus_stay_positive"
+      ],
+      "gap": "The reader reports the cancelled value and the corrected one, live on one crossed-out row. The small model still reconciles that row silently, so corrections are only dependable on the big and routed tiers.",
       "eval": {
         "scenario": "\"12\" crossed out, \"10\" written beside",
         "expected": "Uses 10",
@@ -374,9 +386,13 @@
       "does": "Reads distributor invoices and waybills",
       "priority": "P1",
       "phase": "pilot",
-      "status": "planned",
-      "evidence": [],
-      "gap": "",
+      "status": "partial",
+      "evidence": [
+        "tests/test_shop_service.py::test_invoice_reply_names_the_line_and_the_overstated_subtotal",
+        "tests/test_shop_service.py::test_delivery_note_is_headed_as_a_delivery_note",
+        "tests/test_shop_checks.py::test_invoice_finds_the_milo_line_and_overstated_subtotal"
+      ],
+      "gap": "A distributor invoice read live from a phone photo and from a PDF: lines, total, discount, payment, balance and due date, with the one overstated subtotal called out. Waybills and delivery notes are classified and headed correctly but have not been read end to end from a real slip, and nothing is written to a supplier ledger yet.",
       "eval": {
         "scenario": "Photo of a printed distributor invoice",
         "expected": "Logs items received, qty, cost, supplier",
