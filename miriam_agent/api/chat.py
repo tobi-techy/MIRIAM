@@ -23,7 +23,6 @@ any other and settles nothing.
 """
 
 import logging
-import re
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -44,6 +43,7 @@ from miriam_agent.api.chat_turns import (
     _load_financial_plan,
     _load_memory_facts,
     _load_user_context,
+    _scrub_money_numbers,
     _sse,
 )
 from miriam_agent.api.dependencies import (
@@ -54,6 +54,7 @@ from miriam_agent.api.dependencies import (
     get_supermemory_memory_dep,
     require_rail_service_key,
 )
+from miriam_agent.api.idempotency import idempotent_post
 from miriam_agent.config.settings import get_settings
 from miriam_agent.database.memory import MemoryStore
 from miriam_agent.database.models import User
@@ -417,35 +418,6 @@ async def _finalize_money_turn(
     return payload
 
 
-# Matches currency amounts (₦200k, $1,000.50, 200000 NGN, 1.5m) and bare
-# figures. This runs only on money turns, where any standalone number is
-# almost certainly an amount, balance, or id — so the final branch is
-# deliberately aggressive: no number from a money turn reaches the graph.
-_MONEY_NUMBER_RE = re.compile(
-    r"[₦$€£]\s?[\d,]+(?:\.\d+)?[kmbKMB]?"
-    r"|\b\d[\d,]*\.?\d*\s?(?:₦|NGN|naira|kobo|USD|USDT|\$)\b"
-    r"|\b\d[\d,]{3,}(?:\.\d+)?\b"
-    r"|\b\d+\.\d{2}\b"
-    r"|\b\d+[kmbKMB]\b"
-    r"|\b\d+(?:\.\d+)?\b"
-)
-
-
-def _scrub_money_numbers(text: str) -> str:
-    """Replace money-like numbers with [amount], keeping names/intent.
-
-    "send 200k to Femi" -> "send [amount] to Femi". Fail-open: on any
-    error the caller gets a number-free fallback, never the raw text.
-    """
-    try:
-        cleaned = _MONEY_NUMBER_RE.sub("[amount]", text or "")
-        # Collapse accidental doubles from adjacent matches.
-        cleaned = re.sub(r"(\[amount\]\s*){2,}", "[amount] ", cleaned)
-        return cleaned.strip()
-    except Exception:
-        return "money turn (details withheld)"
-
-
 def _money_memory_summary(result: TurnResult) -> str:
     """De-identified money-turn summary for the memory graph.
 
@@ -637,7 +609,7 @@ async def _ingress_decision(**kwargs: Any) -> Any:
     return await safe_ingress_gate(**kwargs)
 
 
-@router.post("/chat")
+@idempotent_post(router, "/chat")
 async def chat_with_agent(
     body: ChatRequest,
     user: User = Depends(get_current_user),

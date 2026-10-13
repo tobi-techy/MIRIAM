@@ -184,7 +184,7 @@ REGISTERED_BLOBS: dict[str, int] = {
     "miriam_agent/tools/definitions.py": 972,
     "miriam_agent/financial/profile.py": 1233,
     "miriam_agent/orchestrator.py": 990,
-    "miriam_agent/api/chat.py": 1545,
+    "miriam_agent/api/chat.py": 1517,
     "miriam_agent/hands/transfer.py": 972,
     "miriam_agent/money/plan.py": 885,
     "miriam_agent/integrations/go_client.py": 861,
