@@ -53,8 +53,17 @@ it only touches the required-checks list and leaves other protection settings
 - **Alembic is the only path that creates application tables.**
   `scripts/init-db.sql` is reduced to `CREATE EXTENSION IF NOT EXISTS vector;`
   and no longer mirrors `models.py`; do not add table DDL there.
-- The Postgres must have the `vector` extension available (`pgvector/pgvector:pg15`
-  or a managed Postgres with pgvector); `postgres:15` alone cannot run migration 001.
+- Migration 001 **adopts or creates**: every `create_table`/`create_index` is
+  guarded, so `alembic upgrade head` also takes a database built by
+  `create_all` (the deployed shape, which has no `alembic_version`) to head
+  without a duplicate-table error. See `docs/ALEMBIC-DRIFT-RECONCILIATION.md`.
+- The Python agent's database needs **no** `vector` extension: semantic memory
+  is off in the pilot and `memory_entries.embedding` is dropped (owner decision,
+  13 Oct 2026). `postgres:15` alone runs the migrations; the pgvector image is
+  only needed where embeddings are actually computed.
+- Request-path `create_all` is refused in production
+  (`miriam_agent/database/bootstrap.py`); a missing table is a deploy fault to
+  surface, not to repair silently at a request.
 - Readiness/liveness probe is `GET /health/ready` (reports `database`, `go_backend`,
   `llm` and `config`); AtlasFlow probes `GET /` on `PORT`; `docker-compose.yml`
   gates the app on Postgres and Redis health before starting it.

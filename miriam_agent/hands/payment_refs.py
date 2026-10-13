@@ -232,11 +232,11 @@ class PostgresPaymentRefStore:
         if self._sessions is None:
             from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-            from miriam_agent.database.models import Base
+            from miriam_agent.database.bootstrap import create_schema_if_allowed
 
             self._engine = create_async_engine(self._require_url())
             async with self._engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+                await create_schema_if_allowed(conn)
             self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
         return self._sessions
 

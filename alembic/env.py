@@ -19,6 +19,23 @@ target_metadata = Base.metadata
 
 # Alembic is offline/online against DATABASE_URL; prefer the app settings
 # so production credentials are not duplicated in alembic.ini.
+def _sync_driver(url: str) -> str:
+    """Return ``url`` with the sync psycopg2 driver named explicitly.
+
+    The app's URL carries ``+asyncpg``; Alembic must not. And SQLAlchemy 2.1
+    resolves a bare ``postgresql://`` to the psycopg (v3) DBAPI, which this
+    project does not install — the declared sync driver is ``psycopg2-binary``
+    (see pyproject.toml). Naming ``postgresql+psycopg2://`` means the migration
+    engine picks the driver that is actually installed, whatever SQLAlchemy's
+    default becomes.
+    """
+    url = url.replace("postgresql+asyncpg://", "postgresql://").replace("+asyncpg", "")
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix) :]
+    return url
+
+
 def _db_url() -> str:
     url = config.get_main_option("sqlalchemy.url") or ""
     if url and not url.endswith("driver?") and ":///" not in url:
@@ -26,15 +43,10 @@ def _db_url() -> str:
         try:
             from miriam_agent.config.settings import get_settings
 
-            raw = get_settings().DATABASE_URL
-            # Alembic needs a sync driver, not asyncpg.
-            return raw.replace("+asyncpg", "").replace(
-                "postgresql+asyncpg://", "postgresql://"
-            )
+            return _sync_driver(get_settings().DATABASE_URL)
         except Exception:
             pass
-    raw = url.replace("+asyncpg", "")
-    return raw
+    return _sync_driver(url)
 
 
 def run_migrations_offline() -> None:

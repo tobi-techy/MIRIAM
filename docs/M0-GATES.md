@@ -27,7 +27,7 @@ make test
 | Audit durability | orchestrator unit test: sink that always raises → handle raises `LedgerUnavailable` (503) not 500 | Settled money without a durable row is impossible; caller retries (G25) |
 | Single-uvicorn | `grep -c '^exec uvicorn' entrypoint.sh` == 1 (a bare `uvicorn` count also matches the comments and drifts — 3 before #44, 4 after), and that line carries `--timeout-graceful-shutdown` | No divergent in-process ledgers during Redis outage (G22) |
 | Conflict retry | `POST /api/v1/chat` concurrent confirms: second returns receipt not 500 | Lost-update retries ×3 before 409 (G22) |
-| Alembic source-of-truth | `alembic check` green | `create_all` vs `init-db.sql` reconciled; new DDL goes via migration (G27) |
+| Alembic source-of-truth | `alembic check` green (CI job `alembic-check`, no baseline) | `models.py` is the target and the migrations conform; `create_all` vs the migrations reconciled (G27). See `docs/ALEMBIC-DRIFT-RECONCILIATION.md`. |
 | Compose readiness | `docker compose config` shows `condition: service_healthy` and healthcheck `/health/ready` | Deploys gate on DB/Go/LLM readiness, not liveness (G32) |
 | Go: pending commit | `go test -run TestCommitPending -race` | `CommitPendingTransaction` uses conditional `UPDATE … WHERE status='pending'` (G5) |
 | Go: deterministic keys | grep no `UnixNano` in `service.go` + `go test -run TestIdempotency -race` | Retries reuse the same key (G6) |

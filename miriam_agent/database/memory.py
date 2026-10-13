@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import (
 
 from miriam_agent.core.exceptions import AuthorizationError
 from miriam_agent.core.timeutil import utcnow_naive
+from miriam_agent.database.bootstrap import create_schema_if_allowed
 from miriam_agent.database.identity_memory import IdentityMemoryMixin
 from miriam_agent.database.models import (
-    Base,
     Conversation,
     FinancialProfile,
     MemoryEntry,
@@ -57,14 +57,13 @@ class MemoryStore(IdentityMemoryMixin):
         self.engine = create_async_engine(self.database_url)
 
         # In development/tests the DB is created via ``create_all`` so the
-        # suite works without a migration. In deployed environments Alembic
-        # is the source of truth (see ``alembic/versions/001_baseline.py``);
-        # ``create_all`` is idempotent there and will not overwrite migrated
-        # tables, but no DDL differences should be introduced outside a
-        # migration (G27). Deploys must run ``alembic upgrade head`` before
-        # starting the app so create_all never masks a missing migration.
+        # suite works without a migration. In production the request path must
+        # not create a missing table silently (that is how the deployed schema
+        # drifted from its migrations); ``create_schema_if_allowed`` refuses the
+        # DDL there and logs the missing tables. Deploys run ``alembic upgrade
+        # head`` before starting the app.
         async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await create_schema_if_allowed(conn)
 
         # Create async session factory
         self.async_session = async_sessionmaker(self.engine, expire_on_commit=False)

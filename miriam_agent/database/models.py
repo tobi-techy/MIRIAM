@@ -148,7 +148,9 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
@@ -169,7 +171,7 @@ class Message(Base):
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
     conversation_id: Mapped[str] = mapped_column(
-        String, ForeignKey("conversations.id"), nullable=False
+        String, ForeignKey("conversations.id"), nullable=False, index=True
     )
     role: Mapped[str] = mapped_column(String, nullable=False)  # user, assistant
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -190,16 +192,19 @@ class MemoryEntry(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), nullable=False, index=True
+    )
     # conversation, financial, preference
-    type: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     extra_data: Mapped[dict[str, Any]] = mapped_column(
         "metadata", SQLAlchemyJSON, default=dict
     )
-    embedding: Mapped[dict[str, Any] | None] = mapped_column(
-        SQLAlchemyJSON, nullable=True
-    )  # For vector search
+    # No ``embedding`` column: the Python agent does not compute embeddings in
+    # the pilot, and an empty column nothing writes is a lie in the schema. The
+    # path back to semantic memory is written once in
+    # docs/SEMANTIC-MEMORY-PATH-BACK.md.
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow_naive, onupdate=utcnow_naive
@@ -251,12 +256,16 @@ class AuditLog(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), nullable=False, index=True
+    )
     action: Mapped[str] = mapped_column(String, nullable=False)
     resource: Mapped[str] = mapped_column(String, nullable=False)
     resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow_naive, index=True
+    )
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
@@ -350,7 +359,9 @@ class ToolUsage(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), nullable=False, index=True
+    )
     tool_name: Mapped[str] = mapped_column(String, nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)
     result: Mapped[dict[str, Any]] = mapped_column(SQLAlchemyJSON, default=dict)

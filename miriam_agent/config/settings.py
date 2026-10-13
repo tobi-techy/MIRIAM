@@ -21,6 +21,13 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://miriam:miriam_password@localhost:5432/miriam"
     )
     DATABASE_ECHO: bool = False
+    # Request paths (memory, audit, payment refs, the money journal) call
+    # ``Base.metadata.create_all`` so local dev and tests work without a
+    # migration. In production that creates a missing table silently on a
+    # request path, which is exactly how the deployed database drifted from
+    # its own migrations. ``None`` means: allowed outside production, refused
+    # in production. Set it explicitly to override either way.
+    DB_AUTO_CREATE_TABLES: bool | None = Field(default=None)
 
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
@@ -319,6 +326,17 @@ class Settings(BaseSettings):
         if url.startswith("postgresql://"):
             self.DATABASE_URL = "postgresql+asyncpg://" + url[len("postgresql://") :]
         return self
+
+    @property
+    def auto_create_tables(self) -> bool:
+        """Whether a request path may ``create_all`` the schema.
+
+        ``DB_AUTO_CREATE_TABLES`` unset means allowed outside production and
+        refused in production; set it to force either behaviour.
+        """
+        if self.DB_AUTO_CREATE_TABLES is not None:
+            return self.DB_AUTO_CREATE_TABLES
+        return not self.is_production
 
     @property
     def is_production(self) -> bool:
