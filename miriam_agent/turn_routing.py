@@ -12,11 +12,56 @@ import hashlib
 import re
 from typing import Literal
 
+from pydantic import BaseModel, model_validator
+
 # ---------------------------------------------------------------------------
 # Which entrypoint owns this turn
 # ---------------------------------------------------------------------------
 
 TurnRoute = Literal["orchestrator", "agent"]
+
+# Where a turn's text came from. The caller states it; the router never guesses
+# it from the words. ``user`` is typed text, ``voice`` is the sender's own words
+# transcribed. ``vision`` (read off a photo) and ``system`` (written by the
+# platform) are text nobody typed, so they can never be an instruction.
+MessageSource = Literal["user", "voice", "vision", "system"]
+
+_MONEY_ELIGIBLE_SOURCES = frozenset({"user", "voice"})
+
+
+def can_carry_money_intent(source: str) -> bool:
+    """Whether text from this source may be routed to the money path.
+
+    Fails closed: a source this module does not name is not eligible.
+    """
+    return source in _MONEY_ELIGIBLE_SOURCES
+
+
+class SourcedRequest(BaseModel):
+    """The ingress fields every turn request shares: where its text came from.
+
+    The caller states ``message_source``. Absent means typed, so a caller that
+    predates the field is unchanged; a value outside ``MessageSource`` is a 422.
+    A confirmation or a signature is a user act: carrying one from generated
+    text is refused at the boundary.
+    """
+
+    message_source: MessageSource = "user"
+
+    @model_validator(mode="after")
+    def _settlement_is_a_user_act(self) -> SourcedRequest:
+        settles = (
+            getattr(self, "confirm_id", "").strip()
+            or getattr(self, "signed_tx", "").strip()
+        )
+        if settles and not can_carry_money_intent(self.message_source):
+            raise ValueError("a confirmation cannot come from generated text")
+        return self
+
+    @property
+    def money_eligible(self) -> bool:
+        return can_carry_money_intent(self.message_source)
+
 
 # Words that ask for money to move. Deliberately the same vocabulary the parser
 # in hands/transfer.py understands, so a turn is never routed here for a phrase
@@ -28,7 +73,6 @@ _MOVE_WORDS = frozenset(
         "pay",
         "give",
         "move",
-        "split",
         "lock",
         "unlock",
         "freeze",
@@ -138,13 +182,17 @@ def looks_like_inflow_alert(text: str) -> bool:
 
 # The classifier reads the user's text only. It never calls a model: which layer
 # owns a turn must not be a judgement a model can be talked out of.
-def classify_turn_with_nl(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
+def classify_turn_with_nl(
+    text: str, *, has_confirm_id: bool = False, source: str = "user"
+) -> TurnRoute:
     """Route money intents on deterministic hands/nl.py verdict (G21).
 
     Falls back to money-turn routing when the nl parser produces a structured
     action. Low-confidence/None returns ``agent`` so judgment asks rather than
     silently dropping a Pidgin/photo-caption sale.
     """
+    if not can_carry_money_intent(source):
+        return "agent"
     if has_confirm_id:
         return "orchestrator"
     try:
@@ -154,16 +202,24 @@ def classify_turn_with_nl(text: str, *, has_confirm_id: bool = False) -> TurnRou
             return "orchestrator"
     except Exception:
         pass
-    return classify_turn(text, has_confirm_id=has_confirm_id)
+    return classify_turn(text, has_confirm_id=has_confirm_id, source=source)
 
 
-def classify_turn(text: str, *, has_confirm_id: bool = False) -> TurnRoute:
+def classify_turn(
+    text: str, *, has_confirm_id: bool = False, source: str = "user"
+) -> TurnRoute:
     """Decide whether a turn is a money turn.
 
     Money turns belong to the orchestrator, where the only path is
     Hands -> Judgment -> Hands -> Voice. Everything else is answerable and goes
     to the agent loop, which cannot move money at all.
+
+    Text that nobody typed (read off a photo, written by the platform) is never
+    a money turn, whatever it says: that is decided by ``source`` before the
+    words are read.
     """
+    if not can_carry_money_intent(source):
+        return "agent"
     if has_confirm_id:
         return "orchestrator"
 

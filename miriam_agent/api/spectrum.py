@@ -32,7 +32,6 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 
 from miriam_agent.api import chat as chatmod
 from miriam_agent.api.dependencies import (
@@ -57,6 +56,7 @@ from miriam_agent.integrations.supermemory_client import (
 from miriam_agent.observability.correlation import current_trace_id
 from miriam_agent.orchestrator import Event, Orchestrator, TurnResult
 from miriam_agent.safety.validator import InputValidator
+from miriam_agent.turn_routing import SourcedRequest
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ _CONFIRM_RE = re.compile(r"^(?:confirm|yes)\s+(\S+)\s*$", re.IGNORECASE)
 _DECLINE_RE = re.compile(r"^(?:no|decline|cancel)\s+(\S+)\s*$", re.IGNORECASE)
 
 
-class SpectrumRequest(BaseModel):
+class SpectrumRequest(SourcedRequest):
     """Body for ``/chat/spectrum``.
 
     Typed at the boundary like ChatRequest: a signature, confirm id or flow id
@@ -351,8 +351,9 @@ async def spectrum_chat(
     # -- 1. structured or text confirmation tap ---------------------------
     confirm_id = body.confirm_id.strip()
     yes: bool | None = body.yes
-    m = _CONFIRM_RE.match(text.strip())
-    d = _DECLINE_RE.match(text.strip())
+    typed = body.money_eligible
+    m = _CONFIRM_RE.match(text.strip()) if typed else None
+    d = _DECLINE_RE.match(text.strip()) if typed else None
     if m:
         confirm_id, yes = m.group(1), True
     elif d:
@@ -389,8 +390,7 @@ async def spectrum_chat(
             parts.append(
                 _text_part(
                     result.narration
-                    or f"Putting {amount} into the Solana stock sleeve. "
-                    "Confirm below."
+                    or f"Putting {amount} into the Solana stock sleeve. Confirm below."
                 )
             )
             parts.append(_card_part(result.card, result.confirm_id))
@@ -416,7 +416,12 @@ async def spectrum_chat(
     # -- 2. wallet signature ----------------------------------------------
     signed_tx = body.signed_tx.strip()
     flow_id = body.flow_id.strip()
-    if not signed_tx and channel == "terminal" and _B64_RE.match(text.strip()):
+    if (
+        not signed_tx
+        and typed
+        and channel == "terminal"
+        and _B64_RE.match(text.strip())
+    ):
         settings = get_settings()
         if not settings.RAIL_ALLOW_DEV_SIGN:
             raise HTTPException(
@@ -486,8 +491,10 @@ async def spectrum_chat(
     # -- 3. money turns ----------------------------------------------------
     from miriam_agent.orchestrator import classify_turn
 
-    if chatmod.get_settings().ALLOW_CHAT_INFLOW_SYNTH and (
-        chatmod.looks_like_inflow_alert(text)
+    if (
+        typed
+        and chatmod.get_settings().ALLOW_CHAT_INFLOW_SYNTH
+        and chatmod.looks_like_inflow_alert(text)
     ):
         # Demo-only escape hatch, mirroring the chat path: text is not a
         # payment fact, so it never mints ledger money unless the deployment
@@ -500,7 +507,7 @@ async def spectrum_chat(
             channel="chat_synth",
             reference=chatmod.inflow_id_for_alert(text),
         )
-    elif classify_turn(text) == "orchestrator":
+    elif classify_turn(text, source=body.message_source) == "orchestrator":
         if wallet_address:
             result = await orchestrator.handle(
                 Event(

@@ -72,13 +72,13 @@ from miriam_agent.onboarding.service import OnboardingService, OnboardingTurn
 from miriam_agent.orchestrator import (
     Orchestrator,
     TurnResult,
-    classify_turn,
     inflow_id_for_alert,
     looks_like_inflow_alert,
 )
 from miriam_agent.safety.policy import SafetyPolicy
 from miriam_agent.safety.validator import InputValidator
 from miriam_agent.tools import build_tool_registry
+from miriam_agent.turn_routing import SourcedRequest, classify_turn
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +470,7 @@ def _money_memory_summary(result: TurnResult) -> str:
         return "money turn (details withheld)"
 
 
-class ChatRequest(BaseModel):
+class ChatRequest(SourcedRequest):
     """Body for ``/chat`` and ``/chat/stream``.
 
     Replaces the hand-parsed ``dict[str, Any]`` the endpoints used to take:
@@ -554,7 +554,8 @@ async def _prepare_turn(
     # to the orchestrator, which is the only path in the process that can move
     # money.
     is_money_turn = get_settings().MONEY_LAYERS_ENABLED and (
-        bool(confirm_id) or classify_turn(message) == "orchestrator"
+        bool(confirm_id)
+        or classify_turn(message, source=body.message_source) == "orchestrator"
     )
 
     # Conversational onboarding owns the turn when an interview is unfinished
