@@ -207,3 +207,86 @@ jobs:
         run: |
           pip install semgrep
           semgrep --config=auto --severity=ERROR --quiet --error
+
+  secret-scan:
+    # Free, offline secret scanner (gitleaks; no account, no GitHub Secret
+    # Protection). GitHub's free scanning only knows partner token formats and
+    # push protection for repositories is a paid product, so this job is the
+    # check that actually blocks. Two scans, both using .gitleaks.toml:
+    #  1. the commits this push / pull request adds: any finding fails, no
+    #     baseline, so a PR that introduces a secret cannot go green (the
+    #     baseline file itself is skipped: it holds commit shas, which the
+    #     stock token rules can mistake for tokens);
+    #  2. the history reachable from the checked-out commit: fails only on a
+    #     finding that is not in .gitleaks-baseline.json. Branches that are not
+    #     an ancestor of this commit are not scanned here.
+    # Findings are printed as rule, file:line, commit and date; values are
+    # redacted. gitleaks makes no network calls; only the install step does.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/gitleaks" version
+
+      - name: Scan the commits in this push or pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -uo pipefail
+          rc=0
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "::notice::No usable base commit (new branch or force-push); the full-history scan below covers this range."
+            exit 0
+          fi
+          echo "Scanning ${BASE_SHA}..${HEAD_SHA} ($(git rev-list --count "${BASE_SHA}..${HEAD_SHA}") commits)"
+          gitleaks detect --source . --config .gitleaks.toml --redact=100 --no-banner --no-color \
+            --log-opts="${BASE_SHA}..${HEAD_SHA} -- . :(exclude).gitleaks-baseline.json" --report-format json --report-path range.json || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::$(jq length range.json) secret finding(s) introduced by this change (values redacted):"
+            jq -r '.[] | "  \(.RuleID)  \(.File):\(.StartLine)  \(.Commit[0:8])  \(.Date[0:10])"' range.json
+          fi
+          exit "$rc"
+
+      - name: Scan full history against the baseline
+        run: |
+          set -uo pipefail
+          rc=0
+          [ "$(git rev-parse --is-shallow-repository)" = "false" ] || { echo "::error::shallow clone: history scan would be incomplete"; exit 1; }
+          gitleaks detect --source . --config .gitleaks.toml --baseline-path .gitleaks-baseline.json \
+            --redact=100 --no-banner --no-color --log-opts="--full-history HEAD" \
+            --report-format json --report-path history.json || rc=$?
+          echo "History: $(git rev-list --count --no-merges HEAD) non-merge commits scanned; $(jq length .gitleaks-baseline.json) baseline entries; $(jq length history.json) new finding(s) not in the baseline."
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::New secret finding(s) in history that are not in .gitleaks-baseline.json (values redacted):"
+            jq -r '.[] | "  \(.RuleID)  \(.File):\(.StartLine)  \(.Commit[0:8])  \(.Date[0:10])"' history.json
+          fi
+          exit "$rc"
+
+      - name: Every baseline entry has a documented reason
+        run: |
+          set -uo pipefail
+          missing=0
+          while IFS=$'\t' read -r rule file; do
+            if ! grep -qsF "| ${rule} | ${file} |" docs/SECRET-SCANNING-BASELINE.md; then
+              echo "::error::Baseline entry without a note in docs/SECRET-SCANNING-BASELINE.md: ${rule}  ${file}"
+              missing=1
+            fi
+          done < <(jq -r '.[] | [.RuleID, .File] | @tsv' .gitleaks-baseline.json | sort -u)
+          exit "$missing"
