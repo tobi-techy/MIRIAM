@@ -203,10 +203,10 @@ def test_spec_examples_section_references():
     from miriam_agent.spec import load_markdown
     from miriam_agent.spec.examples import parse_spec_examples
 
-    # This would need the actual spec markdown to parse examples
-    # For now, we'll check that the examples module can be imported
-    assert parse_spec_examples is not None
-    assert load_markdown is not None
+    parsed = parse_spec_examples(load_markdown())
+
+    assert parsed, "The document's examples section should yield examples"
+    assert all(example.number for example in parsed)
 
 
 def test_registry_imports_correctly():
@@ -245,7 +245,8 @@ def test_spec_documentation_completeness():
     assert "## 6. Personality" in markdown
     assert "## 7. Regional Behavior" in markdown
     assert "## 8. Deliverable" in markdown
-    assert "## Spec Examples" in markdown
+    assert "## Specification Examples" in markdown
+    assert "### Example 1:" in markdown
     assert "## Anti-Pattern Catalogue" in markdown
 
 

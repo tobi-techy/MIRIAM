@@ -1,26 +1,78 @@
 """Parse and validate spec examples from the markdown document.
 
-This module extracts example blocks from the spec markdown document and provides
-validation utilities for the good/bad example pairs.
+The document at ``docs/miriam_spec/miriam_spec_v1.2.md`` is the source of truth
+for its own format: it is product content the owner authors, and this module
+adapts to it rather than the other way round. Each example is a level-3 heading
+under the document's ``## Specification Examples`` section::
+
+    ### Example 1: Problem Identification (R1-R2)
+    **Bad:**
+    "the response the agent must not send"
+
+    **Why Bad:** the failure mode it demonstrates, naming the rules it breaks
+
+    **Good:**
+    "the response that conforms"
+
+    **Why Good:** why the good response works
+
+A block that does not carry all four labels raises :class:`SpecExampleError`
+naming the example. Nothing is dropped quietly: an example that failed to parse
+would silently weaken every count and coverage assertion that follows.
 """
 
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+EXAMPLES_SECTION_HEADING = "## Specification Examples"
+
+_EXAMPLES_SECTION_RE = re.compile(
+    rf"(?ms)^{re.escape(EXAMPLES_SECTION_HEADING)}\s*$(.*?)(?=^## |\Z)"
+)
+_EXAMPLE_HEADING_RE = re.compile(r"(?m)^### Example (\d+):[ \t]*(.+?)[ \t]*$")
+_LABEL_RE = re.compile(r"\*\*(Bad|Why Bad|Good|Why Good):\*\*")
+_RULE_RE = re.compile(r"\bR\d+\b")
+
+
+class SpecExampleError(ValueError):
+    """An example block in the document does not match the documented format."""
+
 
 @dataclass
 class SpecExample:
-    """A single spec example with good and bad response pairs."""
+    """One good/bad response pair from the spec document."""
 
-    id: str
-    section: str
-    scenario: str
+    number: str  # "1", from "### Example 1: ..."
+    title: str  # "Problem Identification (R1-R2)"
     bad: str
+    why_bad: str
     good: str
     why_good: str
-    failure_mode_prevented: str
-    violated_rule: str  # Rule ID that the bad response violates
+
+    @property
+    def id(self) -> str:
+        """The example's identifier, as the document writes it."""
+        return f"Example {self.number}"
+
+    @property
+    def scenario(self) -> str:
+        """The example's title without its trailing rule references."""
+        return re.sub(r"\s*\([^)]*\)\s*$", "", self.title).strip()
+
+    @property
+    def rule_refs(self) -> list[str]:
+        """The rule ids the title cites, e.g. ``["R1", "R2"]``."""
+        return _RULE_RE.findall(self.title)
+
+    @property
+    def violated_rule(self) -> str | None:
+        """The first rule the "Why Bad" text names, falling back to the title."""
+        mentioned: list[str] = _RULE_RE.findall(self.why_bad)
+        if mentioned:
+            return mentioned[0]
+        refs: list[str] = self.rule_refs
+        return refs[0] if refs else None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SpecExample":
@@ -29,199 +81,105 @@ class SpecExample:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    @classmethod
-    def parse_markdown_example(cls, content: str) -> "SpecExample":
-        """Parse a markdown example block and return a SpecExample object."""
-        # Extract ID from header
-        id_match = re.search(r"## Example (\w+)", content)
-        if not id_match:
-            raise ValueError("Example ID not found")
-
-        # Extract section from content
-        section_match = re.search(r"Section: (\d+)", content)
-        if not section_match:
-            raise ValueError("Section not found")
-
-        # Extract scenario
-        scenario_match = re.search(r"Scenario: (.*?)\n\n", content, re.DOTALL)
-        if not scenario_match:
-            raise ValueError("Scenario not found")
-
-        # Extract bad response
-        bad_match = re.search(r"Bad Response:\s*\"(.*?)\"", content, re.DOTALL)
-        if not bad_match:
-            raise ValueError("Bad response not found")
-
-        # Extract good response
-        good_match = re.search(r"Good Response:\s*\"(.*?)\"", content, re.DOTALL)
-        if not good_match:
-            raise ValueError("Good response not found")
-
-        # Extract why good
-        why_good_match = re.search(r"Why Good:\s*\"(.*?)\"", content, re.DOTALL)
-        if not why_good_match:
-            raise ValueError("Why good not found")
-
-        # Extract failure mode prevented
-        failure_match = re.search(
-            r"Failure Mode Prevented:\s*\"(.*?)\"", content, re.DOTALL
-        )
-        if not failure_match:
-            raise ValueError("Failure mode prevented not found")
-
-        # Extract violated rule
-        violated_match = re.search(r"Violated Rule:\s*(\w+)", content)
-        if not violated_match:
-            raise ValueError("Violated rule not found")
-
-        return SpecExample(
-            id=id_match.group(1),
-            section=section_match.group(1),
-            scenario=scenario_match.group(1).strip(),
-            bad=bad_match.group(1).strip(),
-            good=good_match.group(1).strip(),
-            why_good=why_good_match.group(1).strip(),
-            failure_mode_prevented=failure_match.group(1).strip(),
-            violated_rule=violated_match.group(1),
-        )
-
     def validate_example_structure(self) -> list[str]:
-        """Validate that the example has all required fields."""
-        errors = []
+        """The fields this example is missing, if any."""
+        return [
+            f"Missing {field}"
+            for field in ("number", "title", "bad", "why_bad", "good", "why_good")
+            if not getattr(self, field)
+        ]
 
-        if not self.id:
-            errors.append("Missing example ID")
 
-        if not self.section:
-            errors.append("Missing section")
+def _unquote(text: str) -> str:
+    """Strip the quotes the document wraps a response in, keeping any note."""
+    text = text.strip()
+    if text.startswith('"'):
+        text = text[1:]
+    quoted = re.match(r'^(.*?)"\s*(?:\(.*\))?\s*$', text, re.DOTALL)
+    if quoted:
+        text = quoted.group(1)
+    return text.strip()
 
-        if not self.scenario:
-            errors.append("Missing scenario")
 
-        if not self.bad:
-            errors.append("Missing bad response")
+def _parse_block(number: str, title: str, body: str) -> SpecExample:
+    parts = _LABEL_RE.split(body)
+    labels = parts[1::2]
+    contents = parts[2::2]
 
-        if not self.good:
-            errors.append("Missing good response")
-
-        if not self.why_good:
-            errors.append("Missing why good explanation")
-
-        if not self.failure_mode_prevented:
-            errors.append("Missing failure mode prevented")
-
-        if not self.violated_rule:
-            errors.append("Missing violated rule")
-
-        return errors
-
-    def validate_responses(self, quality_evaluator) -> list[str]:
-        """Validate that the good response passes and bad response fails."""
-        errors = []
-
-        # Validate good response
-        good_violations = quality_evaluator.evaluate_reply(
-            self.good, self.violated_rule
+    if sorted(labels) != ["Bad", "Good", "Why Bad", "Why Good"]:
+        raise SpecExampleError(
+            f"{EXAMPLES_SECTION_HEADING}, Example {number}: expected the labels "
+            "**Bad:**, **Why Bad:**, **Good:** and **Why Good:**, found "
+            f"{labels or 'none'}"
         )
-        if good_violations:
-            errors.append(f"Good response should not violate rules: {good_violations}")
 
-        # Validate bad response
-        bad_violations = quality_evaluator.evaluate_reply(self.bad, self.violated_rule)
-        if not bad_violations:
-            errors.append(f"Bad response should violate rule {self.violated_rule}")
+    fields = dict(zip(labels, (content.strip() for content in contents), strict=True))
+    empty = [label for label, value in fields.items() if not value]
+    if empty:
+        raise SpecExampleError(
+            f"{EXAMPLES_SECTION_HEADING}, Example {number}: empty {empty}"
+        )
 
-        return errors
+    return SpecExample(
+        number=number,
+        title=title,
+        bad=_unquote(fields["Bad"]),
+        why_bad=" ".join(fields["Why Bad"].split()),
+        good=_unquote(fields["Good"]),
+        why_good=" ".join(fields["Why Good"].split()),
+    )
 
 
 def parse_spec_examples(markdown_content: str) -> list[SpecExample]:
-    """Parse all examples from spec markdown content."""
-    examples = []
+    """Parse every example from the document's Specification Examples section.
 
-    # Split content into example blocks
-    example_blocks = re.split(r"## Example \w+", markdown_content)[1:]
-
-    for block in example_blocks:
-        try:
-            example = SpecExample.parse_markdown_example(block)
-            examples.append(example)
-        except ValueError as e:
-            print(f"Warning: Failed to parse example block: {e}")
-
-    return examples
-
-
-def lint_examples(
-    spec_examples: list[SpecExample], quality_evaluator
-) -> dict[str, Any]:
-    """Lint all spec examples and return results."""
-    results = {
-        "total_examples": len(spec_examples),
-        "valid_structure": 0,
-        "valid_responses": 0,
-        "invalid_examples": [],
-        "example_results": [],
-    }
-
-    for example in spec_examples:
-        example_result = {
-            "id": example.id,
-            "valid_structure": False,
-            "structure_errors": [],
-            "valid_responses": False,
-            "response_errors": [],
-            "overall_valid": False,
-        }
-
-        # Validate structure
-        structure_errors = example.validate_example_structure()
-        if not structure_errors:
-            example_result["valid_structure"] = True
-            results["valid_structure"] += 1
-        else:
-            example_result["structure_errors"] = structure_errors
-
-        # Validate responses
-        response_errors = example.validate_responses(quality_evaluator)
-        if not response_errors:
-            example_result["valid_responses"] = True
-            results["valid_responses"] += 1
-        else:
-            example_result["response_errors"] = response_errors
-
-        # Overall validity
-        overall_valid = (
-            example_result["valid_structure"] and example_result["valid_responses"]
+    Raises :class:`SpecExampleError` if the section heading is missing or if any
+    block under it does not carry the documented labels, so a malformed example
+    can never be silently excluded from the counts the spec gate asserts.
+    """
+    section = _EXAMPLES_SECTION_RE.search(markdown_content)
+    if not section:
+        raise SpecExampleError(
+            f"the spec document has no '{EXAMPLES_SECTION_HEADING}' section"
         )
-        example_result["overall_valid"] = overall_valid
 
-        if not overall_valid:
-            results["invalid_examples"].append(example_result)
-
-        results["example_results"].append(example_result)
-
-    return results
+    headings = list(_EXAMPLE_HEADING_RE.finditer(section.group(1)))
+    examples = []
+    for index, heading in enumerate(headings):
+        end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(section.group(1))
+        )
+        examples.append(
+            _parse_block(
+                heading.group(1),
+                heading.group(2),
+                section.group(1)[heading.end() : end],
+            )
+        )
+    return examples
 
 
 def get_example_by_id(
     spec_examples: list[SpecExample], example_id: str
 ) -> SpecExample | None:
-    """Get an example by its ID."""
+    """Get an example by its number or by its full id ("Example 1")."""
     for example in spec_examples:
-        if example.id == example_id:
+        if example.number == example_id or example.id == example_id:
             return example
     return None
 
 
-def get_examples_by_section(
-    spec_examples: list[SpecExample], section: str
+def get_examples_by_rule_ref(
+    spec_examples: list[SpecExample], rule: str
 ) -> list[SpecExample]:
-    """Get all examples for a specific section."""
-    return [example for example in spec_examples if example.section == section]
+    """Get every example whose title cites ``rule``."""
+    return [example for example in spec_examples if rule in example.rule_refs]
 
 
 def get_examples_by_rule(
     spec_examples: list[SpecExample], rule: str
 ) -> list[SpecExample]:
-    """Get all examples that test a specific rule."""
+    """Get every example whose bad response is meant to violate ``rule``."""
     return [example for example in spec_examples if example.violated_rule == rule]

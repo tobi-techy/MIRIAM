@@ -75,8 +75,6 @@
   "miriam_agent/safety/validator.py|assignment|Incompatible types in assignment (expression has type \"list[Any]\", target has type \"str\")": 2,
   "miriam_agent/safety/validator.py|no-any-return|Returning Any from function declared to return \"str\"": 2,
   "miriam_agent/safety/validator.py|var-annotated|Need type annotation for \"errors\" (hint: \"errors: list[<type>] = ...\")": 1,
-  "miriam_agent/spec/examples.py|attr-defined|\"object\" has no attribute \"append\"": 2,
-  "miriam_agent/spec/examples.py|operator|Unsupported operand types for + (\"object\" and \"int\")": 2,
   "miriam_agent/tools/__init__.py|no-any-return|Returning Any from function declared to return \"ToolRegistry\"": 1,
   "miriam_agent/tools/definitions.py|assignment|Incompatible types in assignment (expression has type \"list[MemoryEntry]\", variable has type \"list[dict[str, Any]]\")": 1,
   "miriam_agent/tools/definitions.py|attr-defined|\"dict[str, Any]\" has no attribute \"content\"": 1,
