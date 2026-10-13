@@ -79,25 +79,20 @@ def test_rule_registry_structure():
 def test_transaction_classes_coverage():
     """Test that transaction classes cover all money-movement tools."""
     # Load tool registry to check for money-movement tools
-    try:
-        from miriam_agent.tools import ensure_registered
+    from miriam_agent.tools import ensure_registered
 
-        registry = ensure_registered()
+    registry = ensure_registered()
 
-        # Find all mutation tools
-        mutation_tools = registry.list_by_category("action")
-        mutation_tools = [tool for tool in mutation_tools if tool.is_mutation]
+    # Find all mutation tools
+    mutation_tools = registry.list_by_category("action")
+    mutation_tools = [tool for tool in mutation_tools if tool.is_mutation]
 
-        # Every mutation tool should have a corresponding transaction class
-        for tool in mutation_tools:
-            tool_name = tool.name
-            assert any(
-                tool_name in tc for tc in TRANSACTION_CLASSES.keys()
-            ), f"Tool {tool_name} should have a corresponding transaction class"
-
-    except ImportError:
-        # If we can't load the tool registry, skip this test
-        pytest.skip("Could not import tool registry")
+    # Every mutation tool should have a corresponding transaction class
+    for tool in mutation_tools:
+        tool_name = tool.name
+        assert any(
+            tool_name in tc for tc in TRANSACTION_CLASSES.keys()
+        ), f"Tool {tool_name} should have a corresponding transaction class"
 
 
 def test_reasoning_order_structure():
@@ -187,172 +182,159 @@ def test_section_coverage_of_code_citations():
 def test_transaction_classes_for_all_mutation_tools():
     """Test that every tool marked as mutation has a transaction class."""
     # Load tool registry to check for money-movement tools
-    try:
-        from miriam_agent.tools import ensure_registered
+    from miriam_agent.tools import ensure_registered
 
-        registry = ensure_registered()
+    registry = ensure_registered()
 
-        # Find all tools with requires_approval (they should have transaction classes)
-        approval_tools = registry.list_by_category("action")
-        approval_tools = [tool for tool in approval_tools if tool.requires_approval]
+    # Find all tools with requires_approval (they should have transaction classes)
+    approval_tools = registry.list_by_category("action")
+    approval_tools = [tool for tool in approval_tools if tool.requires_approval]
 
-        for tool in approval_tools:
-            tool_name = tool.name
-            assert (
-                any(tc in tool_name for tc in TRANSACTION_CLASSES.keys())
-                or tool_name.replace("_", "_") in TRANSACTION_CLASSES
-            ), f"Tool {tool_name} should have a corresponding transaction class"
-
-    except ImportError:
-        # If we can't load the tool registry, skip this test
-        pytest.skip("Could not import tool registry")
+    for tool in approval_tools:
+        tool_name = tool.name
+        assert (
+            any(tc in tool_name for tc in TRANSACTION_CLASSES.keys())
+            or tool_name.replace("_", "_") in TRANSACTION_CLASSES
+        ), f"Tool {tool_name} should have a corresponding transaction class"
 
 
 def test_spec_examples_section_references():
     """Test that spec examples reference valid sections."""
-    try:
-        from miriam_agent.spec import load_markdown
-        from miriam_agent.spec.examples import parse_spec_examples
+    from miriam_agent.spec import load_markdown
+    from miriam_agent.spec.examples import parse_spec_examples
 
-        # This would need the actual spec markdown to parse examples
-        # For now, we'll check that the examples module can be imported
-        assert parse_spec_examples is not None
-        assert load_markdown is not None
+    parsed = parse_spec_examples(load_markdown())
 
-    except ImportError as e:
-        pytest.skip(f"Could not import spec modules: {e}")
+    assert parsed, "The document's examples section should yield examples"
+    assert all(example.number for example in parsed)
 
 
 def test_registry_imports_correctly():
     """Test that the spec registry can be imported without errors."""
-    try:
-        from miriam_agent.spec import (
-            ANTI_PATTERNS,
-            REASONING_ORDER,
-            RULES,
-            SECTIONS,
-            TRANSACTION_CLASSES,
-            content_hash,
-        )
+    from miriam_agent.spec import (
+        ANTI_PATTERNS,
+        REASONING_ORDER,
+        RULES,
+        SECTIONS,
+        TRANSACTION_CLASSES,
+        content_hash,
+    )
 
-        # Verify all imports are valid
-        assert SECTIONS is not None
-        assert RULES is not None
-        assert TRANSACTION_CLASSES is not None
-        assert REASONING_ORDER is not None
-        assert ANTI_PATTERNS is not None
-        assert content_hash() is not None
-
-    except ImportError as e:
-        pytest.skip(f"Could not import spec registry: {e}")
+    # Verify all imports are valid
+    assert SECTIONS is not None
+    assert RULES is not None
+    assert TRANSACTION_CLASSES is not None
+    assert REASONING_ORDER is not None
+    assert ANTI_PATTERNS is not None
+    assert content_hash() is not None
 
 
 def test_spec_documentation_completeness():
     """Test that the spec document contains all required sections."""
-    try:
-        from miriam_agent.spec import load_markdown
+    from miriam_agent.spec import load_markdown
 
-        markdown = load_markdown()
+    markdown = load_markdown()
 
-        # Check for key sections in the markdown
-        assert "# Miriam Behavioral Specification v1.2" in markdown
-        assert "## 1. Identity & Role" in markdown
-        assert "## 2. Conversation Behavior" in markdown
-        assert "## 3. Financial Reasoning" in markdown
-        assert "## 4. Truth & Uncertainty" in markdown
-        assert "## 5. Actions & Confirmation" in markdown
-        assert "## 6. Personality" in markdown
-        assert "## 7. Regional Behavior" in markdown
-        assert "## 8. Deliverable" in markdown
-        assert "## Spec Examples" in markdown
-        assert "## Anti-Pattern Catalogue" in markdown
-
-    except ImportError as e:
-        pytest.skip(f"Could not import spec loader: {e}")
-
-    except FileNotFoundError:
-        pytest.skip(
-            "Spec document not found - this may be expected in test environment"
-        )
+    # Check for key sections in the markdown
+    assert "# Miriam Behavioral Specification v1.2" in markdown
+    assert "## 1. Identity & Role" in markdown
+    assert "## 2. Conversation Behavior" in markdown
+    assert "## 3. Financial Reasoning" in markdown
+    assert "## 4. Truth & Uncertainty" in markdown
+    assert "## 5. Actions & Confirmation" in markdown
+    assert "## 6. Personality" in markdown
+    assert "## 7. Regional Behavior" in markdown
+    assert "## 8. Deliverable" in markdown
+    assert "## Specification Examples" in markdown
+    assert "### Example 1:" in markdown
+    assert "## Anti-Pattern Catalogue" in markdown
 
 
 def test_spec_gives_clear_implementation_guidance():
     """Test that the spec provides clear guidance for implementation."""
-    try:
-        from miriam_agent.spec import load_markdown
+    from miriam_agent.spec import load_markdown
 
-        markdown = load_markdown()
+    markdown = load_markdown()
 
-        # Check for implementation guidance sections
-        implementation_keywords = [
-            "Implementation",
-            "How",
-            "Guide",
-            "Steps",
-            "Process",
-            "Architecture",
-        ]
+    # Check for implementation guidance sections
+    implementation_keywords = [
+        "Implementation",
+        "How",
+        "Guide",
+        "Steps",
+        "Process",
+        "Architecture",
+    ]
 
-        has_implementation_guidance = any(
-            keyword.lower() in markdown.lower() for keyword in implementation_keywords
-        )
+    has_implementation_guidance = any(
+        keyword.lower() in markdown.lower() for keyword in implementation_keywords
+    )
 
-        # While we want implementation guidance, the spec focuses on behavioral rules
-        # So this test should be flexible
-        assert (
-            has_implementation_guidance or True
-        ), "Spec should provide implementation guidance"
-
-    except ImportError as e:
-        pytest.skip(f"Could not import spec loader: {e}")
-
-    except FileNotFoundError:
-        pytest.skip(
-            "Spec document not found - this may be expected in test environment"
-        )
+    # While we want implementation guidance, the spec focuses on behavioral rules
+    # So this test should be flexible
+    assert (
+        has_implementation_guidance or True
+    ), "Spec should provide implementation guidance"
 
 
 def test_spec_is_machine_readable():
     """Test that the spec can be read by machines (not just humans)."""
-    try:
-        from miriam_agent.spec import RULES, SECTIONS, load_markdown
+    from miriam_agent.spec import RULES, SECTIONS, load_markdown
 
-        # Load markdown
-        markdown = load_markdown()
+    # Load markdown
+    markdown = load_markdown()
 
-        # Check that it's parseable (basic sanity check)
-        assert len(markdown) > 1000, "Spec should be substantial"
+    # Check that it's parseable (basic sanity check)
+    assert len(markdown) > 1000, "Spec should be substantial"
 
-        # Check that sections are structured (not just prose)
-        assert (
-            SECTIONS is not None and len(SECTIONS) > 0
-        ), "Spec should have structured sections"
+    # Check that sections are structured (not just prose)
+    assert (
+        SECTIONS is not None and len(SECTIONS) > 0
+    ), "Spec should have structured sections"
 
-        # Check that rules are structured
-        assert RULES is not None and len(RULES) > 0, "Spec should have structured rules"
-
-    except ImportError as e:
-        pytest.skip(f"Could not import spec modules: {e}")
-
-    except FileNotFoundError:
-        pytest.skip(
-            "Spec document not found - this may be expected in test environment"
-        )
+    # Check that rules are structured
+    assert RULES is not None and len(RULES) > 0, "Spec should have structured rules"
 
 
 def test_spec_enforces_consistency():
     """Test that the spec enforces consistency across the codebase."""
-    try:
-        from miriam_agent.spec import SPEC_VERSION
+    from miriam_agent.spec import SPEC_VERSION
 
-        # The spec should provide a consistent foundation
-        assert SPEC_VERSION == "1.2"
+    # The spec should provide a consistent foundation
+    assert SPEC_VERSION == "1.2"
 
-        # All spec-related code should reference the same version
-        # This is validated by the test files and imports above
+    # All spec-related code should reference the same version
+    # This is validated by the test files and imports above
 
-    except ImportError as e:
-        pytest.skip(f"Could not import spec modules: {e}")
+
+def test_load_markdown_resolves_from_any_working_directory(monkeypatch, tmp_path):
+    """The spec is found relative to the package, not the working directory."""
+    from miriam_agent.spec import SPEC_PATH, load_markdown
+
+    monkeypatch.chdir(tmp_path)
+
+    assert SPEC_PATH.is_file(), f"Spec document should exist at {SPEC_PATH}"
+    assert load_markdown().startswith("# Miriam Behavioral Specification")
+
+
+def test_load_markdown_fails_loudly_when_spec_is_missing(monkeypatch, tmp_path):
+    from miriam_agent.spec import registry
+
+    monkeypatch.setattr(registry, "SPEC_PATH", tmp_path / "absent.md")
+
+    with pytest.raises(FileNotFoundError):
+        registry.load_markdown()
+
+
+def test_load_markdown_fails_loudly_when_spec_is_empty(monkeypatch, tmp_path):
+    from miriam_agent.spec import registry
+
+    empty = tmp_path / "empty.md"
+    empty.write_text("  \n", encoding="utf-8")
+    monkeypatch.setattr(registry, "SPEC_PATH", empty)
+
+    with pytest.raises(ValueError):
+        registry.load_markdown()
 
 
 if __name__ == "__main__":

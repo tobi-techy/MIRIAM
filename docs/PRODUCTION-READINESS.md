@@ -110,10 +110,19 @@ when `ENVIRONMENT` is `production`/`prod` (any casing) and:
 - Add `RAIL_ALLOW_DEV_SIGN` to the production guard so a misconfigured host
   fails at boot instead of at the first wallet-signed settlement. (`GO_BACKEND_URL`
   and the model key are now guarded — see the table above.)
-- `tests/test_spec_examples.py` skips 13 tests because
-  `docs/miriam_spec/miriam_spec_v1.2.md` is missing and a bare
-  `except Exception: pytest.skip` hides it; the spec-gate CI step passes
-  vacuously as a result.
+- The spec's own §8.2 criterion asks for at least 20 good/bad conversation
+  examples; `docs/miriam_spec/miriam_spec_v1.2.md` carries 5, and the spec gate
+  now records that as a ratchet floor rather than a passing count
+  (`SPEC_EXAMPLE_FLOOR` in `tests/test_spec_examples.py`). Adding examples is
+  the fix; raising the floor is the follow-up.
+- Two of those five examples demonstrate failure modes the deterministic linter
+  cannot score from the document alone: Example 1's reply is one
+  `miriam_agent/onboarding/quality.py` explicitly documents as a *compliant
+  echo* under R11, and Example 2's invented figure needs a grounding block the
+  document never prints. They are listed by name in
+  `tests/test_spec_examples.py` (`EXAMPLES_THE_LINTER_CANNOT_SCORE`) so the
+  divergence is tracked instead of hidden. Closing it means either the linter
+  learns the rule the document intends or the document's examples change.
 - Dead deploy-target references in other repos' docs (AWS ECS, Fly, k8s,
   Terraform) belong to `RAIL-BACKEND-SERVICE` history, not here; this repo has
   no such manifest and no second target. The AtlasFlow reality: the Go service

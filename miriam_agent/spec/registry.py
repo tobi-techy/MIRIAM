@@ -366,16 +366,28 @@ SPEC_HASH = hashlib.sha256(
 
 
 # --- Loading utilities ---
+SPEC_PATH = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "docs"
+    / "miriam_spec"
+    / "miriam_spec_v1.2.md"
+)
+
+
 def load_markdown() -> str:
-    """Load the spec markdown from its path."""
-    spec_path = (
-        pathlib.Path(__file__).parent
-        / ".."
-        / "docs"
-        / "miriam_spec"
-        / "miriam_spec_v1.2.md"
-    )
-    return spec_path.read_text(encoding="utf-8")
+    """Load the spec markdown; raise if it is missing, unreadable or empty.
+
+    The document lives at ``docs/miriam_spec/`` in the repository root, two
+    directories above this package, and is resolved from this file rather than
+    the working directory. A failure here must stay loud: the spec gate tests
+    depend on it, and a swallowed error would make the gate prove nothing.
+    """
+    if not SPEC_PATH.is_file():
+        raise FileNotFoundError(f"Spec document not found at {SPEC_PATH}")
+    text = SPEC_PATH.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"Spec document at {SPEC_PATH} is empty")
+    return text
 
 
 def sections() -> dict[int, dict[str, Any]]:
