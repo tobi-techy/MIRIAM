@@ -10,14 +10,17 @@ migration 001 on "table already exists".
 These tests prove the three things that matter before any of this touches a
 database with money in it:
 
-* migration 003's guard refuses, naming the column, when a column it wants to
-  tighten holds NULL — it never invents a value;
+* migration 003's guard aggregates and names every offending column, and never
+  counts a column it has already decided to skip;
 * ``alembic upgrade head`` ADOPTS a create_all-built database (no duplicate-table
   error) and preserves every row, on Postgres, the deployment dialect;
-* the four request-path ``create_all`` calls are refused in production and kept
-  in dev/test.
+* a column that holds NULL where the model demands NOT NULL fails the migration
+  **loudly**, leaving the version and the row untouched — never inventing a value.
 
-They skip (never silently pass) when Postgres is unreachable, the convention
+The four request-path ``create_all`` calls are also covered (refused in
+production, kept in dev/test).
+
+Postgres tests skip (never silently pass) when it is unreachable, the convention
 ``tests/test_payment_refs_postgres.py`` uses.
 """
 
@@ -25,7 +28,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import subprocess
 import sys
 import uuid
@@ -46,38 +48,7 @@ def _load_003():
     return module
 
 
-# --- the guard, without a database -----------------------------------------
-
-
-class _Result:
-    def __init__(self, value):
-        self._value = value
-
-    def first(self):
-        return self._value
-
-    def scalar_one(self):
-        return self._value
-
-
-class _FakeBind:
-    """Answers the two queries the guard makes: column existence and null count."""
-
-    def __init__(self, *, nulls=None, not_null=(), missing=()):
-        self.nulls = nulls or {}
-        self.not_null = set(not_null)
-        self.missing = set(missing)
-
-    def execute(self, statement, params=None):
-        sql = str(statement)
-        if "information_schema.columns" in sql:
-            key = f"{params['t']}.{params['c']}"
-            if key in self.missing:
-                return _Result(None)
-            return _Result(("NO",) if key in self.not_null else ("YES",))
-        match = re.search(r'FROM "([^"]+)" WHERE "([^"]+)" IS NULL', sql)
-        assert match, sql
-        return _Result(self.nulls.get(f"{match.group(1)}.{match.group(2)}", 0))
+# --- the migration's shape and guard, without a database --------------------
 
 
 def test_003_covers_exactly_the_columns_models_declare_not_null():
@@ -95,40 +66,66 @@ def test_003_covers_exactly_the_columns_models_declare_not_null():
         )
 
 
-def test_guard_refuses_and_names_the_column_when_nulls_exist():
+def test_guard_refuses_and_names_every_offending_column(monkeypatch):
+    migration = _load_003()
+    monkeypatch.setattr(migration, "_is_nullable", lambda bind, t, c: True)
+    monkeypatch.setattr(
+        migration,
+        "_count_nulls",
+        lambda bind, t, c: 3 if (t, c) == ("users", "created_at") else 0,
+    )
     with pytest.raises(RuntimeError) as excinfo:
-        _load_003()._assert_no_nulls(_FakeBind(nulls={"users.created_at": 3}))
+        migration._assert_no_nulls(object())
     message = str(excinfo.value)
     assert "users.created_at" in message
     assert "3" in message
     assert "refusing" in message
 
 
-def test_guard_is_silent_when_every_column_is_clean():
-    _load_003()._assert_no_nulls(_FakeBind())
+def test_guard_is_silent_when_every_column_is_clean(monkeypatch):
+    migration = _load_003()
+    monkeypatch.setattr(migration, "_is_nullable", lambda bind, t, c: True)
+    monkeypatch.setattr(migration, "_count_nulls", lambda bind, t, c: 0)
+    migration._assert_no_nulls(object())
 
 
-def test_guard_skips_a_column_that_is_already_not_null():
-    _load_003()._assert_no_nulls(
-        _FakeBind(nulls={"users.created_at": 99}, not_null=["users.created_at"])
-    )
+def test_guard_never_counts_a_column_that_is_already_not_null(monkeypatch):
+    migration = _load_003()
+    monkeypatch.setattr(migration, "_is_nullable", lambda bind, t, c: False)
+
+    def _must_not_run(*_args):
+        raise AssertionError("counted a column that is already NOT NULL")
+
+    monkeypatch.setattr(migration, "_count_nulls", _must_not_run)
+    migration._assert_no_nulls(object())  # a half-applied database converges
 
 
-def test_missing_column_aborts_with_provenance_guidance():
-    with pytest.raises(RuntimeError, match="schema_provenance"):
-        _load_003()._assert_no_nulls(_FakeBind(missing=["users.created_at"]))
-
-
-# --- the create_all gate, without a database -------------------------------
-
-
-def test_auto_create_is_allowed_outside_production_and_refused_in_production(
+def test_a_column_the_database_does_not_have_aborts_with_provenance_guidance(
     monkeypatch,
 ):
+    migration = _load_003()
+
+    class _EmptyInspector:
+        def get_columns(self, _table):
+            return []
+
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: _EmptyInspector())
+    with pytest.raises(RuntimeError, match="schema_provenance"):
+        migration._is_nullable(object(), "users", "created_at")
+
+
+# --- the create_all gate, without a database --------------------------------
+
+
+def test_auto_create_is_allowed_outside_production_and_refused_in_production():
     from miriam_agent.config.settings import Settings
 
-    dev = Settings(ENVIRONMENT="development", DB_AUTO_CREATE_TABLES=None)
-    assert dev.auto_create_tables is True
+    assert (
+        Settings(
+            ENVIRONMENT="development", DB_AUTO_CREATE_TABLES=None
+        ).auto_create_tables
+        is True
+    )
 
     def _prod(**overrides):
         return Settings(
@@ -144,8 +141,6 @@ def test_auto_create_is_allowed_outside_production_and_refused_in_production(
         )
 
     assert _prod(DB_AUTO_CREATE_TABLES=None).auto_create_tables is False
-
-    # An explicit setting overrides the environment either way.
     assert _prod(DB_AUTO_CREATE_TABLES=True).auto_create_tables is True
     assert (
         Settings(ENVIRONMENT="dev", DB_AUTO_CREATE_TABLES=False).auto_create_tables
@@ -232,6 +227,29 @@ def _count(database: str, table: str) -> int:
         conn.close()
 
 
+def _build_deployed_shape(engine) -> None:
+    """Reproduce the deployed create_all shape: vestigial embedding column, no
+    ix_ indexes, and the one model table create_all never reached."""
+    import sqlalchemy as sa
+
+    from miriam_agent.database.models import Base
+
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(sa.text("ALTER TABLE memory_entries ADD COLUMN embedding json"))
+        for idx in (
+            "ix_conversations_user_id",
+            "ix_messages_conversation_id",
+            "ix_memory_entries_user_id",
+            "ix_memory_entries_type",
+            "ix_audit_logs_user_id",
+            "ix_audit_logs_created_at",
+            "ix_tool_usage_user_id",
+        ):
+            conn.execute(sa.text(f"DROP INDEX {idx}"))
+        conn.execute(sa.text("DROP TABLE payment_references"))
+
+
 def test_upgrade_head_builds_an_empty_database_and_matches_the_models():
     with _TempDB() as db:
         upgrade = _alembic(db, "upgrade", "head")
@@ -242,7 +260,6 @@ def test_upgrade_head_builds_an_empty_database_and_matches_the_models():
         assert check.returncode == 0, check.stdout + check.stderr
         assert "No new upgrade operations detected" in (check.stdout + check.stderr)
 
-        # 13 application tables + alembic_version.
         conn = _connect(db)
         try:
             with conn.cursor() as cur:
@@ -250,7 +267,7 @@ def test_upgrade_head_builds_an_empty_database_and_matches_the_models():
                     "SELECT count(*) FROM information_schema.tables "
                     "WHERE table_schema='public' AND table_type='BASE TABLE'"
                 )
-                assert cur.fetchone()[0] == 14
+                assert cur.fetchone()[0] == 14  # 13 application + alembic_version
                 cur.execute(
                     "SELECT count(*) FROM information_schema.columns "
                     "WHERE table_name='memory_entries' AND column_name='embedding'"
@@ -263,38 +280,16 @@ def test_upgrade_head_builds_an_empty_database_and_matches_the_models():
 def test_upgrade_head_adopts_a_create_all_database_and_preserves_rows():
     """The deployed shape: create_all built it, no alembic_version, missing a table.
 
-    Reproduced faithfully — ``Base.metadata.create_all`` builds the tables (as
-    the production request path did), then ``payment_references`` is dropped to
-    match the observed deployed gap. ``upgrade head`` must adopt it without a
-    duplicate-table error and keep every row.
+    ``upgrade head`` must adopt it without a duplicate-table error and keep every
+    row, and the 34 nullability items must all be clean in that shape.
     """
     import sqlalchemy as sa
-
-    from miriam_agent.database.models import Base
 
     with _TempDB() as db:
         engine = sa.create_engine(_db_url(db))
         try:
-            Base.metadata.create_all(engine)  # the create_all path
+            _build_deployed_shape(engine)
             with engine.begin() as conn:
-                # Reproduce the deployed shape exactly: the vestigial embedding
-                # column, no ix_ indexes, and the one table create_all never
-                # reached.
-                conn.execute(
-                    sa.text("ALTER TABLE memory_entries ADD COLUMN embedding json")
-                )
-                for idx in (
-                    "ix_conversations_user_id",
-                    "ix_messages_conversation_id",
-                    "ix_memory_entries_user_id",
-                    "ix_memory_entries_type",
-                    "ix_audit_logs_user_id",
-                    "ix_audit_logs_created_at",
-                    "ix_tool_usage_user_id",
-                ):
-                    conn.execute(sa.text(f"DROP INDEX {idx}"))
-                conn.execute(sa.text("DROP TABLE payment_references"))
-                # Realistic rows in the tables the reconciliation touches.
                 conn.execute(
                     sa.text(
                         "INSERT INTO users (id, username, email, full_name, "
@@ -333,35 +328,7 @@ def test_upgrade_head_adopts_a_create_all_database_and_preserves_rows():
         finally:
             engine.dispose()
 
-        # Which of the 34 nullability items are actually violated in the
-        # deployed (create_all) shape? create_all builds Mapped[...]-non-Optional
-        # columns NOT NULL, so every count is zero. The shipped pre-flight
-        # (scripts/not_null_preflight.sql) is psql-native; this is its Python
-        # equivalent, skipping the table create_all never reached.
-        migration = _load_003()
-        conn = _connect(db)
-        try:
-            offenders = []
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT table_name, column_name FROM information_schema.columns "
-                    "WHERE table_schema='public'"
-                )
-                present = {(t, c) for t, c in cur.fetchall()}
-                for table, column in migration._NOT_NULL_COLUMNS:
-                    if (table, column) not in present:
-                        continue
-                    cur.execute(
-                        f'SELECT count(*) FROM "{table}" WHERE "{column}" IS NULL'
-                    )
-                    count = cur.fetchone()[0]
-                    if count:
-                        offenders.append((f"{table}.{column}", count))
-            assert offenders == [], f"NULLs in the create_all shape: {offenders}"
-        finally:
-            conn.close()
-
-        before = {
+        rows_before = {
             t: _count(db, t)
             for t in (
                 "users",
@@ -371,7 +338,7 @@ def test_upgrade_head_adopts_a_create_all_database_and_preserves_rows():
                 "audit_logs",
             )
         }
-        assert before == {
+        assert rows_before == {
             "users": 1,
             "conversations": 1,
             "messages": 1,
@@ -386,12 +353,9 @@ def test_upgrade_head_adopts_a_create_all_database_and_preserves_rows():
             + upgrade.stderr
         )
 
-        # Every row survived, and the table that was missing now exists.
-        after = {t: _count(db, t) for t in before}
-        assert after == before
+        assert {t: _count(db, t) for t in rows_before} == rows_before
         assert _count(db, "payment_references") == 0  # created empty
 
-        # The reconciled shape matches the models on every axis.
         check = _alembic(db, "check")
         assert check.returncode == 0, (
             "schema still drifts from models.py after adopting:\n"
@@ -414,5 +378,62 @@ def test_upgrade_head_adopts_a_create_all_database_and_preserves_rows():
                 assert cur.fetchone()[0] == 1, "001 must create the declared index"
                 cur.execute("SELECT version_num FROM alembic_version")
                 assert cur.fetchone()[0] == "004"
+        finally:
+            conn.close()
+
+
+def test_upgrade_head_refuses_a_column_that_holds_null_and_invents_nothing():
+    """The guarded case: a NULL where the model demands NOT NULL fails loudly.
+
+    A hand-built or older-001 database can hold a NULL in a column the models
+    declare NOT NULL. 003 must refuse — naming the column — leaving the version
+    and the row untouched, rather than inventing a value to satisfy the
+    constraint.
+    """
+    import sqlalchemy as sa
+
+    with _TempDB() as db:
+        engine = sa.create_engine(_db_url(db))
+        try:
+            _build_deployed_shape(engine)
+            with engine.begin() as conn:
+                conn.execute(
+                    sa.text("ALTER TABLE users ALTER COLUMN created_at DROP NOT NULL")
+                )
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO users (id, username, email, full_name, "
+                        "created_at, is_active, preferences) VALUES "
+                        "('u0','nullshop','n@example.com','Null Shop',NULL,true,'{}')"
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        result = _alembic(db, "upgrade", "head")
+        assert result.returncode != 0, "003 must fail on a NULL it would tighten"
+        output = result.stdout + result.stderr
+        assert "users.created_at" in output
+        assert "refusing" in output
+
+        conn = _connect(db)
+        try:
+            with conn.cursor() as cur:
+                # The run is atomic: a failure at 003 rolls the whole upgrade
+                # back, so nothing partial is left behind — not the version, not
+                # the table 001 would have created.
+                cur.execute("SELECT to_regclass('public.alembic_version')")
+                if cur.fetchone()[0] is not None:
+                    cur.execute("SELECT version_num FROM alembic_version")
+                    assert cur.fetchone()[0] not in ("003", "004")
+                cur.execute("SELECT to_regclass('public.payment_references')")
+                assert cur.fetchone()[0] is None, "001's work must not have persisted"
+                cur.execute(
+                    "SELECT is_nullable FROM information_schema.columns "
+                    "WHERE table_name='users' AND column_name='created_at'"
+                )
+                assert cur.fetchone()[0] == "YES", "no DDL applied"
+                cur.execute("SELECT count(*) FROM users WHERE created_at IS NULL")
+                assert cur.fetchone()[0] == 1, "the row must survive"
         finally:
             conn.close()

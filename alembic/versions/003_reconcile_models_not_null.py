@@ -95,21 +95,32 @@ def _is_nullable(bind, table: str, column: str) -> bool:
     missing a models.py column was not built by migrations 001/002 and this
     migration must not paper over that.
     """
-    row = bind.execute(
-        sa.text(
-            "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_name = :t AND column_name = :c"
-        ),
-        {"t": table, "c": column},
-    ).first()
-    if row is None:
+    columns = {col["name"]: col for col in sa.inspect(bind).get_columns(table)}
+    if column not in columns:
         raise RuntimeError(
             f"003: column {table}.{column} does not exist. This database was "
             "not built by migrations 001/002 (it looks like the retired "
             "scripts/init-db.sql path). Run scripts/schema_provenance.sql and "
             "reconcile the base schema before applying 003."
         )
-    return row[0] == "YES"
+    return bool(columns[column]["nullable"])
+
+
+def _count_nulls(bind, table: str, column: str) -> int:
+    """``count(*) WHERE column IS NULL`` through SQLAlchemy Core, not string SQL.
+
+    The identifiers come from ``_NOT_NULL_COLUMNS``, never from user input, but
+    building the statement from the model's own ``Table`` object means there is
+    no hand-quoted SQL to get wrong and no injection surface (this is what
+    semgrep's ``avoid-sqlalchemy-text`` rule is about).
+    """
+    from miriam_agent.database.models import Base
+
+    meta_table = Base.metadata.tables[table]
+    meta_column = meta_table.columns[column]
+    return bind.execute(
+        sa.select(sa.func.count()).select_from(meta_table).where(meta_column.is_(None))
+    ).scalar_one()
 
 
 def _assert_no_nulls(bind) -> None:
@@ -117,9 +128,7 @@ def _assert_no_nulls(bind) -> None:
     for table, column in _NOT_NULL_COLUMNS:
         if not _is_nullable(bind, table, column):
             continue
-        count = bind.execute(
-            sa.text(f'SELECT count(*) FROM "{table}" WHERE "{column}" IS NULL')
-        ).scalar_one()
+        count = _count_nulls(bind, table, column)
         if count:
             offenders.append(f"{table}.{column} ({count} row(s))")
     if offenders:
