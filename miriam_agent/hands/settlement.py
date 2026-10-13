@@ -60,8 +60,9 @@ class Event(BaseModel):
     source_raw: str = ""
     # Structured payment identity for dedupe (G23/C052). Together with
     # ``channel`` these four columns decide "same payment"; the raw payload
-    # above is never keyed. Empty means the caller has no structured reference
-    # and the inflow falls back to ``inflow_id`` alone.
+    # above is never keyed. An empty ``reference`` means the identity is
+    # incomplete: the inflow is still credited, deduped on ``inflow_id``
+    # instead, and marked not verified (see ``Receipt.verified``).
     sender_handle: str = ""
     reference: str = ""
     # confirm tap

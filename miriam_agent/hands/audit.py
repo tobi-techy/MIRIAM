@@ -94,6 +94,13 @@ class Receipt(BaseModel):
     # True only when this receipt is being replayed for a repeated
     # idempotency key. The caller learns the original result, not a second one.
     idempotent_replay: bool = False
+    # The figure's trust level, on the one record that is returned to the
+    # caller, kept in the ledger, and written to the durable audit. False means
+    # the inflow arrived with an incomplete structured identity (no
+    # ``reference``), so dedupe fell back to the rail's ``payment_id``: the
+    # credit is recorded, but no reply, capability or downstream figure may
+    # call it a *verified* credit. True elsewhere (nothing was downgraded).
+    verified: bool = True
 
 
 class AuditLog:
