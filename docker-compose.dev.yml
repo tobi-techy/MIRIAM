@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   miriam-postgres:
-    image: postgres:15
+    # pgvector is required (001_baseline runs CREATE EXTENSION vector). The
+    # stock postgres:15 image cannot satisfy it.
+    image: pgvector/pgvector:pg15
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U miriam -d miriam_dev"]
       interval: 10s
