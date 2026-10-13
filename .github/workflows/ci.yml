@@ -136,6 +136,25 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # The dedupe evidence for C052 runs the real Postgres ON CONFLICT path
+    # (tests/test_payment_refs_postgres.py): the conflict/rowcount semantics ARE
+    # the guarantee, so they are proved on the deployment dialect, not a
+    # lookalike. Without this service those node ids skip and the catalog
+    # (correctly) refuses to count a skipped test as proof.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: miriam
+          POSTGRES_PASSWORD: miriam_password
+          POSTGRES_DB: miriam_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
