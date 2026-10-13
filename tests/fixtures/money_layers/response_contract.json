@@ -176,7 +176,10 @@
     "request_keys": [
       "payment_id",
       "amount",
-      "source_raw"
+      "source_raw",
+      "channel",
+      "sender",
+      "reference"
     ],
     "response_keys": [
       "payment_id",
@@ -186,7 +189,7 @@
       "trace_id"
     ],
     "failure_statuses": {
-      "400": "payment_id or amount missing",
+      "400": "payment_id, amount or reference missing",
       "409": "insufficient_state: the ledger cannot answer for this user",
       "503": "the ledger store is unavailable; the rail must retry"
     }

@@ -941,9 +941,16 @@
         "tests/test_money_layers_route_live.py::test_same_transfer_from_a_different_screenshot_splits_once",
         "tests/test_money_layers_route_live.py::test_two_payments_same_sender_and_amount_different_reference_both_count",
         "tests/test_money_layers_route_live.py::test_concurrent_duplicate_payment_splits_once",
-        "tests/test_money_layers_route_live.py::test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once"
+        "tests/test_money_layers_route_live.py::test_a_pasted_inflow_alert_is_split_and_re_pasting_splits_once",
+        "tests/test_money_layers_route_live.py::test_a_reference_less_inflow_is_refused_and_is_not_a_verified_payment",
+        "tests/test_payment_refs_postgres.py::test_first_claim_writes_a_row_and_reports_claimed",
+        "tests/test_payment_refs_postgres.py::test_an_identical_replay_is_a_no_op_duplicate",
+        "tests/test_payment_refs_postgres.py::test_the_same_reference_with_a_different_amount_is_a_distinct_claim",
+        "tests/test_payment_refs_postgres.py::test_a_different_reference_writes_a_second_row",
+        "tests/test_payment_refs_postgres.py::test_two_concurrent_claims_leave_exactly_one_row",
+        "tests/test_payment_refs_postgres.py::test_the_claim_row_is_written_before_the_split_runs"
       ],
-      "gap": "Dedupe now runs on the structured key (channel, sender_handle, amount_minor, reference) written to payment_references before the ledger moves; a unique violation is the duplicate signal, and the original receipt is returned with nothing moved. Still missing: the key fields come from the client, not from reading a real bank screenshot (C048), and the Postgres store path is only exercised through the in-memory store in tests.",
+      "gap": "Dedupe runs on the structured key (channel, sender_handle, amount_minor, reference) written to payment_references before the ledger moves; a unique violation is the duplicate signal, and the original receipt is returned with nothing moved. The Postgres INSERT ... ON CONFLICT DO NOTHING path -- the thing that dedupes real money -- is executed in CI against a real postgres:15 (tests/test_payment_refs_postgres.py), including two concurrent claims on separate connections leaving exactly one row, and the claim row is proved written before split_inflow runs. The endpoint refuses an inflow with no reference (fail closed) rather than downgrading dedupe to payment_id alone. Still missing: the key fields come from the client, not from reading a real bank screenshot (C048).",
       "eval": {
         "scenario": "Same alert sent twice",
         "expected": "Second one rejected with note",

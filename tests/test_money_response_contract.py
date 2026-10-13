@@ -292,6 +292,9 @@ def test_the_inflow_contract_matches_the_endpoint(monkeypatch):
             "payment_id": "pay_contract",
             "amount": "420000",
             "source_raw": "PAYROLL",
+            "channel": "gtbank",
+            "sender": "ACME PAYROLL",
+            "reference": "REF-CONTRACT",
         },
     )
     assert response.status_code == 200, response.text
