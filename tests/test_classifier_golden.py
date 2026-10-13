@@ -95,3 +95,19 @@ def test_vague_money_without_amount_stays_agent():
     # the agent asks for the amount instead of silently dropping it.
     _must_not_route("send it to her")
     _must_not_route("pay Femi")
+
+
+def test_a_receipt_summary_stays_agent_even_with_a_total():
+    # The rail's receipt summary always ends "...or split it with someone?" and
+    # carries a total whenever OCR read one. "split" used to be a movement word,
+    # so a readable total routed it to the orchestrator. No parser understands a
+    # "split" verb, so it is not one.
+    _must_not_route(
+        "Got it, Shoprite. Total comes to NGN4,500.00. "
+        'Want me to log it, or split it with someone? (e.g. "split with @jane")'
+    )
+    _must_not_route("split it with someone? Total NGN4,500.00")
+    # Boundary, not a claim: a typed bill split has no Hands parser either, so
+    # the agent asks rather than the orchestrator being handed a phrase it
+    # cannot parse.
+    _must_not_route("split 6000 with Ada")
