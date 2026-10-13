@@ -31,9 +31,15 @@ the ledger with the ordinary ``receipt_for`` replay and change nothing.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from miriam_agent.hands.settlement import Event
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "InMemoryPaymentRefStore",
@@ -43,8 +49,36 @@ __all__ = [
     "PostgresPaymentRefStore",
     "amount_to_minor",
     "inflow_id_for_payment",
+    "log_incomplete_identity",
     "payload_hash",
 ]
+
+
+def log_incomplete_identity(event: Event, user_id: str) -> None:
+    """Warn when an inflow arrived with an incomplete structured identity.
+
+    Names the empty identity fields so the fallback to the rail's
+    ``payment_id`` -- and the unverified credit it produces -- is visible in
+    the log, not only implied by the receipt's ``verified`` label. The Go rail
+    sends ``payment_id``, ``amount`` and ``source_raw`` only, so every real
+    inflow logs here until it is taught to send ``channel``/``sender``/
+    ``reference``. No-op when the identity is complete.
+    """
+    missing = [
+        name
+        for name, value in (
+            ("channel", event.channel),
+            ("sender_handle", event.sender_handle),
+            ("reference", event.reference),
+        )
+        if not (value or "").strip()
+    ]
+    if missing:
+        logger.warning(
+            "inflow with incomplete payment identity; dedupe fell back to "
+            "payment_id and the credit is not verified",
+            extra={"user_id": user_id, "missing_identity_fields": missing},
+        )
 
 
 def payload_hash(raw: str) -> str:

@@ -61,6 +61,7 @@ from miriam_agent.hands.payment_refs import (
     PaymentRefStore,
     amount_to_minor,
     inflow_id_for_payment,
+    log_incomplete_identity,
     payload_hash,
 )
 from miriam_agent.hands.save_rule import (
@@ -304,17 +305,15 @@ class Orchestrator(
             raise ValueError("an inflow event needs an amount")
         audit = AuditLog()
         inflow_id = event.inflow_id or f"inflow_{self.clock().timestamp()}"
-
-        # G23/C052: durable dedupe on the structured key (channel, sender,
-        # amount, reference), never the raw text. The claim row is written
-        # BEFORE the ledger moves; a unique violation means a duplicate, so we
-        # return the original receipt and move nothing.
+        # G23/C052: dedupe on the structured key (channel, sender, amount,
+        # reference), never the raw text; a unique violation is a duplicate.
         key = PaymentRefKey.of(
             channel=event.channel or "rail",
             sender_handle=event.sender_handle,
             amount_minor=amount_to_minor(event.amount),
             reference=event.reference,
         )
+        log_incomplete_identity(event, ledger.user_id)  # credited, not verified
         if key.complete:
             # The derived id is stable across wordings, so a duplicate resolves
             # to the same ledger inflow and the ordinary replay finds the
@@ -345,6 +344,7 @@ class Orchestrator(
             amount=event.amount,
             source_raw=event.source_raw,
             classified_as=decision.inflow_class,
+            verified=key.complete,
             at=self.clock(),
         )
         audit.record(

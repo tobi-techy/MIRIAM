@@ -86,11 +86,16 @@ async def split_inflow(
     source_raw: str = "",
     classified_as: str | None = None,
     at: datetime | None = None,
+    verified: bool = True,
 ) -> SplitOutcome:
     """Split one inflow across the sleeves and protect rent. Commits the ledger.
 
     ``inflow_id`` is the idempotency key. A repeat of the same id returns the
     original receipt and changes nothing at all.
+
+    ``verified`` labels the figure on the receipt it writes: False when the
+    inflow arrived with an incomplete structured identity, so the credit is
+    recorded but is not a verified credit.
     """
     existing = ledger.receipt_for(inflow_id)
     if existing is not None:
@@ -160,6 +165,7 @@ async def split_inflow(
             f"split {money(amount)} {ledger.currency} on the "
             f"{ledger.track.name} track; {reserved} reserved for rent"
         ),
+        verified=verified,
     )
     ledger.remember_receipt(receipt)
     await store.save(ledger)

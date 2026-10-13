@@ -139,6 +139,7 @@ async def _persist_money_audit(event: Any, result: Any) -> None:
                 to_account=receipt.counterparty,
                 requires_approval=False,
                 approval_id=result.confirm_id or None,
+                verified=receipt.verified,
             )
             return
         except Exception as exc:  # noqa: BLE001
@@ -995,21 +996,25 @@ async def money_inflow(
 
     This is the only inflow path. A payment is a fact the rail knows and a
     sentence is not, so money never enters the ledger because someone described
-    it in a message: the classifier routes a *chat* alert here, this endpoint
-    and the rail webhook are the same code, and ``payment_id`` is the
-    idempotency key either way.
+    it in a message: the classifier routes a *chat* alert here and the rail
+    webhook is the same code, and ``payment_id`` is the idempotency key.
 
     Auth is two-factor by design: the bearer JWT names the account to credit,
-    and the ``X-Rail-Service-Key`` header proves the caller is the rail. A
-    user token alone is refused — this endpoint mints ledger money, so it is
-    never callable with ordinary user credentials.
+    and the ``X-Rail-Service-Key`` header proves the caller is the rail -- this
+    endpoint mints ledger money.
+
+    The Go platform is the authority for money, so a real inflow is always
+    recorded and credited; it is never refused for an incomplete identity. But
+    ``reference`` is part of the structured dedupe key: when it is absent the
+    credit is still split, deduped on the rail's ``payment_id`` instead, and
+    labelled **not verified** on the receipt and in the durable audit -- never
+    described as a verified credit.
     """
     payment_id = str(request.get("payment_id") or "").strip()
     amount = request.get("amount")
     source_raw = str(request.get("source_raw") or "")
-    # Structured payment identity (G23/C052). When ``reference`` is present the
-    # dedupe key is (channel, sender, amount, reference), so the same transfer
-    # worded differently, or sent as a different screenshot, still counts once.
+    # Structured payment identity (G23/C052): the dedupe key is (channel,
+    # sender, amount, reference), never the raw text.
     channel = str(request.get("channel") or "").strip()
     sender_handle = str(
         request.get("sender") or request.get("sender_handle") or ""
@@ -1022,28 +1027,22 @@ async def money_inflow(
         )
     if amount is None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="amount is required",
+            status_code=status.HTTP_400_BAD_REQUEST, detail="amount is required"
         )
-    # A payload that cannot be parsed is the caller's error, not ours. Without
-    # this it reached ``money`` inside the try below, raised InvalidOperation and
-    # came back as a 500 — which tells the rail the server failed and invites a
-    # retry of a payload that can never succeed.
+    # A payload that cannot be parsed is the caller's error, not ours: a 500
+    # would invite a retry of a payload that can never succeed.
     try:
         parsed_amount = money(amount)
     except (InvalidOperation, TypeError, ValueError):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="amount must be a number",
+            status_code=status.HTTP_400_BAD_REQUEST, detail="amount must be a number"
         )
-    # A credit of nothing, or of a negative amount, is not a credit: it still
-    # wrote an executed receipt and skewed the 30-day inflow figure.
+    # A credit of nothing or a negative amount is not a credit.
     if not parsed_amount.is_finite() or parsed_amount <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="amount must be a positive number",
         )
-
     orchestrator = _orchestrator_for(token)
     try:
         result = await orchestrator.handle_inflow(

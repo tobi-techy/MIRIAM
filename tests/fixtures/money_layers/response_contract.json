@@ -176,7 +176,10 @@
     "request_keys": [
       "payment_id",
       "amount",
-      "source_raw"
+      "source_raw",
+      "channel",
+      "sender",
+      "reference"
     ],
     "response_keys": [
       "payment_id",
